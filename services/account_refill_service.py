@@ -11,6 +11,7 @@ from services.register_service import register_service
 
 
 REASON_TEXT = {
+    "watcher_started": "自动补池守护线程已启动",
     "checking": "正在检查号池",
     "disabled": "自动补池未启用",
     "threshold_not_reached": "号池充足，未触发补池",
@@ -130,10 +131,22 @@ class AccountRefillService:
 
     def start(self, stop_event: Event) -> Thread:
         def worker() -> None:
+            self._log(
+                "自动补池守护线程启动",
+                self._detail(
+                    "watcher_started",
+                    "startup",
+                    enabled=config.auto_refill_enabled,
+                    next_check_seconds=10 if not config.auto_refill_enabled else max(60, config.auto_refill_interval_minutes * 60),
+                ),
+            )
             while not stop_event.is_set():
                 if config.auto_refill_enabled:
                     self.run_once("watcher")
-                stop_event.wait(max(60, config.auto_refill_interval_minutes * 60))
+                    wait_seconds = max(60, config.auto_refill_interval_minutes * 60)
+                else:
+                    wait_seconds = 10
+                stop_event.wait(wait_seconds)
 
         thread = Thread(target=worker, name="account-refill-watcher", daemon=True)
         thread.start()

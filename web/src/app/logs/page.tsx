@@ -35,7 +35,7 @@ const typeLabels: Record<string, string> = {
 
 function getDetailText(item: SystemLog, key: string) {
   const value = item.detail?.[key];
-  return typeof value === "string" || typeof value === "number" ? String(value) : "-";
+  return typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : "-";
 }
 
 function formatDuration(item: SystemLog) {
@@ -59,6 +59,36 @@ function getStatusColor(item: SystemLog) {
   if (status === "failed") return "red";
   if (status === "running") return "processing";
   return "green";
+}
+
+function getAccountLogColor(item: SystemLog) {
+  const reason = String(item.detail?.reason || "");
+  if (reason === "error") return "red";
+  if (reason === "refill_started") return "green";
+  if (reason === "register_running" || reason === "already_checking") return "orange";
+  if (reason === "threshold_not_reached" || reason === "checking") return "blue";
+  return "default";
+}
+
+function formatAccountPool(item: SystemLog) {
+  const total = getDetailText(item, "total");
+  const available = getDetailText(item, "available");
+  const percent = getDetailText(item, "available_percent");
+  if (total === "-" && available === "-") {
+    return "-";
+  }
+  return `${available}/${total}${percent !== "-" ? ` (${percent}%)` : ""}`;
+}
+
+function formatAccountTarget(item: SystemLog) {
+  const threshold = getDetailText(item, "threshold_percent");
+  const target = getDetailText(item, "target_available");
+  const interval = getDetailText(item, "interval_minutes");
+  const parts = [];
+  if (threshold !== "-") parts.push(`阈值 ${threshold}%`);
+  if (target !== "-") parts.push(`目标 ${target}`);
+  if (interval !== "-") parts.push(`${interval} 分钟`);
+  return parts.length ? parts.join(" / ") : "-";
 }
 
 function LogsContent() {
@@ -162,7 +192,25 @@ function LogsContent() {
             ),
           },
         ] satisfies ColumnsType<SystemLog>
-      : []),
+      : [
+          {
+            title: "状态",
+            width: 150,
+            render: (_: unknown, item: SystemLog) => (
+              <Tag color={getAccountLogColor(item)}>{getDetailText(item, "reason_text")}</Tag>
+            ),
+          },
+          {
+            title: "号池",
+            width: 150,
+            render: (_: unknown, item: SystemLog) => formatAccountPool(item),
+          },
+          {
+            title: "策略",
+            width: 210,
+            render: (_: unknown, item: SystemLog) => <span className="text-slate-500">{formatAccountTarget(item)}</span>,
+          },
+        ] satisfies ColumnsType<SystemLog>),
     {
       title: "简述",
       dataIndex: "summary",
