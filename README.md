@@ -21,9 +21,13 @@
 
 ### Docker 运行
 
+服务器不需要本地构建镜像，直接使用已发布镜像即可：
+
 ```bash
-git clone git@github.com:basketikun/chatgpt2api.git
+mkdir -p chatgpt2api/data
 cd chatgpt2api
+curl -fsSL -o docker-compose.yml https://raw.githubusercontent.com/FlyLjx/gpt/main/docker-compose.yml
+curl -fsSL -o config.json https://raw.githubusercontent.com/FlyLjx/gpt/main/config.json
 docker compose up -d
 ```
 
@@ -55,10 +59,8 @@ bun run dev
 后续更新新版本：
 
 ```bash
-docker pull ghcr.io/basketikun/chatgpt2api:latest
-docker-compose down
-docker-compose up -d
-
+docker compose pull
+docker compose up -d
 ```
 
 ### 存储后端配置
