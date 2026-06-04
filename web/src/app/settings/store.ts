@@ -95,6 +95,10 @@ function normalizeConfig(config: SettingsConfig): SettingsConfig {
     auto_remove_invalid_accounts: Boolean(config.auto_remove_invalid_accounts),
     auto_remove_rate_limited_accounts: Boolean(config.auto_remove_rate_limited_accounts),
     auto_relogin_after_refresh: Boolean(config.auto_relogin_after_refresh),
+    auto_refill_enabled: Boolean(config.auto_refill_enabled),
+    auto_refill_threshold_percent: Number(config.auto_refill_threshold_percent || 30),
+    auto_refill_target_available: Number(config.auto_refill_target_available || 10),
+    auto_refill_interval_minutes: Number(config.auto_refill_interval_minutes || 5),
     log_levels: Array.isArray(config.log_levels) ? config.log_levels : [],
     proxy: typeof config.proxy === "string" ? config.proxy : "",
     base_url: typeof config.base_url === "string" ? config.base_url : "",
@@ -218,6 +222,10 @@ type SettingsStore = {
   setAutoRemoveInvalidAccounts: (value: boolean) => void;
   setAutoRemoveRateLimitedAccounts: (value: boolean) => void;
   setAutoReloginAfterRefresh: (value: boolean) => void;
+  setAutoRefillEnabled: (value: boolean) => void;
+  setAutoRefillThresholdPercent: (value: string) => void;
+  setAutoRefillTargetAvailable: (value: string) => void;
+  setAutoRefillIntervalMinutes: (value: string) => void;
   setLogLevel: (level: string, enabled: boolean) => void;
   setProxy: (value: string) => void;
   setBaseUrl: (value: string) => void;
@@ -360,6 +368,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         auto_remove_invalid_accounts: Boolean(config.auto_remove_invalid_accounts),
         auto_remove_rate_limited_accounts: Boolean(config.auto_remove_rate_limited_accounts),
         auto_relogin_after_refresh: Boolean(config.auto_relogin_after_refresh),
+        auto_refill_enabled: Boolean(config.auto_refill_enabled),
+        auto_refill_threshold_percent: Math.min(100, Math.max(0, Number(config.auto_refill_threshold_percent) || 30)),
+        auto_refill_target_available: Math.max(1, Number(config.auto_refill_target_available) || 10),
+        auto_refill_interval_minutes: Math.max(1, Number(config.auto_refill_interval_minutes) || 5),
         proxy: config.proxy.trim(),
         base_url: String(config.base_url || "").trim(),
         global_system_prompt: String(config.global_system_prompt || "").trim(),
@@ -461,6 +473,22 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   setAutoReloginAfterRefresh: (value) => {
     set((state) => state.config ? { config: { ...state.config, auto_relogin_after_refresh: value } } : {});
+  },
+
+  setAutoRefillEnabled: (value) => {
+    set((state) => state.config ? { config: { ...state.config, auto_refill_enabled: value } } : {});
+  },
+
+  setAutoRefillThresholdPercent: (value) => {
+    set((state) => state.config ? { config: { ...state.config, auto_refill_threshold_percent: value } } : {});
+  },
+
+  setAutoRefillTargetAvailable: (value) => {
+    set((state) => state.config ? { config: { ...state.config, auto_refill_target_available: value } } : {});
+  },
+
+  setAutoRefillIntervalMinutes: (value) => {
+    set((state) => state.config ? { config: { ...state.config, auto_refill_interval_minutes: value } } : {});
   },
 
   setLogLevel: (level, enabled) => {

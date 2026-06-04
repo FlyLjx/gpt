@@ -58,6 +58,25 @@ function NumberInput({
   );
 }
 
+function formatProxyExit(result: ProxyTestResult) {
+  const exit = result.exit_ip;
+  if (!exit?.ip) {
+    return "出口信息未返回";
+  }
+  const location = [exit.city, exit.region, exit.country].filter(Boolean).join(" / ");
+  const parts = [`出口 IP：${exit.ip}`];
+  if (location) {
+    parts.push(`地区：${location}`);
+  }
+  if (exit.org) {
+    parts.push(`运营商：${exit.org}`);
+  }
+  if (exit.timezone) {
+    parts.push(`时区：${exit.timezone}`);
+  }
+  return parts.join("，");
+}
+
 export function ConfigCard() {
   const [isTestingProxy, setIsTestingProxy] = useState(false);
   const [proxyTestResult, setProxyTestResult] = useState<ProxyTestResult | null>(null);
@@ -75,6 +94,10 @@ export function ConfigCard() {
   const setAutoRemoveInvalidAccounts = useSettingsStore((state) => state.setAutoRemoveInvalidAccounts);
   const setAutoRemoveRateLimitedAccounts = useSettingsStore((state) => state.setAutoRemoveRateLimitedAccounts);
   const setAutoReloginAfterRefresh = useSettingsStore((state) => state.setAutoReloginAfterRefresh);
+  const setAutoRefillEnabled = useSettingsStore((state) => state.setAutoRefillEnabled);
+  const setAutoRefillThresholdPercent = useSettingsStore((state) => state.setAutoRefillThresholdPercent);
+  const setAutoRefillTargetAvailable = useSettingsStore((state) => state.setAutoRefillTargetAvailable);
+  const setAutoRefillIntervalMinutes = useSettingsStore((state) => state.setAutoRefillIntervalMinutes);
   const setLogLevel = useSettingsStore((state) => state.setLogLevel);
   const setProxy = useSettingsStore((state) => state.setProxy);
   const setBaseUrl = useSettingsStore((state) => state.setBaseUrl);
@@ -188,6 +211,7 @@ export function ConfigCard() {
                 type={proxyTestResult.ok ? "success" : "error"}
                 showIcon
                 title={proxyTestResult.ok ? `代理可用：HTTP ${proxyTestResult.status}，用时 ${proxyTestResult.latency_ms} ms` : `代理不可用：${proxyTestResult.error ?? "未知错误"}（用时 ${proxyTestResult.latency_ms} ms）`}
+                description={proxyTestResult.ok ? formatProxyExit(proxyTestResult) : undefined}
               />
             ) : null}
           </Col>
@@ -226,6 +250,53 @@ export function ConfigCard() {
                 <Typography.Text strong>刷新后自动尝试恢复异常状态</Typography.Text>
                 <Typography.Text type="secondary">刷新后对包含邮箱密码的异常账号尝试重新登录。</Typography.Text>
               </Space>
+            </Card>
+          </Col>
+        </Row>
+
+        <Row gutter={[16, 16]} className="mt-4">
+          <Col xs={24}>
+            <Card size="small">
+              <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <Space>
+                  <Switch checked={Boolean(config.auto_refill_enabled)} onChange={setAutoRefillEnabled} />
+                  <Typography.Text strong>自动补池</Typography.Text>
+                  <Tag color={config.auto_refill_enabled ? "green" : "default"}>{config.auto_refill_enabled ? "已启用" : "未启用"}</Tag>
+                </Space>
+                <Typography.Text type="secondary">低于阈值后自动启动注册机，邮箱、代理、线程等配置仍在注册机页面维护。</Typography.Text>
+              </div>
+              <Row gutter={[16, 16]}>
+                <Col xs={24} md={8}>
+                  <NumberInput
+                    label="低于正常号比例"
+                    value={String(config.auto_refill_threshold_percent || "")}
+                    onChange={setAutoRefillThresholdPercent}
+                    placeholder="30"
+                    help="单位百分比，例如 30 表示正常号少于总号池 30% 时触发。"
+                    disabled={!config.auto_refill_enabled}
+                  />
+                </Col>
+                <Col xs={24} md={8}>
+                  <NumberInput
+                    label="补到正常账号数"
+                    value={String(config.auto_refill_target_available || "")}
+                    onChange={setAutoRefillTargetAvailable}
+                    placeholder="10"
+                    help="触发后注册机会使用“正常账号数达到该值”为目标。"
+                    disabled={!config.auto_refill_enabled}
+                  />
+                </Col>
+                <Col xs={24} md={8}>
+                  <NumberInput
+                    label="检查间隔"
+                    value={String(config.auto_refill_interval_minutes || "")}
+                    onChange={setAutoRefillIntervalMinutes}
+                    placeholder="5"
+                    help="单位分钟，服务启动后按这个间隔检查号池。"
+                    disabled={!config.auto_refill_enabled}
+                  />
+                </Col>
+              </Row>
             </Card>
           </Col>
         </Row>

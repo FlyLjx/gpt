@@ -358,6 +358,41 @@ class ConfigStore:
         return bool(value)
 
     @property
+    def auto_refill_enabled(self) -> bool:
+        value = self.data.get("auto_refill_enabled", False)
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    @property
+    def auto_refill_threshold_percent(self) -> int:
+        try:
+            return min(100, max(0, int(self.data.get("auto_refill_threshold_percent", 30))))
+        except (TypeError, ValueError):
+            return 30
+
+    @property
+    def auto_refill_target_available(self) -> int:
+        try:
+            return max(1, int(self.data.get("auto_refill_target_available", 10)))
+        except (TypeError, ValueError):
+            return 10
+
+    @property
+    def auto_refill_batch_size(self) -> int:
+        try:
+            return min(100, max(1, int(self.data.get("auto_refill_batch_size", 10))))
+        except (TypeError, ValueError):
+            return 10
+
+    @property
+    def auto_refill_interval_minutes(self) -> int:
+        try:
+            return max(1, int(self.data.get("auto_refill_interval_minutes", 5)))
+        except (TypeError, ValueError):
+            return 5
+
+    @property
     def log_levels(self) -> list[str]:
         levels = self.data.get("log_levels")
         if not isinstance(levels, list):
@@ -434,6 +469,11 @@ class ConfigStore:
         data["auto_remove_invalid_accounts"] = self.auto_remove_invalid_accounts
         data["auto_remove_rate_limited_accounts"] = self.auto_remove_rate_limited_accounts
         data["auto_relogin_after_refresh"] = self.auto_relogin_after_refresh
+        data["auto_refill_enabled"] = self.auto_refill_enabled
+        data["auto_refill_threshold_percent"] = self.auto_refill_threshold_percent
+        data["auto_refill_target_available"] = self.auto_refill_target_available
+        data["auto_refill_batch_size"] = self.auto_refill_batch_size
+        data["auto_refill_interval_minutes"] = self.auto_refill_interval_minutes
         data["log_levels"] = self.log_levels
         data["sensitive_words"] = self.sensitive_words
         data["ai_review"] = self.ai_review

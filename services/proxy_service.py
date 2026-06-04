@@ -28,6 +28,30 @@ def _is_valid_proxy_url(url: str) -> bool:
     return parsed.scheme in {"http", "https", "socks5", "socks5h"} and bool(parsed.netloc)
 
 
+def _lookup_exit_ip(session: Session, *, timeout: float) -> dict[str, str]:
+    try:
+        response = session.get(
+            "https://ipinfo.io/json",
+            headers={"user-agent": "Mozilla/5.0 (chatgpt2api proxy geo test)"},
+            timeout=timeout,
+        )
+        if response.status_code >= 400:
+            return {}
+        data = response.json()
+        if not isinstance(data, dict):
+            return {}
+        return {
+            "ip": _clean(data.get("ip")),
+            "country": _clean(data.get("country")),
+            "region": _clean(data.get("region")),
+            "city": _clean(data.get("city")),
+            "org": _clean(data.get("org")),
+            "timezone": _clean(data.get("timezone")),
+        }
+    except Exception:
+        return {}
+
+
 def test_proxy(url: str, *, timeout: float = 15.0) -> dict:
     candidate = _clean(url)
     if not candidate:
@@ -43,10 +67,12 @@ def test_proxy(url: str, *, timeout: float = 15.0) -> dict:
             timeout=timeout,
         )
         latency_ms = int((time.perf_counter() - started) * 1000)
+        exit_ip = _lookup_exit_ip(session, timeout=min(timeout, 8.0))
         return {
             "ok": response.status_code < 500,
             "status": int(response.status_code),
             "latency_ms": latency_ms,
+            "exit_ip": exit_ip,
             "error": None if response.status_code < 500 else f"HTTP {response.status_code}",
         }
     except Exception as exc:

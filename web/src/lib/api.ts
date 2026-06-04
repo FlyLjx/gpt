@@ -125,6 +125,10 @@ export type SettingsConfig = {
   auto_remove_invalid_accounts?: boolean;
   auto_remove_rate_limited_accounts?: boolean;
   auto_relogin_after_refresh?: boolean;
+  auto_refill_enabled?: boolean;
+  auto_refill_threshold_percent?: number | string;
+  auto_refill_target_available?: number | string;
+  auto_refill_interval_minutes?: number | string;
   log_levels?: string[];
   image_storage?: ImageStorageSettings;
   backup?: BackupSettings;
@@ -876,6 +880,14 @@ export type ProxyTestResult = {
   ok: boolean;
   status: number;
   latency_ms: number;
+  exit_ip?: {
+    ip?: string;
+    country?: string;
+    region?: string;
+    city?: string;
+    org?: string;
+    timezone?: string;
+  };
   error: string | null;
 };
 
