@@ -1,15 +1,38 @@
 "use client";
 
-import { AlertTriangle, LoaderCircle, Plus, Play, RotateCcw, Save, Square, Trash2, UserPlus } from "lucide-react";
-
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
+import { Alert, Button, Card, Checkbox, Col, Divider, Empty, Input, Row, Select, Space, Spin, Tag, Typography } from "antd";
+import { LoaderCircle, Plus, Play, RotateCcw, Save, Square, Trash2, UserPlus } from "lucide-react";
 
 import { useSettingsStore } from "../../settings/store";
+
+const providerOptions = [
+  { value: "cloudmail_gen", label: "cloudmail_gen" },
+  { value: "cloudflare_temp_email", label: "cloudflare_temp_email" },
+  { value: "tempmail_lol", label: "tempmail_lol" },
+  { value: "moemail", label: "moemail" },
+  { value: "inbucket", label: "inbucket_mail" },
+  { value: "duckmail", label: "duckmail" },
+  { value: "gptmail", label: "gptmail(未测试)" },
+  { value: "yyds_mail", label: "yyds_mail" },
+  { value: "ddg_mail", label: "ddg_mail (DDG邮箱+CF中转)" },
+];
+
+function textList(value: unknown) {
+  return Array.isArray(value) ? value.map(String).join("\n") : "";
+}
+
+function splitList(value: string) {
+  return value.split(/[\n,]/).map((item) => item.trim());
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-1.5">
+      <Typography.Text type="secondary" className="text-sm">{label}</Typography.Text>
+      {children}
+    </div>
+  );
+}
 
 export function RegisterCard() {
   const config = useSettingsStore((state) => state.registerConfig);
@@ -32,9 +55,11 @@ export function RegisterCard() {
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center rounded-xl border border-stone-200 bg-white/80 p-10">
-        <LoaderCircle className="size-5 animate-spin text-stone-400" />
-      </div>
+      <Card>
+        <div className="flex min-h-48 items-center justify-center">
+          <Spin />
+        </div>
+      </Card>
     );
   }
 
@@ -60,298 +85,304 @@ export function RegisterCard() {
   };
 
   return (
-    <div className="grid h-[calc(100vh-132px)] min-h-[640px] items-stretch gap-0 overflow-hidden rounded-xl border border-stone-200 bg-white/70 xl:grid-cols-2">
-      <section className="space-y-4 overflow-y-auto border-b border-stone-200 p-4 xl:border-r xl:border-b-0">
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <div className="flex size-9 items-center justify-center rounded-md bg-stone-100">
-                <UserPlus className="size-5 text-stone-600" />
-              </div>
-              <div>
-                <h2 className="text-lg font-semibold tracking-tight">注册配置</h2>
-              </div>
-            </div>
-            <Button className="h-9 rounded-xl bg-stone-950 px-4 text-white hover:bg-stone-800" onClick={() => void save()} disabled={isSaving || config.enabled}>
-              {isSaving ? <LoaderCircle className="size-4 animate-spin" /> : <Save className="size-4" />}
+    <Row gutter={[24, 24]} align="top" className="register-console mt-6">
+      <Col xs={24} xl={15}>
+        <Card
+          title={
+            <Space>
+              <UserPlus className="size-5 text-slate-500" />
+              <span>注册配置</span>
+            </Space>
+          }
+          extra={
+            <Button type="primary" icon={isSaving ? <LoaderCircle className="size-4 animate-spin" /> : <Save className="size-4" />} onClick={() => void save()} disabled={isSaving || config.enabled}>
               保存配置
             </Button>
+          }
+        >
+          <Row gutter={[16, 16]}>
+            <Col xs={24} md={8}>
+              <Field label="注册模式">
+                <Select
+                  className="w-full"
+                  value={config.mode || "total"}
+                  onChange={(value) => setMode(value as "total" | "quota" | "available")}
+                  disabled={config.enabled}
+                  options={[
+                    { value: "total", label: "注册总数" },
+                    { value: "quota", label: "号池剩余额度" },
+                    { value: "available", label: "可用账号数量" },
+                  ]}
+                />
+              </Field>
+            </Col>
+            <Col xs={24} md={8}>
+              <Field label="注册总数">
+                <Input value={String(config.total)} onChange={(event) => setTotal(event.target.value)} disabled={config.enabled || config.mode !== "total"} />
+              </Field>
+            </Col>
+            <Col xs={24} md={8}>
+              <Field label="线程数">
+                <Input value={String(config.threads)} onChange={(event) => setThreads(event.target.value)} disabled={config.enabled} />
+              </Field>
+            </Col>
+            <Col xs={24} md={8}>
+              <Field label="注册代理">
+                <Input value={config.proxy} onChange={(event) => setProxy(event.target.value)} placeholder="http://127.0.0.1:7890" disabled={config.enabled} />
+              </Field>
+            </Col>
+            <Col xs={24} md={8}>
+              <Field label="目标剩余额度">
+                <Input value={String(config.target_quota || "")} onChange={(event) => setTargetQuota(event.target.value)} disabled={config.enabled || config.mode !== "quota"} />
+              </Field>
+            </Col>
+            <Col xs={24} md={8}>
+              <Field label="目标可用账号">
+                <Input value={String(config.target_available || "")} onChange={(event) => setTargetAvailable(event.target.value)} disabled={config.enabled || config.mode !== "available"} />
+              </Field>
+            </Col>
+            <Col xs={24} md={8}>
+              <Field label="检查间隔（秒）">
+                <Input value={String(config.check_interval || "")} onChange={(event) => setCheckInterval(event.target.value)} disabled={config.enabled || config.mode === "total"} />
+              </Field>
+            </Col>
+          </Row>
+
+          <Divider className="!my-5" />
+
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <Typography.Title level={5} className="!mb-0">邮箱配置</Typography.Title>
+              <Typography.Text type="secondary">可配置多个 provider，按启用顺序轮换。</Typography.Text>
+            </div>
+            <Button icon={<Plus className="size-4" />} onClick={addProvider} disabled={config.enabled}>添加</Button>
           </div>
 
-          <div className="grid gap-4 md:grid-cols-3">
-            <div className="space-y-2">
-              <label className="text-sm text-stone-700">注册模式</label>
-              <Select value={config.mode || "total"} onValueChange={(value) => setMode(value as "total" | "quota" | "available")} disabled={config.enabled}>
-                <SelectTrigger className="h-10 rounded-xl border-stone-200 bg-white">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="total">注册总数</SelectItem>
-                  <SelectItem value="quota">号池剩余额度</SelectItem>
-                  <SelectItem value="available">可用账号数量</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm text-stone-700">注册总数</label>
-              <Input value={String(config.total)} onChange={(event) => setTotal(event.target.value)} className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled || config.mode !== "total"} />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm text-stone-700">线程数</label>
-              <Input value={String(config.threads)} onChange={(event) => setThreads(event.target.value)} className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled} />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm text-stone-700">注册代理</label>
-              <Input value={config.proxy} onChange={(event) => setProxy(event.target.value)} placeholder="http://127.0.0.1:7890" className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled} />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm text-stone-700">目标剩余额度</label>
-              <Input value={String(config.target_quota || "")} onChange={(event) => setTargetQuota(event.target.value)} className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled || config.mode !== "quota"} />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm text-stone-700">目标可用账号</label>
-              <Input value={String(config.target_available || "")} onChange={(event) => setTargetAvailable(event.target.value)} className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled || config.mode !== "available"} />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm text-stone-700">检查间隔（秒）</label>
-              <Input value={String(config.check_interval || "")} onChange={(event) => setCheckInterval(event.target.value)} className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled || config.mode === "total"} />
-            </div>
-          </div>
+          <Row gutter={[16, 16]}>
+            <Col xs={24} md={8}>
+              <Field label="请求超时">
+                <Input value={String(config.mail.request_timeout || "")} onChange={(event) => setMailField("request_timeout", event.target.value)} disabled={config.enabled} />
+              </Field>
+            </Col>
+            <Col xs={24} md={8}>
+              <Field label="等待验证码超时">
+                <Input value={String(config.mail.wait_timeout || "")} onChange={(event) => setMailField("wait_timeout", event.target.value)} disabled={config.enabled} />
+              </Field>
+            </Col>
+            <Col xs={24} md={8}>
+              <Field label="轮询间隔">
+                <Input value={String(config.mail.wait_interval || "")} onChange={(event) => setMailField("wait_interval", event.target.value)} disabled={config.enabled} />
+              </Field>
+            </Col>
+          </Row>
 
-          <div className="space-y-3 border-t border-stone-200 pt-3">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <h3 className="text-sm font-semibold text-stone-800">邮箱配置</h3>
-                <p className="mt-1 text-xs text-stone-500">可配置多个 provider，按启用顺序轮换。</p>
-              </div>
-              <Button type="button" variant="outline" className="h-9 rounded-xl border-stone-200 bg-white px-3 text-stone-700" onClick={addProvider} disabled={config.enabled}>
-                <Plus className="size-4" />
-                添加
-              </Button>
-            </div>
-
-            <div className="grid gap-4 md:grid-cols-3">
-              <div className="space-y-2">
-                <label className="text-sm text-stone-700">请求超时</label>
-                <Input value={String(config.mail.request_timeout || "")} onChange={(event) => setMailField("request_timeout", event.target.value)} className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled} />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm text-stone-700">等待验证码超时</label>
-                <Input value={String(config.mail.wait_timeout || "")} onChange={(event) => setMailField("wait_timeout", event.target.value)} className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled} />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm text-stone-700">轮询间隔</label>
-                <Input value={String(config.mail.wait_interval || "")} onChange={(event) => setMailField("wait_interval", event.target.value)} className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled} />
-              </div>
-            </div>
-
-            <div className="space-y-3">
-              {providers.map((provider, index) => {
-                const type = String(provider.type || "tempmail_lol");
-                const domains = Array.isArray(provider.domain) ? provider.domain.map(String).join("\n") : "";
-                const subdomains = Array.isArray(provider.subdomain) ? provider.subdomain.map(String).join("\n") : "";
-                return (
-                  <div key={index} className="space-y-3 border-t border-stone-200 pt-3 first:border-t-0 first:pt-0">
-                    <div className="flex items-center justify-between gap-3">
-                      <label className="flex items-center gap-3 text-sm text-stone-700">
-                        <Checkbox checked={Boolean(provider.enable)} onCheckedChange={(checked) => updateProvider(index, { enable: Boolean(checked) })} disabled={config.enabled} />
-                        启用
-                      </label>
-                      <button type="button" className="rounded-lg p-2 text-stone-400 transition hover:bg-rose-50 hover:text-rose-500 disabled:opacity-50" onClick={() => deleteProvider(index)} disabled={config.enabled || providers.length <= 1} title="删除 provider">
-                        <Trash2 className="size-4" />
-                      </button>
-                    </div>
-
-                    <div className="grid gap-4 md:grid-cols-2">
-                      <div className="space-y-2">
-                        <label className="text-sm text-stone-700">类型</label>
-                        <Select value={type} onValueChange={(value) => updateProviderType(index, value)} disabled={config.enabled}>
-                          <SelectTrigger className="h-10 rounded-xl border-stone-200 bg-white">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="cloudmail_gen">cloudmail_gen</SelectItem>
-                            <SelectItem value="cloudflare_temp_email">cloudflare_temp_email</SelectItem>
-                            <SelectItem value="tempmail_lol">tempmail_lol</SelectItem>
-                            <SelectItem value="moemail">moemail</SelectItem>
-                            <SelectItem value="inbucket">inbucket_mail</SelectItem>
-                            <SelectItem value="duckmail">duckmail</SelectItem>
-                            <SelectItem value="gptmail">gptmail(未测试)</SelectItem>
-                            <SelectItem value="yyds_mail">yyds_mail</SelectItem>
-                            <SelectItem value="ddg_mail">ddg_mail (DDG邮箱+CF中转)</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      {type === "cloudmail_gen" || type === "cloudflare_temp_email" || type === "moemail" || type === "inbucket" || type === "yyds_mail" || type === "ddg_mail" ? (
-                        <>
-                          <div className="space-y-2">
-                            <label className="text-sm text-stone-700">{type === "cloudmail_gen" ? "CloudMail URL" : "API Base"}</label>
-                            <Input value={String(provider.api_base || "")} onChange={(event) => updateProvider(index, { api_base: event.target.value })} className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled} />
-                          </div>
-                          {type === "cloudmail_gen" ? (
-                            <>
-                              <div className="space-y-2">
-                                <label className="text-sm text-stone-700">管理员邮箱</label>
-                                <Input value={String(provider.admin_email || "")} onChange={(event) => updateProvider(index, { admin_email: event.target.value })} className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled} />
-                              </div>
-                              <div className="space-y-2">
-                                <label className="text-sm text-stone-700">管理员密码</label>
-                                <Input value={String(provider.admin_password || "")} onChange={(event) => updateProvider(index, { admin_password: event.target.value })} className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled} />
-                              </div>
-                            </>
-                          ) : null}
-                          {type === "cloudflare_temp_email" || type === "ddg_mail" ? (
-                            <div className="space-y-2">
-                              <label className="text-sm text-stone-700">Admin Password</label>
-                              <Input value={String(provider.admin_password || "")} onChange={(event) => updateProvider(index, { admin_password: event.target.value })} className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled} />
-                            </div>
-                          ) : null}
-                        </>
-                      ) : null}
-                      {type === "ddg_mail" ? (
-                        <>
-                        <div className="space-y-2">
-                          <label className="text-sm text-stone-700">DDG Token <span className="text-red-400">*</span></label>
-                          <Input value={String(provider.ddg_token || "")} onChange={(event) => updateProvider(index, { ddg_token: event.target.value })} className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled} placeholder="DuckDuckGo Email Protection 的 Bearer Token" />
-                        </div>
-                        <div className="space-y-2">
-                          <label className="text-sm text-stone-700">CF Inbox JWT <span className="text-red-400">*</span></label>
-                          <Input value={String(provider.cf_inbox_jwt || "")} onChange={(event) => updateProvider(index, { cf_inbox_jwt: event.target.value })} className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled} placeholder="CF 临时邮箱后端的固定收件箱 JWT（DDG 转发目标）" />
-                        </div>
-                        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
-                          <p className="font-medium mb-1">使用说明</p>
-                          <ol className="list-decimal list-inside space-y-0.5">
-                            <li>先在 <a href="https://duckduckgo.com/email/" target="_blank" className="underline">DuckDuckGo Email Protection</a> 登录并设置转发目标为 CF 收件箱地址</li>
-                            <li>DDG Token 从浏览器 DevTools → Network → quack.duckduckgo.com 请求中获取 <code className="bg-amber-100 px-1 rounded">Authorization: Bearer</code></li>
-                            <li>CF Inbox JWT 从 CF 临时邮箱后端创建固定收件箱后获取</li>
-                            <li>所有 @duck.com 别名收到的邮件会转发到同一个 CF 收件箱，系统按 To: 头自动匹配</li>
-                          </ol>
-                        </div>
-                        </>
-                      ) : null}
-                      {type === "inbucket" ? (
-                        <label className="flex items-center gap-3 pt-8 text-sm text-stone-700">
-                          <Checkbox checked={Boolean(provider.random_subdomain ?? true)} onCheckedChange={(checked) => updateProvider(index, { random_subdomain: Boolean(checked) })} disabled={config.enabled} />
-                          启用随机子域名
-                        </label>
-                      ) : null}
-                      {type === "tempmail_lol" || type === "moemail" || type === "duckmail" || type === "gptmail" || type === "yyds_mail" ? (
-                        <div className="space-y-2">
-                          <label className="text-sm text-stone-700">API Key</label>
-                          <Input value={String(provider.api_key || "")} onChange={(event) => updateProvider(index, { api_key: event.target.value })} className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled} />
-                        </div>
-                      ) : null}
-                      {type === "duckmail" || type === "gptmail" ? (
-                        <div className="space-y-2">
-                          <label className="text-sm text-stone-700">Default Domain</label>
-                          <Input value={String(provider.default_domain || "")} onChange={(event) => updateProvider(index, { default_domain: event.target.value })} placeholder={type === "duckmail" ? "duckmail.sbs" : ""} className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled} />
-                        </div>
-                      ) : null}
-                      {type === "yyds_mail" ? (
-                        <>
-                          <div className="space-y-2">
-                            <label className="text-sm text-stone-700">Subdomain</label>
-                            <Input value={String(provider.subdomain || "")} onChange={(event) => updateProvider(index, { subdomain: event.target.value })} className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled} />
-                          </div>
-                          <label className="flex items-center gap-3 pt-8 text-sm text-stone-700">
-                            <Checkbox checked={Boolean(provider.wildcard)} onCheckedChange={(checked) => updateProvider(index, { wildcard: Boolean(checked) })} disabled={config.enabled} />
-                            Wildcard
-                          </label>
-                        </>
-                      ) : null}
-                    </div>
-
-                    {type === "cloudmail_gen" || type === "tempmail_lol" || type === "cloudflare_temp_email" || type === "moemail" || type === "inbucket" || type === "yyds_mail" || type === "ddg_mail" ? (
-                      <div className="space-y-2">
-                        <label className="text-sm text-stone-700">{type === "cloudmail_gen" ? "邮箱域名" : type === "inbucket" ? "基础域名列表" : "Domain"}</label>
-                        <Textarea value={domains} onChange={(event) => updateProvider(index, { domain: event.target.value.split(/[\n,]/).map((item) => item.trim()) })} placeholder={type === "cloudmail_gen" ? "每行一个域名，留空则使用服务默认域名" : type === "inbucket" ? "每行一个基础域名，系统会自动生成随机子域名" : type === "moemail" ? "每行一个域名" : "每行一个域名，留空则使用服务默认域名"} className="min-h-20 rounded-xl border-stone-200 bg-white font-mono text-xs" disabled={config.enabled} />
-                      </div>
+          <div className="mt-5 space-y-4">
+            {providers.map((provider, index) => {
+              const type = String(provider.type || "tempmail_lol");
+              const domains = textList(provider.domain);
+              const subdomains = textList(provider.subdomain);
+              return (
+                <Card
+                  key={index}
+                  size="small"
+                  title={
+                    <Space>
+                      <Checkbox checked={Boolean(provider.enable)} onChange={(event) => updateProvider(index, { enable: event.target.checked })} disabled={config.enabled} />
+                      <span>Provider #{index + 1}</span>
+                      <Tag>{type}</Tag>
+                    </Space>
+                  }
+                  extra={
+                    <Button
+                      danger
+                      type="text"
+                      icon={<Trash2 className="size-4" />}
+                      onClick={() => deleteProvider(index)}
+                      disabled={config.enabled || providers.length <= 1}
+                    />
+                  }
+                >
+                  <Row gutter={[16, 16]}>
+                    <Col xs={24} md={12}>
+                      <Field label="类型">
+                        <Select className="w-full" value={type} onChange={(value) => updateProviderType(index, value)} disabled={config.enabled} options={providerOptions} />
+                      </Field>
+                    </Col>
+                    {type === "cloudmail_gen" || type === "cloudflare_temp_email" || type === "moemail" || type === "inbucket" || type === "yyds_mail" || type === "ddg_mail" ? (
+                      <Col xs={24} md={12}>
+                        <Field label={type === "cloudmail_gen" ? "CloudMail URL" : "API Base"}>
+                          <Input value={String(provider.api_base || "")} onChange={(event) => updateProvider(index, { api_base: event.target.value })} disabled={config.enabled} />
+                        </Field>
+                      </Col>
                     ) : null}
                     {type === "cloudmail_gen" ? (
-                      <div className="space-y-2">
-                        <label className="text-sm text-stone-700">子域名（支持多个）</label>
-                        <Textarea value={subdomains} onChange={(event) => updateProvider(index, { subdomain: event.target.value.split(/[\n,]/).map((item) => item.trim()) })} placeholder="每行一个子域名前缀，留空则直接使用主域名" className="min-h-20 rounded-xl border-stone-200 bg-white font-mono text-xs" disabled={config.enabled} />
-                      </div>
+                      <>
+                        <Col xs={24} md={12}>
+                          <Field label="管理员邮箱">
+                            <Input value={String(provider.admin_email || "")} onChange={(event) => updateProvider(index, { admin_email: event.target.value })} disabled={config.enabled} />
+                          </Field>
+                        </Col>
+                        <Col xs={24} md={12}>
+                          <Field label="管理员密码">
+                            <Input value={String(provider.admin_password || "")} onChange={(event) => updateProvider(index, { admin_password: event.target.value })} disabled={config.enabled} />
+                          </Field>
+                        </Col>
+                      </>
                     ) : null}
-                  </div>
-                );
-              })}
-            </div>
+                    {type === "cloudflare_temp_email" || type === "ddg_mail" ? (
+                      <Col xs={24} md={12}>
+                        <Field label="Admin Password">
+                          <Input value={String(provider.admin_password || "")} onChange={(event) => updateProvider(index, { admin_password: event.target.value })} disabled={config.enabled} />
+                        </Field>
+                      </Col>
+                    ) : null}
+                    {type === "ddg_mail" ? (
+                      <>
+                        <Col xs={24} md={12}>
+                          <Field label="DDG Token">
+                            <Input value={String(provider.ddg_token || "")} onChange={(event) => updateProvider(index, { ddg_token: event.target.value })} disabled={config.enabled} placeholder="DuckDuckGo Email Protection 的 Bearer Token" />
+                          </Field>
+                        </Col>
+                        <Col xs={24} md={12}>
+                          <Field label="CF Inbox JWT">
+                            <Input value={String(provider.cf_inbox_jwt || "")} onChange={(event) => updateProvider(index, { cf_inbox_jwt: event.target.value })} disabled={config.enabled} placeholder="CF 临时邮箱后端固定收件箱 JWT" />
+                          </Field>
+                        </Col>
+                        <Col xs={24}>
+                          <Alert
+                            type="warning"
+                            showIcon
+                            title="DDG 邮箱使用说明"
+                            description="先在 DuckDuckGo Email Protection 登录并设置转发目标为 CF 收件箱地址；DDG Token 从 quack.duckduckgo.com 请求 Authorization 获取；CF Inbox JWT 从固定收件箱获取。"
+                          />
+                        </Col>
+                      </>
+                    ) : null}
+                    {type === "inbucket" ? (
+                      <Col xs={24} md={12}>
+                        <Checkbox checked={Boolean(provider.random_subdomain ?? true)} onChange={(event) => updateProvider(index, { random_subdomain: event.target.checked })} disabled={config.enabled}>
+                          启用随机子域名
+                        </Checkbox>
+                      </Col>
+                    ) : null}
+                    {type === "tempmail_lol" || type === "moemail" || type === "duckmail" || type === "gptmail" || type === "yyds_mail" ? (
+                      <Col xs={24} md={12}>
+                        <Field label="API Key">
+                          <Input value={String(provider.api_key || "")} onChange={(event) => updateProvider(index, { api_key: event.target.value })} disabled={config.enabled} />
+                        </Field>
+                      </Col>
+                    ) : null}
+                    {type === "duckmail" || type === "gptmail" ? (
+                      <Col xs={24} md={12}>
+                        <Field label="Default Domain">
+                          <Input value={String(provider.default_domain || "")} onChange={(event) => updateProvider(index, { default_domain: event.target.value })} placeholder={type === "duckmail" ? "duckmail.sbs" : ""} disabled={config.enabled} />
+                        </Field>
+                      </Col>
+                    ) : null}
+                    {type === "yyds_mail" ? (
+                      <>
+                        <Col xs={24} md={12}>
+                          <Field label="Subdomain">
+                            <Input value={String(provider.subdomain || "")} onChange={(event) => updateProvider(index, { subdomain: event.target.value })} disabled={config.enabled} />
+                          </Field>
+                        </Col>
+                        <Col xs={24} md={12}>
+                          <Checkbox checked={Boolean(provider.wildcard)} onChange={(event) => updateProvider(index, { wildcard: event.target.checked })} disabled={config.enabled}>
+                            Wildcard
+                          </Checkbox>
+                        </Col>
+                      </>
+                    ) : null}
+                    {type === "cloudmail_gen" || type === "tempmail_lol" || type === "cloudflare_temp_email" || type === "moemail" || type === "inbucket" || type === "yyds_mail" || type === "ddg_mail" ? (
+                      <Col xs={24}>
+                        <Field label={type === "cloudmail_gen" ? "邮箱域名" : type === "inbucket" ? "基础域名列表" : "Domain"}>
+                          <Input.TextArea
+                            value={domains}
+                            onChange={(event) => updateProvider(index, { domain: splitList(event.target.value) })}
+                            placeholder={type === "cloudmail_gen" ? "每行一个域名，留空则使用服务默认域名" : type === "inbucket" ? "每行一个基础域名，系统会自动生成随机子域名" : "每行一个域名，留空则使用服务默认域名"}
+                            autoSize={{ minRows: 3, maxRows: 8 }}
+                            disabled={config.enabled}
+                          />
+                        </Field>
+                      </Col>
+                    ) : null}
+                    {type === "cloudmail_gen" ? (
+                      <Col xs={24}>
+                        <Field label="子域名（支持多个）">
+                          <Input.TextArea
+                            value={subdomains}
+                            onChange={(event) => updateProvider(index, { subdomain: splitList(event.target.value) })}
+                            placeholder="每行一个子域名前缀，留空则直接使用主域名"
+                            autoSize={{ minRows: 3, maxRows: 8 }}
+                            disabled={config.enabled}
+                          />
+                        </Field>
+                      </Col>
+                    ) : null}
+                  </Row>
+                </Card>
+              );
+            })}
+          </div>
+        </Card>
+      </Col>
+
+      <Col xs={24} xl={9}>
+        <Card
+          title="运行结果"
+          extra={<Tag color={config.enabled ? "success" : "default"}>{config.enabled ? "运行中" : "已停止"}</Tag>}
+        >
+          <Typography.Text type="secondary">SSE 实时推送当前状态。</Typography.Text>
+          <Alert className="mt-4" type="warning" showIcon title="启动之前注意先保存配置。" />
+          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {[
+              ["成功 / 成功率", `${stats.success} / ${stats.success_rate || 0}%`],
+              ["失败", stats.fail],
+              ["完成", stats.done],
+              ["运行 / 线程", `${stats.running} / ${stats.threads}`],
+              ["运行时间", `${stats.elapsed_seconds || 0}s`],
+              ["平均注册单个", `${stats.avg_seconds || 0}s`],
+              ["当前额度", stats.current_quota || 0],
+              ["正常账号", stats.current_available || 0],
+            ].map(([label, value]) => (
+              <div key={label} className="min-w-0 rounded-lg border border-slate-100 bg-slate-50/70 px-3 py-2">
+                <div className="truncate text-xs text-slate-500">{label}</div>
+                <div className="mt-1 text-sm font-semibold leading-none text-slate-900">{value}</div>
+              </div>
+            ))}
           </div>
 
-      </section>
+          <Space className="mt-5 w-full" wrap>
+            <Button type="primary" icon={isSaving ? <LoaderCircle className="size-4 animate-spin" /> : config.enabled ? <Square className="size-4" /> : <Play className="size-4" />} onClick={() => void toggle()} disabled={isSaving}>
+              {config.enabled ? "停止" : "启动"}
+            </Button>
+            <Button icon={<RotateCcw className="size-4" />} onClick={() => void reset()} disabled={isSaving || config.enabled}>重置</Button>
+            <Button icon={<Save className="size-4" />} onClick={() => void save()} disabled={isSaving || config.enabled}>保存</Button>
+          </Space>
 
-      <section className="flex min-h-0 flex-col p-4">
-        <div className="space-y-3">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h2 className="text-lg font-semibold tracking-tight">运行结果</h2>
-                <p className="mt-1 text-sm text-stone-500">SSE 实时推送当前状态。</p>
-              </div>
-              <Badge variant={config.enabled ? "success" : "secondary"} className="rounded-md">
-                {config.enabled ? "运行中" : "已停止"}
-              </Badge>
+          <Divider className="!my-6" />
+
+          <div className="mb-3 flex items-center justify-between">
+            <div>
+              <Typography.Title level={5} className="!mb-0">实时日志</Typography.Title>
+              <Typography.Text type="warning" className="text-xs">遇到 HTTP 400 等错误，通常是邮箱滥用被封，需要更换新的域名邮箱。</Typography.Text>
             </div>
-            <div className="grid grid-cols-4 gap-2">
-              {[
-                ["成功 / 成功率", `${stats.success} / ${stats.success_rate || 0}%`],
-                ["失败", stats.fail],
-                ["完成", stats.done],
-                ["运行 / 线程", `${stats.running} / ${stats.threads}`],
-                ["运行时间", `${stats.elapsed_seconds || 0}s`],
-                ["平均注册单个", `${stats.avg_seconds || 0}s`],
-                ["当前额度", stats.current_quota || 0],
-                ["正常账号", stats.current_available || 0],
-              ].map(([label, value]) => (
-                <div key={label} className="border border-stone-200 bg-white/70 px-3 py-2">
-                  <div className="text-xs text-stone-400">{label}</div>
-                  <div className="mt-1 text-base font-semibold text-stone-800">{value}</div>
+            <Tag>{logs.length}</Tag>
+          </div>
+          <div className="h-[360px] overflow-y-auto rounded-lg border border-slate-200 bg-slate-950 p-3 font-mono text-xs leading-6 text-slate-100">
+            {logs.length === 0 ? (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<span className="text-slate-400">暂无日志</span>} />
+            ) : (
+              logs.slice().reverse().map((item, index) => (
+                <div key={`${item.time}-${index}`} className={item.level === "red" ? "text-rose-300" : item.level === "green" ? "text-emerald-300" : item.level === "yellow" ? "text-amber-300" : "text-slate-200"}>
+                  <span className="text-slate-500">{new Date(item.time).toLocaleTimeString()}</span>
+                  <span className="pl-2">{item.text}</span>
                 </div>
-              ))}
-            </div>
-            <div className="grid grid-cols-3 gap-2">
-              <Button className="h-10 rounded-xl bg-stone-950 px-3 text-white hover:bg-stone-800" onClick={() => void toggle()} disabled={isSaving}>
-                {isSaving ? <LoaderCircle className="size-4 animate-spin" /> : config.enabled ? <Square className="size-4" /> : <Play className="size-4" />}
-                {config.enabled ? "停止" : "启动"}
-              </Button>
-              <Button variant="outline" className="h-10 rounded-xl border-stone-200 bg-white px-3 text-stone-700" onClick={() => void reset()} disabled={isSaving || config.enabled}>
-                <RotateCcw className="size-4" />
-                重置
-              </Button>
-              <Button variant="outline" className="h-10 rounded-xl border-stone-200 bg-white px-3 text-stone-700" onClick={() => void save()} disabled={isSaving || config.enabled}>
-                <Save className="size-4" />
-                保存
-              </Button>
-            </div>
-            <div className="flex items-center gap-2 border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-              <AlertTriangle className="size-4 shrink-0" />
-              启动之前注意先保存配置。
-            </div>
-        </div>
-
-        <div className="mt-4 flex min-h-0 flex-1 flex-col space-y-3 overflow-hidden border-t border-stone-200 pt-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-sm font-semibold text-stone-900">实时日志</h3>
-                <p className="mt-1 text-xs text-amber-700">遇到 HTTP 状态码 400 等错误，基本是邮箱滥用被封，需要更换新的域名邮箱。</p>
-              </div>
-              <Badge variant="secondary" className="rounded-md">
-                {logs.length}
-              </Badge>
-            </div>
-            <div className="min-h-0 flex-1 overflow-y-auto border border-stone-200 bg-white/70 p-3 font-mono text-xs leading-6">
-              {logs.length === 0 ? (
-                <div className="text-stone-500">暂无日志</div>
-              ) : (
-                logs.slice().reverse().map((item, index) => (
-                  <div key={`${item.time}-${index}`} className={item.level === "red" ? "text-rose-600" : item.level === "green" ? "text-emerald-700" : item.level === "yellow" ? "text-amber-700" : "text-stone-700"}>
-                    <span className="text-stone-400">{new Date(item.time).toLocaleTimeString()}</span>
-                    <span className="pl-2">{item.text}</span>
-                  </div>
-                ))
-              )}
-            </div>
-        </div>
-      </section>
-    </div>
+              ))
+            )}
+          </div>
+        </Card>
+      </Col>
+    </Row>
   );
 }

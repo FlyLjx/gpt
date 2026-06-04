@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
 from typing import Any
 from uuid import uuid4
 
@@ -27,6 +28,7 @@ class LogService:
     def __init__(self, path: Path):
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = Lock()
 
     @staticmethod
     def _legacy_id(raw_line: str, line_number: int) -> str:
@@ -60,22 +62,55 @@ class LogService:
             return False
         return True
 
-    def add(self, type: str, summary: str = "", detail: dict[str, Any] | None = None, **data: Any) -> None:
+    def add(self, type: str, summary: str = "", detail: dict[str, Any] | None = None, **data: Any) -> str:
+        item_id = uuid4().hex
         item = {
-            "id": uuid4().hex,
+            "id": item_id,
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "type": type,
             "summary": summary,
             "detail": detail or data,
         }
-        with self.path.open("a", encoding="utf-8") as file:
-            file.write(self._serialize_item(item) + "\n")
+        with self._lock:
+            with self.path.open("a", encoding="utf-8") as file:
+                file.write(self._serialize_item(item) + "\n")
+        return item_id
+
+    def update(self, item_id: str, summary: str = "", detail: dict[str, Any] | None = None, **data: Any) -> bool:
+        target_id = str(item_id or "").strip()
+        if not target_id or not self.path.exists():
+            return False
+        with self._lock:
+            lines = self.path.read_text(encoding="utf-8").splitlines()
+            changed = False
+            next_lines: list[str] = []
+            for line_number, raw_line in enumerate(lines):
+                item = self._parse_line(raw_line, line_number)
+                if item is None or str(item.get("id") or "") != target_id:
+                    next_lines.append(raw_line)
+                    continue
+                updated = {
+                    **item,
+                    "id": target_id,
+                    "summary": summary or str(item.get("summary") or ""),
+                    "detail": detail or data,
+                }
+                next_lines.append(self._serialize_item(updated))
+                changed = True
+            if not changed:
+                return False
+            content = "\n".join(next_lines)
+            if content:
+                content += "\n"
+            self.path.write_text(content, encoding="utf-8")
+            return True
 
     def list(self, type: str = "", start_date: str = "", end_date: str = "", limit: int = 200) -> list[dict[str, Any]]:
         if not self.path.exists():
             return []
         items: list[dict[str, Any]] = []
-        lines = self.path.read_text(encoding="utf-8").splitlines()
+        with self._lock:
+            lines = self.path.read_text(encoding="utf-8").splitlines()
         for line_number in range(len(lines) - 1, -1, -1):
             item = self._parse_line(lines[line_number], line_number)
             if item is None:
@@ -91,22 +126,23 @@ class LogService:
         target_ids = {str(item or "").strip() for item in ids if str(item or "").strip()}
         if not self.path.exists() or not target_ids:
             return {"removed": 0}
-        lines = self.path.read_text(encoding="utf-8").splitlines()
-        kept_lines: list[str] = []
-        removed = 0
-        for line_number, raw_line in enumerate(lines):
-            item = self._parse_line(raw_line, line_number)
-            if item is None:
-                kept_lines.append(raw_line)
-                continue
-            if str(item.get("id") or "") in target_ids:
-                removed += 1
-                continue
-            kept_lines.append(self._serialize_item(item))
-        content = "\n".join(kept_lines)
-        if content:
-            content += "\n"
-        self.path.write_text(content, encoding="utf-8")
+        with self._lock:
+            lines = self.path.read_text(encoding="utf-8").splitlines()
+            kept_lines: list[str] = []
+            removed = 0
+            for line_number, raw_line in enumerate(lines):
+                item = self._parse_line(raw_line, line_number)
+                if item is None:
+                    kept_lines.append(raw_line)
+                    continue
+                if str(item.get("id") or "") in target_ids:
+                    removed += 1
+                    continue
+                kept_lines.append(self._serialize_item(item))
+            content = "\n".join(kept_lines)
+            if content:
+                content += "\n"
+            self.path.write_text(content, encoding="utf-8")
         return {"removed": removed}
 
 
@@ -223,10 +259,12 @@ class LoggedCall:
     started: float = field(default_factory=time.time)
     request_text: str = ""
     request_shape: dict[str, int] | None = None
+    log_id: str = ""
 
     async def run(self, handler, *args, sse: str = "openai"):
         from services.protocol.conversation import ImageGenerationError
 
+        self.begin()
         try:
             result = await run_in_threadpool(handler, *args)
         except ImageGenerationError as exc:
@@ -300,7 +338,8 @@ class LoggedCall:
                          conversation_id=conversation_ids[0] if conversation_ids else "")
 
     def log(self, suffix: str, result: object = None, status: str = "success", error: str = "",
-            urls: list[str] | None = None, account_email: str = "", conversation_id: str = "") -> None:
+            urls: list[str] | None = None, account_email: str = "", conversation_id: str = "",
+            finished: bool = True) -> None:
         detail = {
             "key_id": self.identity.get("id"),
             "key_name": self.identity.get("name"),
@@ -308,10 +347,14 @@ class LoggedCall:
             "endpoint": self.endpoint,
             "model": self.model,
             "started_at": datetime.fromtimestamp(self.started).strftime("%Y-%m-%d %H:%M:%S"),
-            "ended_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "duration_ms": int((time.time() - self.started) * 1000),
             "status": status,
         }
+        if finished:
+            detail["ended_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            detail["duration_ms"] = int((time.time() - self.started) * 1000)
+        else:
+            detail["submitted_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            detail["duration_ms"] = 0
         request_excerpt = _request_excerpt(self.request_text)
         if request_excerpt:
             detail["request_text"] = request_excerpt
@@ -334,4 +377,13 @@ class LoggedCall:
         collected_urls = [*(urls or []), *_collect_urls(result)]
         if collected_urls and not self.endpoint.startswith("/v1/search"):
             detail["urls"] = list(dict.fromkeys(collected_urls))
-        log_service.add(LOG_TYPE_CALL, f"{self.summary}{suffix}", detail)
+        summary = f"{self.summary}{suffix}"
+        if self.log_id:
+            if log_service.update(self.log_id, summary, detail):
+                return
+        self.log_id = log_service.add(LOG_TYPE_CALL, summary, detail)
+
+    def begin(self) -> None:
+        if self.log_id:
+            return
+        self.log("已提交", status="running", finished=False)

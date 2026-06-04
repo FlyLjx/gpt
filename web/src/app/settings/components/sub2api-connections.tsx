@@ -1,45 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  Eye,
-  EyeOff,
-  Import,
-  Layers,
-  Link2,
-  LoaderCircle,
-  Mail,
-  Pencil,
-  Plus,
-  RefreshCcw,
-  Save,
-  Search,
-  ServerCog,
-  Trash2,
-  Unplug,
-} from "lucide-react";
+import { Alert, Button, Card, Empty, Form, Input, List, Modal, Progress, Select, Space, Spin, Table, Tag, Typography } from "antd";
+import type { ColumnsType } from "antd/es/table";
+import { Import, Layers, Pencil, Plus, RefreshCcw, ServerCog, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import {
   createSub2APIServer,
   deleteSub2APIServer,
@@ -79,13 +45,22 @@ function normalizeAccounts(items: Sub2APIRemoteAccount[]) {
   return accounts;
 }
 
+function getJobColor(status: string) {
+  if (status === "completed") {
+    return "success";
+  }
+  if (status === "failed") {
+    return "error";
+  }
+  return "processing";
+}
+
 export function Sub2APIConnections() {
   const didLoadRef = useRef(false);
   const pollTimerRef = useRef<number | null>(null);
 
   const [servers, setServers] = useState<Sub2APIServer[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingServer, setEditingServer] = useState<Sub2APIServer | null>(null);
   const [formName, setFormName] = useState("");
@@ -95,15 +70,11 @@ export function Sub2APIConnections() {
   const [formApiKey, setFormApiKey] = useState("");
   const [formGroupId, setFormGroupId] = useState("");
   const [authMode, setAuthMode] = useState<AuthMode>("password");
-  const [showSecret, setShowSecret] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-
   const [remoteGroups, setRemoteGroups] = useState<Sub2APIRemoteGroup[] | null>(null);
   const [isLoadingGroups, setIsLoadingGroups] = useState(false);
-
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [loadingAccountsId, setLoadingAccountsId] = useState<string | null>(null);
-
   const [browserOpen, setBrowserOpen] = useState(false);
   const [browserServer, setBrowserServer] = useState<Sub2APIServer | null>(null);
   const [remoteAccounts, setRemoteAccounts] = useState<Sub2APIRemoteAccount[]>([]);
@@ -134,9 +105,7 @@ export function Sub2APIConnections() {
   }, []);
 
   useEffect(() => {
-    const hasRunningJobs = servers.some(
-      (server) => server.import_job?.status === "pending" || server.import_job?.status === "running",
-    );
+    const hasRunningJobs = servers.some((server) => server.import_job?.status === "pending" || server.import_job?.status === "running");
     if (!hasRunningJobs) {
       if (pollTimerRef.current !== null) {
         window.clearInterval(pollTimerRef.current);
@@ -147,9 +116,7 @@ export function Sub2APIConnections() {
 
     pollTimerRef.current = window.setInterval(() => {
       void fetchSub2APIServers()
-        .then((data) => {
-          setServers(data.servers);
-        })
+        .then((data) => setServers(data.servers))
         .catch((error) => {
           if (pollTimerRef.current !== null) {
             window.clearInterval(pollTimerRef.current);
@@ -176,7 +143,6 @@ export function Sub2APIConnections() {
     setFormApiKey("");
     setFormGroupId("");
     setAuthMode("password");
-    setShowSecret(false);
     setRemoteGroups(null);
     setDialogOpen(true);
   };
@@ -190,7 +156,6 @@ export function Sub2APIConnections() {
     setFormApiKey("");
     setFormGroupId(server.group_id || "");
     setAuthMode(server.has_api_key ? "api_key" : "password");
-    setShowSecret(false);
     setRemoteGroups(null);
     setDialogOpen(true);
   };
@@ -292,6 +257,17 @@ export function Sub2APIConnections() {
     }
   };
 
+  const confirmDelete = (server: Sub2APIServer) => {
+    Modal.confirm({
+      title: "删除 Sub2API 连接",
+      content: `确认删除「${server.name || server.base_url}」吗？`,
+      okText: "删除",
+      cancelText: "取消",
+      okButtonProps: { danger: true },
+      onOk: () => handleDelete(server),
+    });
+  };
+
   const handleBrowseAccounts = async (server: Sub2APIServer) => {
     setLoadingAccountsId(server.id);
     try {
@@ -329,30 +305,6 @@ export function Sub2APIConnections() {
   const currentPageSize = Number(pageSize);
   const accountPageCount = Math.max(1, Math.ceil(filteredAccounts.length / currentPageSize));
   const safeAccountPage = Math.min(accountPage, accountPageCount);
-  const pagedAccounts = filteredAccounts.slice(
-    (safeAccountPage - 1) * currentPageSize,
-    safeAccountPage * currentPageSize,
-  );
-  const allFilteredSelected =
-    filteredAccounts.length > 0 && filteredAccounts.every((item) => selectedIds.includes(item.id));
-
-  const toggleAccount = (id: string, checked: boolean) => {
-    setSelectedIds((prev) => {
-      if (checked) {
-        return Array.from(new Set([...prev, id]));
-      }
-      return prev.filter((item) => item !== id);
-    });
-  };
-
-  const handleToggleSelectAllFiltered = (checked: boolean) => {
-    if (checked) {
-      setSelectedIds(Array.from(new Set([...selectedIds, ...filteredAccounts.map((item) => item.id)])));
-      return;
-    }
-    const filteredSet = new Set(filteredAccounts.map((item) => item.id));
-    setSelectedIds((prev) => prev.filter((id) => !filteredSet.has(id)));
-  };
 
   const handleStartImport = async () => {
     if (!browserServer) {
@@ -366,11 +318,7 @@ export function Sub2APIConnections() {
     setIsStartingImport(true);
     try {
       const result = await startSub2APIImport(browserServer.id, selectedIds);
-      setServers((prev) =>
-        prev.map((server) =>
-          server.id === browserServer.id ? { ...server, import_job: result.import_job } : server,
-        ),
-      );
+      setServers((prev) => prev.map((server) => (server.id === browserServer.id ? { ...server, import_job: result.import_job } : server)));
       setBrowserOpen(false);
       toast.success("导入任务已启动");
     } catch (error) {
@@ -380,507 +328,254 @@ export function Sub2APIConnections() {
     }
   };
 
+  const accountColumns: ColumnsType<Sub2APIRemoteAccount> = [
+    {
+      title: "账号",
+      dataIndex: "email",
+      render: (_, item) => (
+        <Space direction="vertical" size={2}>
+          <Space wrap>
+            <Typography.Text strong>{item.email || item.name || item.id}</Typography.Text>
+            {item.plan_type ? <Tag>{item.plan_type}</Tag> : null}
+            {item.status ? <Tag color={item.status === "active" ? "green" : "blue"}>{item.status}</Tag> : null}
+          </Space>
+          <Typography.Text type="secondary" className="break-all">
+            id {item.id}
+            {item.expires_at ? ` · 过期 ${item.expires_at}` : ""}
+          </Typography.Text>
+        </Space>
+      ),
+    },
+  ];
+
   return (
     <>
-      <Card className="rounded-2xl border-white/80 bg-white/90 shadow-sm">
-        <CardContent className="space-y-6 p-6">
-          <div className="flex items-start justify-between">
-            <div className="flex items-center gap-3">
-              <div className="flex size-10 items-center justify-center rounded-xl bg-stone-100">
-                <ServerCog className="size-5 text-stone-600" />
-              </div>
-              <div>
-                <h2 className="text-lg font-semibold tracking-tight">Sub2API 连接管理</h2>
-                <p className="text-sm text-stone-500">
-                  配置 Sub2API 服务器后，可查询其中的 OpenAI OAuth 账号并批量导入本地号池。
-                </p>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              {servers.length > 0 ? <Badge className="rounded-md px-2.5 py-1">{servers.length} 个连接</Badge> : null}
-              <Button
-                className="h-9 rounded-xl bg-stone-950 px-4 text-white hover:bg-stone-800"
-                onClick={openAddDialog}
-              >
-                <Plus className="size-4" />
-                添加连接
-              </Button>
-            </div>
-          </div>
+      <Card
+        title={
+          <Space>
+            <ServerCog className="size-4 text-blue-500" />
+            <span>Sub2API 连接</span>
+            {servers.length > 0 ? <Tag>{servers.length} 个</Tag> : null}
+          </Space>
+        }
+        extra={
+          <Button type="primary" icon={<Plus className="size-4" />} onClick={openAddDialog}>
+            添加
+          </Button>
+        }
+      >
+        <Space direction="vertical" size={16} className="w-full">
+          <Typography.Text type="secondary">
+            配置 Sub2API 服务器后，可查询其中的 OpenAI OAuth 账号并批量导入本地号池。
+          </Typography.Text>
 
-          {isLoading ? (
-            <div className="flex items-center justify-center py-10">
-              <LoaderCircle className="size-5 animate-spin text-stone-400" />
-            </div>
-          ) : servers.length === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-3 rounded-xl bg-stone-50 px-6 py-10 text-center">
-              <ServerCog className="size-8 text-stone-300" />
-              <div className="space-y-1">
-                <p className="text-sm font-medium text-stone-600">暂无 Sub2API 连接</p>
-                <p className="text-sm text-stone-400">点击「添加连接」保存你的 Sub2API 信息。</p>
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {servers.map((server) => {
-                const isBusy = deletingId === server.id || loadingAccountsId === server.id;
-                const importJob = server.import_job ?? null;
-                return (
-                  <div
-                    key={server.id}
-                    className="flex flex-col gap-3 rounded-xl border border-stone-200 bg-white px-4 py-3"
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="text-sm font-medium text-stone-800">{server.name || server.base_url}</div>
-                        <div className="truncate text-xs text-stone-400">
-                          {server.base_url}
-                          {server.email ? ` · ${server.email}` : server.has_api_key ? " · API Key" : ""}
-                          {server.group_id ? ` · 分组 ${server.group_id}` : " · 全部分组"}
+          <Spin spinning={isLoading}>
+            {servers.length === 0 && !isLoading ? (
+              <Empty description="暂无 Sub2API 连接" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+            ) : (
+              <List
+                itemLayout="vertical"
+                dataSource={servers}
+                split
+                renderItem={(server) => {
+                  const isBusy = deletingId === server.id || loadingAccountsId === server.id;
+                  const importJob = server.import_job ?? null;
+                  const progress = importJob?.total ? Math.round((importJob.completed / importJob.total) * 100) : 0;
+
+                  return (
+                    <List.Item
+                      actions={[
+                        <Button key="sync" size="small" icon={<Import className="size-3.5" />} loading={loadingAccountsId === server.id} disabled={isBusy} onClick={() => void handleBrowseAccounts(server)}>
+                          同步
+                        </Button>,
+                        <Button key="edit" size="small" icon={<Pencil className="size-3.5" />} disabled={isBusy} onClick={() => openEditDialog(server)}>
+                          编辑
+                        </Button>,
+                        <Button key="delete" size="small" danger icon={<Trash2 className="size-3.5" />} loading={deletingId === server.id} disabled={isBusy} onClick={() => confirmDelete(server)}>
+                          删除
+                        </Button>,
+                      ]}
+                    >
+                      <List.Item.Meta
+                        title={<Typography.Text strong>{server.name || server.base_url}</Typography.Text>}
+                        description={
+                          <Typography.Text type="secondary" className="break-all">
+                            {server.base_url}
+                            {server.email ? ` · ${server.email}` : server.has_api_key ? " · API Key" : ""}
+                            {server.group_id ? ` · 分组 ${server.group_id}` : " · 全部分组"}
+                          </Typography.Text>
+                        }
+                      />
+
+                      {importJob ? (
+                        <div className="mt-3 rounded-lg border border-slate-100 bg-slate-50 p-3">
+                          <Space direction="vertical" size={8} className="w-full">
+                            <Space wrap>
+                              <Tag color={getJobColor(importJob.status)}>导入 {importJob.status}</Tag>
+                              <Typography.Text type="secondary">
+                                已处理 {importJob.completed}/{importJob.total}
+                              </Typography.Text>
+                            </Space>
+                            <Progress percent={progress} size="small" status={importJob.status === "failed" ? "exception" : undefined} />
+                            <Typography.Text type="secondary" className="text-xs">
+                              新增 {importJob.added}，跳过 {importJob.skipped}，刷新 {importJob.refreshed}，失败 {importJob.failed}
+                            </Typography.Text>
+                          </Space>
                         </div>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          className="rounded-lg p-2 text-stone-400 transition hover:bg-stone-100 hover:text-stone-700"
-                          onClick={() => openEditDialog(server)}
-                          disabled={isBusy}
-                          title="编辑"
-                        >
-                          <Pencil className="size-4" />
-                        </button>
-                        <button
-                          type="button"
-                          className="rounded-lg p-2 text-stone-400 transition hover:bg-rose-50 hover:text-rose-500"
-                          onClick={() => void handleDelete(server)}
-                          disabled={isBusy}
-                          title="删除"
-                        >
-                          {deletingId === server.id ? (
-                            <LoaderCircle className="size-4 animate-spin" />
-                          ) : (
-                            <Trash2 className="size-4" />
-                          )}
-                        </button>
-                      </div>
-                    </div>
+                      ) : null}
+                    </List.Item>
+                  );
+                }}
+              />
+            )}
+          </Spin>
 
-                    <div className="flex items-center gap-2">
-                      <Button
-                        variant="outline"
-                        className="h-8 rounded-lg border-stone-200 bg-white px-3 text-xs text-stone-600"
-                        onClick={() => void handleBrowseAccounts(server)}
-                        disabled={isBusy}
-                      >
-                        {loadingAccountsId === server.id ? (
-                          <LoaderCircle className="size-3.5 animate-spin" />
-                        ) : (
-                          <Import className="size-3.5" />
-                        )}
-                        同步
-                      </Button>
-                    </div>
-
-                    {importJob ? (
-                      <div className="space-y-2 rounded-xl bg-stone-50 px-3 py-3">
-                        <div className="text-xs font-medium tracking-[0.16em] text-stone-400 uppercase">导入任务</div>
-                        {(() => {
-                          const progress =
-                            importJob.total > 0
-                              ? Math.round((importJob.completed / importJob.total) * 100)
-                              : 0;
-                          return (
-                            <div className="rounded-lg border border-stone-200 bg-white px-3 py-3">
-                              <div className="flex items-center justify-between gap-3">
-                                <div className="min-w-0">
-                                  <div className="text-sm font-medium text-stone-700">
-                                    状态 {importJob.status}，已处理 {importJob.completed}/{importJob.total}
-                                  </div>
-                                  <div className="truncate text-xs text-stone-400">
-                                    任务 {importJob.job_id.slice(0, 8)} · {importJob.created_at}
-                                  </div>
-                                </div>
-                                <Badge
-                                  variant={
-                                    importJob.status === "completed"
-                                      ? "success"
-                                      : importJob.status === "failed"
-                                        ? "danger"
-                                        : "info"
-                                  }
-                                  className="rounded-md"
-                                >
-                                  {progress}%
-                                </Badge>
-                              </div>
-                              <div className="mt-3 h-2 overflow-hidden rounded-full bg-stone-200">
-                                <div
-                                  className="h-full rounded-full bg-stone-900 transition-all"
-                                  style={{ width: `${progress}%` }}
-                                />
-                              </div>
-                              <div className="mt-2 flex flex-wrap gap-2 text-xs text-stone-500">
-                                <span>新增 {importJob.added}</span>
-                                <span>跳过 {importJob.skipped}</span>
-                                <span>刷新 {importJob.refreshed}</span>
-                                <span>失败 {importJob.failed}</span>
-                              </div>
-                            </div>
-                          );
-                        })()}
-                      </div>
-                    ) : null}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          <div className="rounded-xl bg-stone-50 px-4 py-3 text-sm leading-6 text-stone-500">
-            <p className="font-medium text-stone-600">使用说明</p>
-            <ul className="mt-1 list-inside list-disc space-y-0.5">
-              <li>输入 Sub2API 地址和管理员账户（或 Admin API Key），保存为一个连接。</li>
-              <li>点击某个连接的「同步」会拉取其中 platform=openai 且 type=oauth 的账号列表。</li>
-              <li>勾选需要的账号后后端会并发拉取 access_token，自动导入本地号池并刷新状态。</li>
-              <li>仅会读取 sub2api 凭据中的 access_token；refresh_token 等字段不会写入本地。</li>
-            </ul>
-          </div>
-        </CardContent>
+          <Alert
+            type="info"
+            showIcon
+            title="使用说明"
+            description="点击「同步」会拉取 platform=openai 且 type=oauth 的账号列表；勾选后端会并发拉取 access_token 并导入本地号池。"
+          />
+        </Space>
       </Card>
 
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent showCloseButton={false} className="rounded-2xl p-6">
-          <DialogHeader className="gap-2">
-            <DialogTitle>{editingServer ? "编辑连接" : "添加连接"}</DialogTitle>
-            <DialogDescription className="text-sm leading-6">
-              {editingServer ? "修改 Sub2API 连接信息" : "添加一个新的 Sub2API 连接"}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-stone-700">名称（可选）</label>
-              <Input
-                value={formName}
-                onChange={(event) => setFormName(event.target.value)}
-                placeholder="例如：自建 sub2api"
-                className="h-11 rounded-xl border-stone-200 bg-white"
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="flex items-center gap-1.5 text-sm font-medium text-stone-700">
-                <Link2 className="size-3.5" />
-                Sub2API 地址
-              </label>
-              <Input
-                value={formBaseUrl}
-                onChange={(event) => setFormBaseUrl(event.target.value)}
-                placeholder="http://your-sub2api-host:8080"
-                className="h-11 rounded-xl border-stone-200 bg-white"
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-stone-700">认证方式</label>
-              <Select value={authMode} onValueChange={(value) => setAuthMode(value as AuthMode)}>
-                <SelectTrigger className="h-11 rounded-xl border-stone-200 bg-white">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="password">管理员邮箱 + 密码</SelectItem>
-                  <SelectItem value="api_key">Admin API Key</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            {authMode === "password" ? (
-              <>
-                <div className="space-y-2">
-                  <label className="flex items-center gap-1.5 text-sm font-medium text-stone-700">
-                    <Mail className="size-3.5" />
-                    管理员邮箱
-                  </label>
-                  <Input
-                    value={formEmail}
-                    onChange={(event) => setFormEmail(event.target.value)}
-                    placeholder="admin@example.com"
-                    className="h-11 rounded-xl border-stone-200 bg-white"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="flex items-center gap-1.5 text-sm font-medium text-stone-700">
-                    <Unplug className="size-3.5" />
-                    管理员密码
-                  </label>
-                  <div className="relative">
-                    <Input
-                      type={showSecret ? "text" : "password"}
-                      value={formPassword}
-                      onChange={(event) => setFormPassword(event.target.value)}
-                      placeholder={editingServer ? "留空则不修改密码" : "管理员密码"}
-                      className="h-11 rounded-xl border-stone-200 bg-white pr-10"
-                    />
-                    <button
-                      type="button"
-                      className="absolute top-1/2 right-3 -translate-y-1/2 text-stone-400 transition hover:text-stone-600"
-                      onClick={() => setShowSecret((prev) => !prev)}
-                    >
-                      {showSecret ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-                    </button>
-                  </div>
-                </div>
-              </>
-            ) : (
-              <div className="space-y-2">
-                <label className="flex items-center gap-1.5 text-sm font-medium text-stone-700">
-                  <Unplug className="size-3.5" />
-                  Admin API Key
-                </label>
-                <div className="relative">
-                  <Input
-                    type={showSecret ? "text" : "password"}
-                    value={formApiKey}
-                    onChange={(event) => setFormApiKey(event.target.value)}
-                    placeholder={editingServer ? "留空则不修改密钥" : "Sub2API Admin API Key"}
-                    className="h-11 rounded-xl border-stone-200 bg-white pr-10"
-                  />
-                  <button
-                    type="button"
-                    className="absolute top-1/2 right-3 -translate-y-1/2 text-stone-400 transition hover:text-stone-600"
-                    onClick={() => setShowSecret((prev) => !prev)}
-                  >
-                    {showSecret ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-                  </button>
-                </div>
-              </div>
-            )}
-            <div className="space-y-2">
-              <label className="flex items-center gap-1.5 text-sm font-medium text-stone-700">
+      <Modal
+        title={editingServer ? "编辑 Sub2API 连接" : "添加 Sub2API 连接"}
+        open={dialogOpen}
+        onCancel={() => setDialogOpen(false)}
+        onOk={() => void handleSave()}
+        okText={editingServer ? "保存修改" : "添加"}
+        cancelText="取消"
+        confirmLoading={isSaving}
+      >
+        <Form layout="vertical" className="mt-4">
+          <Form.Item label="名称（可选）">
+            <Input value={formName} onChange={(event) => setFormName(event.target.value)} placeholder="例如：自建 sub2api" />
+          </Form.Item>
+          <Form.Item label="Sub2API 地址" required>
+            <Input value={formBaseUrl} onChange={(event) => setFormBaseUrl(event.target.value)} placeholder="http://your-sub2api-host:8080" />
+          </Form.Item>
+          <Form.Item label="认证方式">
+            <Select
+              value={authMode}
+              onChange={(value) => setAuthMode(value as AuthMode)}
+              options={[
+                { value: "password", label: "管理员邮箱 + 密码" },
+                { value: "api_key", label: "Admin API Key" },
+              ]}
+            />
+          </Form.Item>
+          {authMode === "password" ? (
+            <>
+              <Form.Item label="管理员邮箱" required>
+                <Input value={formEmail} onChange={(event) => setFormEmail(event.target.value)} placeholder="admin@example.com" />
+              </Form.Item>
+              <Form.Item label="管理员密码" required={!editingServer} extra={editingServer ? "留空则不修改密码。" : undefined}>
+                <Input.Password value={formPassword} onChange={(event) => setFormPassword(event.target.value)} placeholder={editingServer ? "留空则不修改密码" : "管理员密码"} />
+              </Form.Item>
+            </>
+          ) : (
+            <Form.Item label="Admin API Key" required={!editingServer} extra={editingServer ? "留空则不修改密钥。" : undefined}>
+              <Input.Password value={formApiKey} onChange={(event) => setFormApiKey(event.target.value)} placeholder={editingServer ? "留空则不修改密钥" : "Sub2API Admin API Key"} />
+            </Form.Item>
+          )}
+          <Form.Item
+            label={
+              <Space size={6}>
                 <Layers className="size-3.5" />
-                分组（可选）
-              </label>
+                <span>分组（可选）</span>
+              </Space>
+            }
+            extra={editingServer ? "同步时会用分组 ID 过滤，留空 = 同步所有 OpenAI OAuth 账号。" : "添加完连接后可在编辑对话框里拉取分组。"}
+          >
+            <Space.Compact className="w-full">
               {remoteGroups && remoteGroups.length > 0 ? (
-                <Select value={formGroupId || "__all__"} onValueChange={(value) => setFormGroupId(value === "__all__" ? "" : value)}>
-                  <SelectTrigger className="h-11 rounded-xl border-stone-200 bg-white">
-                    <SelectValue placeholder="选择分组" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__all__">全部分组（不限制）</SelectItem>
-                    <SelectItem value="ungrouped">未分组</SelectItem>
-                    {remoteGroups.map((group) => (
-                      <SelectItem key={group.id} value={group.id}>
-                        {group.name || `Group ${group.id}`}
-                        {group.platform ? `（${group.platform}）` : ""}
-                        {group.account_count
-                          ? ` · ${group.active_account_count}/${group.account_count}`
-                          : ""}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              ) : (
-                <Input
-                  value={formGroupId}
-                  onChange={(event) => setFormGroupId(event.target.value)}
-                  placeholder="留空则同步所有分组；或填写分组 ID / ungrouped"
-                  className="h-11 rounded-xl border-stone-200 bg-white"
+                <Select
+                  value={formGroupId || "__all__"}
+                  onChange={(value) => setFormGroupId(value === "__all__" ? "" : value)}
+                  options={[
+                    { value: "__all__", label: "全部分组（不限制）" },
+                    { value: "ungrouped", label: "未分组" },
+                    ...remoteGroups.map((group) => ({
+                      value: group.id,
+                      label: `${group.name || `Group ${group.id}`}${group.platform ? `（${group.platform}）` : ""}${group.account_count ? ` · ${group.active_account_count}/${group.account_count}` : ""}`,
+                    })),
+                  ]}
+                  className="w-full"
                 />
+              ) : (
+                <Input value={formGroupId} onChange={(event) => setFormGroupId(event.target.value)} placeholder="留空则同步所有分组；或填写分组 ID / ungrouped" />
               )}
               {editingServer ? (
-                <div className="flex items-center justify-between gap-2 text-xs text-stone-500">
-                  <span>同步时会用分组 ID 过滤，留空 = 同步所有 OpenAI OAuth 账号。</span>
-                  <Button
-                    variant="outline"
-                    className="h-8 rounded-lg border-stone-200 bg-white px-2 text-xs text-stone-600"
-                    onClick={() => void handleFetchGroups()}
-                    disabled={isLoadingGroups}
-                  >
-                    {isLoadingGroups ? (
-                      <LoaderCircle className="size-3.5 animate-spin" />
-                    ) : (
-                      <RefreshCcw className="size-3.5" />
-                    )}
-                    {remoteGroups ? "重新拉取" : "拉取分组"}
-                  </Button>
-                </div>
-              ) : (
-                <div className="text-xs text-stone-500">
-                  添加完连接后可在编辑对话框里点「拉取分组」选择具体分组。
-                </div>
-              )}
-            </div>
-          </div>
-          <DialogFooter className="pt-2">
-            <Button
-              variant="secondary"
-              className="h-10 rounded-xl bg-stone-100 px-5 text-stone-700 hover:bg-stone-200"
-              onClick={() => setDialogOpen(false)}
-              disabled={isSaving}
-            >
-              取消
-            </Button>
-            <Button
-              className="h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800"
-              onClick={() => void handleSave()}
-              disabled={isSaving}
-            >
-              {isSaving ? <LoaderCircle className="size-4 animate-spin" /> : <Save className="size-4" />}
-              {editingServer ? "保存修改" : "添加"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+                <Button icon={<RefreshCcw className="size-4" />} loading={isLoadingGroups} onClick={() => void handleFetchGroups()}>
+                  {remoteGroups ? "重拉" : "拉取"}
+                </Button>
+              ) : null}
+            </Space.Compact>
+          </Form.Item>
+        </Form>
+      </Modal>
 
-      <Dialog open={browserOpen} onOpenChange={setBrowserOpen}>
-        <DialogContent showCloseButton={false} className="max-h-[90vh] max-w-5xl rounded-2xl p-6">
-          <DialogHeader className="gap-2">
-            <DialogTitle>选择要导入的账号</DialogTitle>
-            <DialogDescription className="text-sm leading-6">
-              {browserServer ? `来自 ${browserServer.name || browserServer.base_url}` : "Sub2API 上的 OpenAI OAuth 账号"}
-            </DialogDescription>
-          </DialogHeader>
-
+      <Modal
+        title="选择要导入的账号"
+        open={browserOpen}
+        onCancel={() => setBrowserOpen(false)}
+        width={920}
+        okText="导入选中账号"
+        cancelText="取消"
+        confirmLoading={isStartingImport}
+        okButtonProps={{ disabled: selectedIds.length === 0, icon: <Import className="size-4" /> }}
+        onOk={() => void handleStartImport()}
+      >
+        <Space direction="vertical" size={16} className="mt-4 w-full">
+          <Typography.Text type="secondary">
+            {browserServer ? `来自 ${browserServer.name || browserServer.base_url}` : "Sub2API 上的 OpenAI OAuth 账号"}
+          </Typography.Text>
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div className="relative min-w-[260px]">
-              <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-stone-400" />
-              <Input
-                value={accountQuery}
-                onChange={(event) => {
-                  setAccountQuery(event.target.value);
-                  setAccountPage(1);
-                }}
-                placeholder="搜索邮箱、套餐或名称"
-                className="h-10 rounded-xl border-stone-200 bg-white pl-10"
-              />
-            </div>
-            <div className="flex items-center gap-2">
+            <Input
+              value={accountQuery}
+              onChange={(event) => {
+                setAccountQuery(event.target.value);
+                setAccountPage(1);
+              }}
+              placeholder="搜索邮箱、套餐、名称或 ID"
+              className="max-w-sm"
+            />
+            <Space>
               <Select
                 value={pageSize}
-                onValueChange={(value) => {
+                onChange={(value) => {
                   setPageSize(value as (typeof PAGE_SIZE_OPTIONS)[number]);
                   setAccountPage(1);
                 }}
-              >
-                <SelectTrigger className="h-10 w-[120px] rounded-xl border-stone-200 bg-white">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {PAGE_SIZE_OPTIONS.map((item) => (
-                    <SelectItem key={item} value={item}>
-                      {item} / 页
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Button
-                variant="outline"
-                className="h-10 rounded-xl border-stone-200 bg-white px-4 text-stone-700"
-                onClick={() => handleToggleSelectAllFiltered(!allFilteredSelected)}
-              >
-                {allFilteredSelected ? "取消全选" : "全选筛选结果"}
-              </Button>
-            </div>
+                options={PAGE_SIZE_OPTIONS.map((item) => ({ value: item, label: `${item} / 页` }))}
+                className="w-32"
+              />
+              <Button onClick={() => setSelectedIds(filteredAccounts.map((item) => item.id))}>全选筛选结果</Button>
+              <Button onClick={() => setSelectedIds([])}>清空</Button>
+            </Space>
           </div>
 
-          <div className="rounded-xl border border-stone-200">
-            <div className="flex items-center justify-between border-b border-stone-100 px-4 py-3 text-sm text-stone-500">
-              <div className="flex items-center gap-3">
-                <Checkbox
-                  checked={allFilteredSelected}
-                  onCheckedChange={(checked) => handleToggleSelectAllFiltered(Boolean(checked))}
-                />
-                <span>筛选结果 {filteredAccounts.length} 个</span>
-              </div>
-              <span>已选 {selectedIds.length} 个</span>
-            </div>
-            <div className="max-h-[420px] overflow-auto">
-              {pagedAccounts.length === 0 ? (
-                <div className="flex items-center justify-center py-12 text-sm text-stone-400">没有匹配的账号</div>
-              ) : (
-                <div className="divide-y divide-stone-100">
-                  {pagedAccounts.map((item) => (
-                    <label
-                      key={item.id}
-                      className="flex cursor-pointer items-center gap-3 px-4 py-3 hover:bg-stone-50"
-                    >
-                      <Checkbox
-                        checked={selectedIds.includes(item.id)}
-                        onCheckedChange={(checked) => toggleAccount(item.id, Boolean(checked))}
-                      />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="truncate text-sm font-medium text-stone-700">
-                            {item.email || item.name || item.id}
-                          </span>
-                          {item.plan_type ? (
-                            <Badge className="rounded-md bg-stone-100 text-stone-600">{item.plan_type}</Badge>
-                          ) : null}
-                          {item.status ? (
-                            <Badge
-                              variant={item.status === "active" ? "success" : "info"}
-                              className="rounded-md"
-                            >
-                              {item.status}
-                            </Badge>
-                          ) : null}
-                        </div>
-                        <div className="truncate text-xs text-stone-400">
-                          id {item.id}
-                          {item.expires_at ? ` · 过期 ${item.expires_at}` : ""}
-                        </div>
-                      </div>
-                    </label>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between text-sm text-stone-500">
-            <span>
-              第 {filteredAccounts.length === 0 ? 0 : (safeAccountPage - 1) * currentPageSize + 1} -{" "}
-              {Math.min(safeAccountPage * currentPageSize, filteredAccounts.length)} 条，共 {filteredAccounts.length} 条
-            </span>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                className="h-9 rounded-xl border-stone-200 bg-white px-3"
-                onClick={() => setAccountPage((prev) => Math.max(1, prev - 1))}
-                disabled={safeAccountPage <= 1}
-              >
-                上一页
-              </Button>
-              <span>
-                {safeAccountPage}/{accountPageCount}
-              </span>
-              <Button
-                variant="outline"
-                className="h-9 rounded-xl border-stone-200 bg-white px-3"
-                onClick={() => setAccountPage((prev) => Math.min(accountPageCount, prev + 1))}
-                disabled={safeAccountPage >= accountPageCount}
-              >
-                下一页
-              </Button>
-            </div>
-          </div>
-
-          <DialogFooter className="pt-2">
-            <Button
-              variant="secondary"
-              className="h-10 rounded-xl bg-stone-100 px-5 text-stone-700 hover:bg-stone-200"
-              onClick={() => setBrowserOpen(false)}
-              disabled={isStartingImport}
-            >
-              取消
-            </Button>
-            <Button
-              className="h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800"
-              onClick={() => void handleStartImport()}
-              disabled={isStartingImport || selectedIds.length === 0}
-            >
-              {isStartingImport ? <LoaderCircle className="size-4 animate-spin" /> : <Import className="size-4" />}
-              导入选中账号
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          <Table
+            rowKey="id"
+            columns={accountColumns}
+            dataSource={filteredAccounts}
+            size="small"
+            scroll={{ y: 420 }}
+            rowSelection={{
+              selectedRowKeys: selectedIds,
+              onChange: (keys) => setSelectedIds(keys.map(String)),
+            }}
+            pagination={{
+              current: safeAccountPage,
+              pageSize: currentPageSize,
+              total: filteredAccounts.length,
+              showSizeChanger: false,
+              onChange: (page) => setAccountPage(page),
+            }}
+          />
+        </Space>
+      </Modal>
     </>
   );
 }

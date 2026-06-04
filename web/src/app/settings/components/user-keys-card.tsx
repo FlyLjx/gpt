@@ -1,26 +1,15 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Ban, CheckCircle2, Copy, KeyRound, LoaderCircle, Pencil, Plus, Trash2 } from "lucide-react";
+import { Alert, Button, Card, Empty, Form, Input, List, Modal, Space, Spin, Tag, Typography } from "antd";
+import { Ban, CheckCircle2, Copy, KeyRound, Pencil, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import { createUserKey, deleteUserKey, fetchUserKeys, updateUserKey, type UserKey } from "@/lib/api";
 
 function formatDateTime(value?: string | null) {
   if (!value) {
-    return "—";
+    return "-";
   }
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
@@ -44,7 +33,6 @@ export function UserKeysCard() {
   const [isCreating, setIsCreating] = useState(false);
   const [pendingIds, setPendingIds] = useState<Set<string>>(() => new Set());
   const [revealedKey, setRevealedKey] = useState("");
-  const [deletingItem, setDeletingItem] = useState<UserKey | null>(null);
   const [editingItem, setEditingItem] = useState<UserKey | null>(null);
   const [editName, setEditName] = useState("");
   const [editKey, setEditKey] = useState("");
@@ -110,16 +98,11 @@ export function UserKeysCard() {
     }
   };
 
-  const handleDelete = async () => {
-    if (!deletingItem) {
-      return;
-    }
-    const item = deletingItem;
+  const handleDelete = async (item: UserKey) => {
     setItemPending(item.id, true);
     try {
       const data = await deleteUserKey(item.id);
       setItems(data.items);
-      setDeletingItem(null);
       toast.success("用户密钥已删除");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "删除用户密钥失败");
@@ -171,252 +154,139 @@ export function UserKeysCard() {
     }
   };
 
+  const confirmDelete = (item: UserKey) => {
+    Modal.confirm({
+      title: "删除用户密钥",
+      content: `确认删除用户密钥「${item.name}」吗？删除后该密钥将无法继续调用接口。`,
+      okText: "删除",
+      cancelText: "取消",
+      okButtonProps: { danger: true },
+      onOk: () => handleDelete(item),
+    });
+  };
+
   return (
     <>
-      <Card className="rounded-2xl border-white/80 bg-white/90 shadow-sm">
-        <CardContent className="space-y-6 p-6">
-          <div className="flex items-start justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <div className="flex size-10 items-center justify-center rounded-xl bg-stone-100">
-                <KeyRound className="size-5 text-stone-600" />
-              </div>
-              <div>
-                <h2 className="text-lg font-semibold tracking-tight">用户密钥管理</h2>
-                <p className="text-sm text-stone-500">为普通用户创建专用密钥；普通用户只能进入画图页，不能查看设置和号池。</p>
-              </div>
-            </div>
-            <Button className="h-9 rounded-xl bg-stone-950 px-4 text-white hover:bg-stone-800" onClick={() => setIsDialogOpen(true)}>
-              <Plus className="size-4" />
-              创建用户密钥
-            </Button>
-          </div>
+      <Card
+        title={
+          <Space>
+            <KeyRound className="size-4 text-blue-500" />
+            <span>用户密钥</span>
+          </Space>
+        }
+        extra={
+          <Button type="primary" icon={<Plus className="size-4" />} onClick={() => setIsDialogOpen(true)}>
+            创建
+          </Button>
+        }
+      >
+        <Space direction="vertical" size={16} className="w-full">
+          <Typography.Text type="secondary">
+            为普通用户创建专用密钥；普通用户只能进入画图页，不能查看设置和号池。
+          </Typography.Text>
 
           {revealedKey ? (
-            <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-4 text-sm text-emerald-900">
-              <div className="font-medium">新密钥仅展示一次，请立即保存：</div>
-              <div className="mt-3 flex flex-col gap-3 rounded-lg border border-emerald-200 bg-white/80 p-3 md:flex-row md:items-center md:justify-between">
-                <code className="break-all font-mono text-[13px]">{revealedKey}</code>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="h-9 rounded-xl border-emerald-200 bg-white px-4 text-emerald-700"
-                  onClick={() => void handleCopy(revealedKey)}
-                >
-                  <Copy className="size-4" />
-                  复制
-                </Button>
-              </div>
-            </div>
+            <Alert
+              type="success"
+              showIcon
+              title="新密钥仅展示一次，请立即保存"
+              description={
+                <Space direction="vertical" size={10} className="w-full">
+                  <Typography.Text code copyable={{ text: revealedKey }} className="break-all">
+                    {revealedKey}
+                  </Typography.Text>
+                  <Button size="small" icon={<Copy className="size-3.5" />} onClick={() => void handleCopy(revealedKey)}>
+                    复制密钥
+                  </Button>
+                </Space>
+              }
+            />
           ) : null}
 
-          {isLoading ? (
-            <div className="flex items-center justify-center py-10">
-              <LoaderCircle className="size-5 animate-spin text-stone-400" />
-            </div>
-          ) : items.length === 0 ? (
-            <div className="rounded-xl bg-stone-50 px-6 py-10 text-center text-sm text-stone-500">
-              暂无普通用户密钥。点击右上角按钮后即可创建并分发给其他人。
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {items.map((item) => {
-                const isPending = pendingIds.has(item.id);
-                return (
-                  <div key={item.id} className="flex flex-col gap-3 rounded-xl border border-stone-200 bg-white px-4 py-4 md:flex-row md:items-center md:justify-between">
-                    <div className="min-w-0 space-y-2">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <div className="truncate text-sm font-medium text-stone-800">{item.name}</div>
-                        <Badge variant={item.enabled ? "success" : "secondary"} className="rounded-md">
-                          {item.enabled ? "已启用" : "已禁用"}
-                        </Badge>
-                      </div>
-                      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-stone-500">
-                        <span>创建时间 {formatDateTime(item.created_at)}</span>
-                        <span>最近使用 {formatDateTime(item.last_used_at)}</span>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="h-9 rounded-xl border-stone-200 bg-white px-4 text-stone-700"
-                        onClick={() => openEditDialog(item)}
-                        disabled={isPending}
-                      >
-                        {isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Pencil className="size-4" />}
-                        编辑
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="h-9 rounded-xl border-stone-200 bg-white px-4 text-stone-700"
-                        onClick={() => void handleToggle(item)}
-                        disabled={isPending}
-                      >
-                        {isPending ? (
-                          <LoaderCircle className="size-4 animate-spin" />
-                        ) : item.enabled ? (
-                          <Ban className="size-4" />
-                        ) : (
-                          <CheckCircle2 className="size-4" />
-                        )}
-                        {item.enabled ? "禁用" : "启用"}
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="h-9 rounded-xl border-rose-200 bg-white px-4 text-rose-600 hover:bg-rose-50 hover:text-rose-700"
-                        onClick={() => setDeletingItem(item)}
-                        disabled={isPending}
-                      >
-                        {isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
-                        删除
-                      </Button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </CardContent>
+          <Spin spinning={isLoading}>
+            {items.length === 0 && !isLoading ? (
+              <Empty description="暂无普通用户密钥" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+            ) : (
+              <List
+                itemLayout="vertical"
+                dataSource={items}
+                split
+                renderItem={(item) => {
+                  const isPending = pendingIds.has(item.id);
+                  return (
+                    <List.Item
+                      actions={[
+                        <Button key="edit" size="small" icon={<Pencil className="size-3.5" />} disabled={isPending} onClick={() => openEditDialog(item)}>
+                          编辑
+                        </Button>,
+                        <Button key="toggle" size="small" icon={item.enabled ? <Ban className="size-3.5" /> : <CheckCircle2 className="size-3.5" />} loading={isPending} onClick={() => void handleToggle(item)}>
+                          {item.enabled ? "禁用" : "启用"}
+                        </Button>,
+                        <Button key="delete" size="small" danger icon={<Trash2 className="size-3.5" />} disabled={isPending} onClick={() => confirmDelete(item)}>
+                          删除
+                        </Button>,
+                      ]}
+                    >
+                      <List.Item.Meta
+                        title={
+                          <Space size={8} wrap>
+                            <Typography.Text strong>{item.name}</Typography.Text>
+                            <Tag color={item.enabled ? "green" : "default"}>{item.enabled ? "已启用" : "已禁用"}</Tag>
+                          </Space>
+                        }
+                        description={
+                          <Space direction="vertical" size={2}>
+                            <Typography.Text type="secondary">创建时间 {formatDateTime(item.created_at)}</Typography.Text>
+                            <Typography.Text type="secondary">最近使用 {formatDateTime(item.last_used_at)}</Typography.Text>
+                          </Space>
+                        }
+                      />
+                    </List.Item>
+                  );
+                }}
+              />
+            )}
+          </Spin>
+        </Space>
       </Card>
 
-      <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-        <DialogContent className="rounded-2xl p-6">
-          <DialogHeader className="gap-2">
-            <DialogTitle>创建用户密钥</DialogTitle>
-            <DialogDescription className="text-sm leading-6">
-              可选填写一个备注名称，方便区分不同使用者；创建后会生成一条只能查看一次的原始密钥。
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-stone-700">名称（可选）</label>
-            <Input
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder="例如：设计同学 A、运营临时账号"
-              className="h-11 rounded-xl border-stone-200 bg-white"
-            />
-          </div>
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="secondary"
-              className="h-10 rounded-xl bg-stone-100 px-5 text-stone-700 hover:bg-stone-200"
-              onClick={() => setIsDialogOpen(false)}
-              disabled={isCreating}
-            >
-              取消
-            </Button>
-            <Button
-              type="button"
-              className="h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800"
-              onClick={() => void handleCreate()}
-              disabled={isCreating}
-            >
-              {isCreating ? <LoaderCircle className="size-4 animate-spin" /> : <Plus className="size-4" />}
-              创建
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={Boolean(deletingItem)} onOpenChange={(open) => (!open ? setDeletingItem(null) : null)}>
-        <DialogContent className="rounded-2xl p-6">
-          <DialogHeader className="gap-2">
-            <DialogTitle>删除用户密钥</DialogTitle>
-            <DialogDescription className="text-sm leading-6">
-              确认删除用户密钥「{deletingItem?.name}」吗？删除后该密钥将无法继续调用接口。
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="secondary"
-              className="h-10 rounded-xl bg-stone-100 px-5 text-stone-700 hover:bg-stone-200"
-              onClick={() => setDeletingItem(null)}
-              disabled={deletingItem ? pendingIds.has(deletingItem.id) : false}
-            >
-              取消
-            </Button>
-            <Button
-              type="button"
-              className="h-10 rounded-xl bg-rose-600 px-5 text-white hover:bg-rose-700"
-              onClick={() => void handleDelete()}
-              disabled={deletingItem ? pendingIds.has(deletingItem.id) : false}
-            >
-              {deletingItem && pendingIds.has(deletingItem.id) ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
-              删除
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
-        open={Boolean(editingItem)}
-        onOpenChange={(open) => {
-          if (!open) {
-            setEditingItem(null);
-            setEditKey("");
-          }
-        }}
+      <Modal
+        title="创建用户密钥"
+        open={isDialogOpen}
+        onCancel={() => setIsDialogOpen(false)}
+        onOk={() => void handleCreate()}
+        okText="创建"
+        cancelText="取消"
+        confirmLoading={isCreating}
       >
-        <DialogContent className="rounded-2xl p-6">
-          <DialogHeader className="gap-2">
-            <DialogTitle>编辑用户密钥</DialogTitle>
-            <DialogDescription className="text-sm leading-6">
-              可以修改备注名称；如需更换专用密钥，直接填写新的原始密钥即可。留空则保持当前密钥不变。
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-stone-700">名称</label>
-              <Input
-                value={editName}
-                onChange={(event) => setEditName(event.target.value)}
-                placeholder="例如：设计同学 A、运营临时账号"
-                className="h-11 rounded-xl border-stone-200 bg-white"
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-stone-700">新的专用密钥（可选）</label>
-              <Input
-                value={editKey}
-                onChange={(event) => setEditKey(event.target.value)}
-                placeholder="例如：sk-your-custom-user-key"
-                className="h-11 rounded-xl border-stone-200 bg-white font-mono"
-              />
-              <p className="text-xs leading-5 text-stone-500">
-                保存后旧密钥会立即失效，新密钥生效。系统仍只保存哈希，不会回显当前密钥。
-              </p>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="secondary"
-              className="h-10 rounded-xl bg-stone-100 px-5 text-stone-700 hover:bg-stone-200"
-              onClick={() => {
-                setEditingItem(null);
-                setEditKey("");
-              }}
-              disabled={editingItem ? pendingIds.has(editingItem.id) : false}
-            >
-              取消
-            </Button>
-            <Button
-              type="button"
-              className="h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800"
-              onClick={() => void handleEdit()}
-              disabled={editingItem ? pendingIds.has(editingItem.id) : false}
-            >
-              {editingItem && pendingIds.has(editingItem.id) ? <LoaderCircle className="size-4 animate-spin" /> : <Pencil className="size-4" />}
-              保存
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        <Form layout="vertical" className="mt-4">
+          <Form.Item label="名称（可选）" extra="方便区分不同使用者；创建后会生成一条只能查看一次的原始密钥。">
+            <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：设计同学 A、运营临时账号" />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title="编辑用户密钥"
+        open={Boolean(editingItem)}
+        onCancel={() => {
+          setEditingItem(null);
+          setEditKey("");
+        }}
+        onOk={() => void handleEdit()}
+        okText="保存"
+        cancelText="取消"
+        confirmLoading={editingItem ? pendingIds.has(editingItem.id) : false}
+      >
+        <Form layout="vertical" className="mt-4">
+          <Form.Item label="名称">
+            <Input value={editName} onChange={(event) => setEditName(event.target.value)} placeholder="例如：设计同学 A、运营临时账号" />
+          </Form.Item>
+          <Form.Item label="新的专用密钥（可选）" extra="留空则保持当前密钥不变。保存后旧密钥会立即失效。">
+            <Input value={editKey} onChange={(event) => setEditKey(event.target.value)} placeholder="例如：sk-your-custom-user-key" />
+          </Form.Item>
+        </Form>
+      </Modal>
     </>
   );
 }

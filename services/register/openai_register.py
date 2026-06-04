@@ -454,11 +454,7 @@ def worker(index: int) -> dict:
         step(index, "任务启动")
         result = registrar.register(index)
         cost = time.time() - start
-        access_token = str(result["access_token"])
         account_service.add_account_items([result])
-        refresh_result = account_service.refresh_accounts([access_token])
-        if refresh_result.get("errors"):
-            step(index, f"账号已保存，刷新状态暂未成功，稍后可重试: {refresh_result['errors']}", "yellow")
         with stats_lock:
             stats["done"] += 1
             stats["success"] += 1

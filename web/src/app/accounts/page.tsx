@@ -1,17 +1,34 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ComponentProps } from "react";
+import {
+  Button as AntButton,
+  Card as AntCard,
+  Checkbox as AntCheckbox,
+  Col,
+  Empty,
+  Grid,
+  Input as AntInput,
+  Modal,
+  Pagination as AntPagination,
+  Progress as AntProgress,
+  Row,
+  Select as AntSelect,
+  Space,
+  Spin,
+  Steps,
+  Table as AntTable,
+  Tag,
+  Tooltip,
+} from "antd";
+import type { ColumnsType } from "antd/es/table";
 import {
   Ban,
   CheckCircle2,
-  ChevronLeft,
-  ChevronRight,
   CircleAlert,
   CircleOff,
   Copy,
   Download,
-  Link2,
   LoaderCircle,
   LogIn,
   Pencil,
@@ -22,26 +39,6 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import {
   deleteAccounts,
   fetchAccounts,
@@ -75,13 +72,13 @@ const statusMeta: Record<
   AccountStatus,
   {
     icon: typeof CheckCircle2;
-    badge: ComponentProps<typeof Badge>["variant"];
+    tagColor: string;
   }
 > = {
-  正常: { icon: CheckCircle2, badge: "success" },
-  限流: { icon: CircleAlert, badge: "warning" },
-  异常: { icon: CircleOff, badge: "danger" },
-  禁用: { icon: Ban, badge: "secondary" },
+  正常: { icon: CheckCircle2, tagColor: "success" },
+  限流: { icon: CircleAlert, tagColor: "warning" },
+  异常: { icon: CircleOff, tagColor: "error" },
+  禁用: { icon: Ban, tagColor: "default" },
 };
 
 const metricCards = [
@@ -92,6 +89,16 @@ const metricCards = [
   { key: "disabled", label: "禁用账户", color: "text-stone-500", icon: Ban },
   { key: "quota", label: "剩余额度", color: "text-blue-500", icon: RefreshCw },
 ] as const;
+
+const accountGroupMeta = {
+  plus: { label: "Plus 账号", description: "ChatGPT Plus 类型账号" },
+  free: { label: "Free 账号", description: "免费类型账号" },
+  other: { label: "其他账号", description: "非 Plus / Free 类型账号" },
+} as const;
+
+type AccountGroupKey = keyof typeof accountGroupMeta;
+
+const accountGroupOrder: AccountGroupKey[] = ["plus", "free", "other"];
 
 function isUnlimitedImageQuotaAccount(account: Account) {
   return account.type === "pro" || account.type === "prolite";
@@ -116,6 +123,153 @@ function formatQuota(account: Account) {
     return "未知";
   }
   return String(Math.max(0, account.quota));
+}
+
+function stringifyUsage(value: unknown) {
+  if (value === null || value === undefined || value === "") {
+    return "—";
+  }
+  if (typeof value === "number") {
+    return formatCompact(value);
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function usagePercent(value: unknown) {
+  if (!value || typeof value !== "object") {
+    return "";
+  }
+  const utilization = (value as { utilization?: unknown }).utilization;
+  if (typeof utilization !== "number") {
+    const numeric = Number(utilization);
+    if (!Number.isFinite(numeric)) {
+      return "";
+    }
+    return `${Math.round(numeric * 10) / 10}%`;
+  }
+  return `${Math.round(utilization * 10) / 10}%`;
+}
+
+function usagePercentValue(value: unknown) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const utilization = (value as { utilization?: unknown }).utilization;
+  const numeric = typeof utilization === "number" ? utilization : Number(utilization);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+  return Math.min(100, Math.max(0, numeric));
+}
+
+function usageResetText(value: unknown) {
+  if (!value || typeof value !== "object") {
+    return "";
+  }
+  const resetsAt = (value as { resets_at?: unknown }).resets_at;
+  if (!resetsAt) {
+    return "";
+  }
+  const date = new Date(String(resetsAt));
+  if (Number.isNaN(date.getTime())) {
+    return String(resetsAt);
+  }
+  const now = new Date();
+  const sameDay = date.toDateString() === now.toDateString();
+  const pad = (num: number) => String(num).padStart(2, "0");
+  const time = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  if (sameDay) {
+    return `${time} 重置`;
+  }
+  return `${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${time}`;
+}
+
+function formatUsage(value: unknown) {
+  if (value === null || value === undefined || value === "") {
+    return "—";
+  }
+  if (typeof value !== "object") {
+    return stringifyUsage(value);
+  }
+
+  const usage = value as {
+    five_hour?: unknown;
+    seven_day?: unknown;
+    image_gen_used?: unknown;
+  };
+  const parts: string[] = [];
+  const fiveHour = usagePercent(usage.five_hour);
+  const sevenDay = usagePercent(usage.seven_day);
+  if (fiveHour) {
+    parts.push(`5h ${fiveHour}`);
+  }
+  if (sevenDay) {
+    parts.push(`7d ${sevenDay}`);
+  }
+  if (usage.image_gen_used !== undefined && usage.image_gen_used !== null) {
+    parts.push(`图 ${formatCompact(Number(usage.image_gen_used) || 0)}`);
+  }
+  return parts.length ? parts.join(" / ") : stringifyUsage(value);
+}
+
+function usageBarColor(value: number) {
+  if (value >= 85) {
+    return "#f5222d";
+  }
+  if (value >= 60) {
+    return "#fa8c16";
+  }
+  return "#52c41a";
+}
+
+function UsageProgressCell({ usage }: { usage: unknown }) {
+  const usageObject = usage && typeof usage === "object" ? usage as {
+    five_hour?: unknown;
+    seven_day?: unknown;
+    image_gen_used?: unknown;
+  } : null;
+  const items = usageObject ? [
+    { label: "5h", value: usagePercentValue(usageObject.five_hour), resetText: usageResetText(usageObject.five_hour) },
+    { label: "7d", value: usagePercentValue(usageObject.seven_day), resetText: usageResetText(usageObject.seven_day) },
+  ].filter((item): item is { label: string; value: number; resetText: string } => item.value !== null) : [];
+
+  if (items.length === 0) {
+    return (
+      <span className="inline-flex rounded-md bg-stone-100 px-2 py-1 font-mono text-[11px] font-medium text-stone-700">
+        {formatUsage(usage)}
+      </span>
+    );
+  }
+
+  return (
+    <div className="w-[150px] space-y-1" title={stringifyUsage(usage)}>
+      {items.map((item) => (
+        <div key={item.label} className="leading-none">
+          <div className="mb-0.5 flex items-center justify-between gap-1">
+            <Tag color="blue" className="m-0 rounded px-1 py-0 text-[10px] leading-4">{item.label}</Tag>
+            <span className="font-mono text-[10px] font-semibold text-slate-700">{item.value}%</span>
+            {item.resetText ? (
+              <span className="ml-auto truncate text-[10px] font-medium text-slate-400">{item.resetText}</span>
+            ) : null}
+          </div>
+          <AntProgress
+            percent={item.value}
+            showInfo={false}
+            size={[150, 4]}
+            strokeColor={usageBarColor(item.value)}
+            railColor="#eef2f7"
+          />
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function formatRestoreAt(value?: string | null) {
@@ -174,6 +328,31 @@ function displayAccountType(account: Account) {
   return account.type || "Free";
 }
 
+function getAccountGroupKey(account: Account): AccountGroupKey {
+  const type = String(account.type || "").trim().toLowerCase();
+  if (type === "plus") {
+    return "plus";
+  }
+  if (!type || type === "free") {
+    return "free";
+  }
+  return "other";
+}
+
+function compareAccountsByGroup(a: Account, b: Account) {
+  const groupDiff = accountGroupOrder.indexOf(getAccountGroupKey(a)) - accountGroupOrder.indexOf(getAccountGroupKey(b));
+  if (groupDiff !== 0) {
+    return groupDiff;
+  }
+
+  const typeDiff = displayAccountType(a).localeCompare(displayAccountType(b), "zh-CN");
+  if (typeDiff !== 0) {
+    return typeDiff;
+  }
+
+  return (a.email || a.access_token).localeCompare(b.email || b.access_token, "zh-CN");
+}
+
 function displayAccountSource(account: Account) {
   const source = String(account.source_type || "").trim().toLowerCase();
   if (!source) {
@@ -187,6 +366,8 @@ function displayAccountSource(account: Account) {
 
 function AccountsPageContent() {
   const didLoadRef = useRef(false);
+  const screens = Grid.useBreakpoint();
+  const isCompactTable = !screens.md;
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [availableModels, setAvailableModels] = useState<Model[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -221,6 +402,39 @@ function AccountsPageContent() {
   });
   const progressRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [refreshSummary, setRefreshSummary] = useState<Record<string, number | string> | null>(null);
+  const [progressResults, setProgressResults] = useState<NonNullable<RefreshProgressResponse["results"]>>([]);
+
+  const resetProgress = () => {
+    if (progressRef.current) {
+      clearInterval(progressRef.current);
+      progressRef.current = null;
+    }
+    setProgress({ visible: false, current: 0, total: 0, message: "", email: "" });
+    setProgressResults([]);
+  };
+
+  const animateProgressTo = (target: number) => {
+    setProgress((prev) => {
+      const safeTarget = Math.min(prev.total || target, Math.max(prev.current, target));
+      if (safeTarget <= prev.current) {
+        return prev;
+      }
+      if (progressRef.current) {
+        clearInterval(progressRef.current);
+      }
+      progressRef.current = setInterval(() => {
+        setProgress((current) => {
+          const nextValue = Math.min(safeTarget, current.current + 1);
+          if (nextValue >= safeTarget && progressRef.current) {
+            clearInterval(progressRef.current);
+            progressRef.current = null;
+          }
+          return { ...current, current: nextValue };
+        });
+      }, 80);
+      return prev;
+    });
+  };
 
   const loadAccounts = async (silent = false) => {
     if (!silent) {
@@ -278,10 +492,14 @@ function AccountsPageContent() {
     });
   }, [accounts, query, statusFilter, typeFilter]);
 
-  const pageCount = Math.max(1, Math.ceil(filteredAccounts.length / Number(pageSize)));
+  const groupedAccounts = useMemo(() => {
+    return [...filteredAccounts].sort(compareAccountsByGroup);
+  }, [filteredAccounts]);
+
+  const pageCount = Math.max(1, Math.ceil(groupedAccounts.length / Number(pageSize)));
   const safePage = Math.min(page, pageCount);
   const startIndex = (safePage - 1) * Number(pageSize);
-  const currentRows = filteredAccounts.slice(startIndex, startIndex + Number(pageSize));
+  const currentRows = groupedAccounts.slice(startIndex, startIndex + Number(pageSize));
   const allCurrentSelected =
     currentRows.length > 0 && currentRows.every((row) => selectedIds.includes(row.access_token));
 
@@ -313,20 +531,6 @@ function AccountsPageContent() {
     return accounts.filter((item) => item.status === "异常").map((item) => item.access_token);
   }, [accounts]);
 
-  const paginationItems = useMemo(() => {
-    const items: (number | "...")[] = [];
-    const start = Math.max(1, safePage - 1);
-    const end = Math.min(pageCount, safePage + 1);
-
-    if (start > 1) items.push(1);
-    if (start > 2) items.push("...");
-    for (let current = start; current <= end; current += 1) items.push(current);
-    if (end < pageCount - 1) items.push("...");
-    if (end < pageCount) items.push(pageCount);
-
-    return items;
-  }, [pageCount, safePage]);
-
   const handleDeleteTokens = async (tokens: string[]) => {
     if (tokens.length === 0) {
       toast.error("请先选择要删除的账户");
@@ -355,16 +559,30 @@ function AccountsPageContent() {
 
     if (accessTokens.length === 1) {
       setRefreshingTokens((prev) => new Set([...prev, accessTokens[0]]));
+      setProgress({
+        visible: true,
+        current: 0,
+        total: 1,
+        message: "正在刷新账号信息...",
+        email: accounts.find((item) => item.access_token === accessTokens[0])?.email || "",
+      });
       try {
         const { progress_id } = await refreshAccounts(accessTokens);
         // 单账号：轮询等待完成
         await pollRefreshProgress(progress_id, (progress) => {
+          setProgress((prev) => ({
+            ...prev,
+            current: progress.done ? 1 : Math.min(1, progress.processed || 0),
+            message: progress.done ? "刷新完成" : "正在刷新账号信息...",
+          }));
           if (progress.done && progress.result) {
             setAccounts(progress.result.items);
             setSelectedIds((prev) => prev.filter((id) => progress.result!.items.some((item) => item.access_token === id)));
           }
         });
+        setTimeout(resetProgress, 800);
       } catch (error) {
+        resetProgress();
         const message = error instanceof Error ? error.message : "刷新账户失败";
         toast.error(message);
       } finally {
@@ -400,6 +618,7 @@ function AccountsPageContent() {
       message: "正在刷新账号信息...",
       email: "",
     });
+    setProgressResults([]);
 
     try {
       const { progress_id } = await refreshAccounts(accessTokens);
@@ -420,20 +639,30 @@ function AccountsPageContent() {
                 return;
               }
               // 更新最终进度显示
+              if (progressRef.current) {
+                clearInterval(progressRef.current);
+                progressRef.current = null;
+              }
               setProgress((prev) => ({
                 ...prev,
                 current: prev.total,
                 message: "刷新完成",
+                email: "",
               }));
+              setProgressResults(p.results ?? []);
               // 清除联动统计
               setRefreshSummary(null);
               resolve(p.result);
             } else {
               // 实时更新进度
+              setProgressResults(p.results ?? []);
+              const latest = p.results?.[p.results.length - 1];
               setProgress((prev) => ({
                 ...prev,
-                current: p.processed,
+                message: latest ? `已处理 ${p.processed}/${p.total}` : "正在刷新账号信息...",
+                email: latest?.email || latest?.token || "",
               }));
+              animateProgressTo(p.processed);
               // 实时更新统计卡片：基数 + 已刷新的累加结果
               const runningActive = baseActive + ((p.status_counts?.["正常"]) ?? 0);
               const runningLimited = baseLimited + ((p.status_counts?.["限流"]) ?? 0);
@@ -492,7 +721,7 @@ function AccountsPageContent() {
                 message: "移除异常状态完成",
                 email: "",
               });
-              setTimeout(() => setProgress({ visible: false, current: 0, total: 0, message: "", email: "" }), 800);
+              setTimeout(resetProgress, 800);
               resolve();
             } else {
               setProgress((prev) => ({ ...prev, current: reCount }));
@@ -508,7 +737,7 @@ function AccountsPageContent() {
           message: "刷新完成",
           email: "",
         });
-        setTimeout(() => setProgress({ visible: false, current: 0, total: 0, message: "", email: "" }), 800);
+        setTimeout(resetProgress, 800);
       }
 
       if ((data.errors ?? []).length > 0) {
@@ -520,7 +749,7 @@ function AccountsPageContent() {
         toast.success(`刷新成功 ${data.refreshed} 个账户${relogined > 0 ? `，已触发 ${relogined} 个账号重新登录` : ""}`);
       }
     } catch (error) {
-      setProgress({ visible: false, current: 0, total: 0, message: "", email: "" });
+      resetProgress();
       setRefreshSummary(null);
       const message = error instanceof Error ? error.message : "刷新账户失败";
       toast.error(message);
@@ -537,12 +766,12 @@ function AccountsPageContent() {
       const timer = setInterval(async () => {
         try {
           const p = await fetchRefreshProgress(progressId);
+          onUpdate(p);
           if (p.done) {
             clearInterval(timer);
             if (p.error) {
               reject(new Error(p.error));
             } else {
-              onUpdate(p);
               resolve();
             }
           }
@@ -666,11 +895,11 @@ function AccountsPageContent() {
         message: "恢复完成",
         email: "",
       });
-      setTimeout(() => setProgress({ visible: false, current: 0, total: 0, message: "", email: "" }), 800);
+      setTimeout(resetProgress, 800);
 
       toast.success(`恢复流程已全部完成`);
     } catch (error) {
-      setProgress({ visible: false, current: 0, total: 0, message: "", email: "" });
+      resetProgress();
       setRefreshSummary(null);
       const message = error instanceof Error ? error.message : "重新登录失败";
       toast.error(message);
@@ -735,568 +964,533 @@ function AccountsPageContent() {
     setSelectedIds((prev) => prev.filter((id) => !currentRows.some((row) => row.access_token === id)));
   };
 
-  return (
-    <>
-      <section className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div className="space-y-1">
-          <div className="text-xs font-semibold tracking-[0.18em] text-stone-500 uppercase">
-            Account Pool
-          </div>
-          <h1 className="text-2xl font-semibold tracking-tight">号池管理</h1>
+  const accountColumns: ColumnsType<Account> = [
+    {
+      title: (
+        <div className="flex items-center justify-center">
+          <AntCheckbox
+            checked={allCurrentSelected}
+            indeterminate={currentRows.some((row) => selectedIds.includes(row.access_token)) && !allCurrentSelected}
+            onChange={(event) => toggleSelectAll(event.target.checked)}
+          />
         </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            variant="outline"
-            className="h-10 rounded-xl border-stone-200 bg-white/80 px-4 text-stone-700 hover:bg-white"
-            onClick={() => void loadAccounts()}
-            disabled={isLoading || isRefreshing || isDeleting}
-          >
-            <RefreshCw className={cn("size-4", isLoading ? "animate-spin" : "")} />
-            刷新
-          </Button>
-          <Button
-            variant="outline"
-            className="h-10 rounded-xl border-stone-200 bg-white/80 px-4 text-stone-700 hover:bg-white"
-            onClick={() => void handleRefreshAccounts(accounts.map((item) => item.access_token))}
-            disabled={isLoading || isRefreshing || isDeleting || accounts.length === 0}
-          >
-            <RefreshCw className={cn("size-4", isRefreshing ? "animate-spin" : "")} />
-            一键刷新所有账号信息和额度
-          </Button>
-          <AccountImportDialog
-            disabled={isLoading || isRefreshing || isDeleting}
-            onImported={(items) => {
-              setAccounts(items);
-              setSelectedIds([]);
-              setPage(1);
+      ),
+      dataIndex: "access_token",
+      width: 56,
+      align: "center",
+      fixed: isCompactTable ? undefined : "left",
+      render: (_value, account) => (
+        <div className="flex items-center justify-center">
+          <AntCheckbox
+            checked={selectedIds.includes(account.access_token)}
+            onChange={(event) => {
+              setSelectedIds((prev) =>
+                event.target.checked
+                  ? Array.from(new Set([...prev, account.access_token]))
+                  : prev.filter((item) => item !== account.access_token),
+              );
             }}
           />
-          <Button
-            variant="outline"
-            className="h-10 rounded-xl border-stone-200 bg-white/80 px-4 text-stone-700 hover:bg-white"
-            onClick={() => downloadTokens(accounts)}
-            disabled={accounts.length === 0}
-          >
-            <Download className="size-4" />
-            导出全部 Token
-          </Button>
+        </div>
+      ),
+    },
+    {
+      title: "Token",
+      dataIndex: "access_token",
+      width: isCompactTable ? 210 : 230,
+      fixed: isCompactTable ? undefined : "left",
+      render: (token: string) => (
+        <Space size={6}>
+          <span className="font-mono text-xs font-medium text-slate-700">{maskToken(token)}</span>
+          <AntButton
+            type="text"
+            size="small"
+            icon={<Copy className="size-3.5" />}
+            onClick={() => {
+              void navigator.clipboard.writeText(token);
+              toast.success("token 已复制");
+            }}
+          />
+        </Space>
+      ),
+    },
+    {
+      title: "分组",
+      key: "group",
+      width: 112,
+      render: (_value, account) => {
+        const groupKey = getAccountGroupKey(account);
+        const color = groupKey === "plus" ? "gold" : groupKey === "free" ? "blue" : "default";
+        return <Tag color={color}>{accountGroupMeta[groupKey].label}</Tag>;
+      },
+    },
+    {
+      title: "类型",
+      key: "type",
+      width: 96,
+      render: (_value, account) => <Tag>{displayAccountType(account)}</Tag>,
+    },
+    {
+      title: "来源",
+      key: "source",
+      width: 90,
+      render: (_value, account) => <Tag color={displayAccountSource(account) === "codex" ? "purple" : "default"}>{displayAccountSource(account)}</Tag>,
+    },
+    {
+      title: "状态",
+      dataIndex: "status",
+      width: 92,
+      render: (status: AccountStatus) => {
+        const StatusIcon = statusMeta[status]?.icon ?? CircleAlert;
+        const statusClass =
+          status === "正常"
+            ? "bg-[#f6ffed] text-[#52c41a] ring-[#b7eb8f]"
+            : status === "限流"
+              ? "bg-amber-50 text-amber-700 ring-amber-200"
+              : status === "异常"
+                ? "bg-rose-50 text-rose-700 ring-rose-200"
+                : "bg-slate-100 text-slate-600 ring-slate-200";
+        return (
+          <span className={cn("inline-flex h-7 min-w-[62px] items-center justify-center gap-1 rounded-md px-2 text-xs font-medium leading-none ring-1 whitespace-nowrap", statusClass)}>
+            <StatusIcon className="size-3.5 shrink-0" />
+            {status}
+          </span>
+        );
+      },
+    },
+    {
+      title: "账号信息",
+      dataIndex: "email",
+      width: 220,
+      render: (email?: string | null) => <span className="text-xs text-slate-500">{email ?? "—"}</span>,
+    },
+    {
+      title: "创建时间",
+      dataIndex: "created_at",
+      width: 132,
+      render: (raw: unknown) => {
+        if (!raw) return "—";
+        try {
+          const date = new Date(String(raw) + "Z");
+          if (Number.isNaN(date.getTime())) return String(raw).slice(0, 10);
+          return date.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+        } catch {
+          return String(raw).slice(0, 10);
+        }
+      },
+    },
+    {
+      title: "额度",
+      key: "quota",
+      width: 88,
+      render: (_value, account) => <Tag color="blue">{formatQuota(account)}</Tag>,
+    },
+    {
+      title: "Usage",
+      dataIndex: "usage",
+      width: 178,
+      render: (usage: unknown) => (
+        <Tooltip title={stringifyUsage(usage)} placement="topLeft">
+          <div>
+            <UsageProgressCell usage={usage} />
+          </div>
+        </Tooltip>
+      ),
+    },
+    {
+      title: "恢复时间",
+      dataIndex: "restore_at",
+      width: 170,
+      render: (value?: string | null) => {
+        const restore = formatRestoreAt(value);
+        return (
+          <div className="space-y-0.5 text-xs text-slate-500">
+            {restore.relative ? <div className="font-medium text-slate-700">{restore.relative}</div> : null}
+            <div>{restore.absolute}</div>
+          </div>
+        );
+      },
+    },
+    {
+      title: "成功",
+      dataIndex: "success",
+      width: 76,
+    },
+    {
+      title: "失败",
+      dataIndex: "fail",
+      width: 76,
+    },
+    {
+      title: "操作",
+      key: "actions",
+      width: 132,
+      fixed: isCompactTable ? undefined : "right",
+      render: (_value, account) => (
+        <Space size={2}>
+          <AntButton
+            type="text"
+            size="small"
+            icon={<Pencil className="size-4" />}
+            onClick={() => openEditDialog(account)}
+            disabled={isUpdating}
+          />
+          <AntButton
+            type="text"
+            size="small"
+            icon={<RefreshCw className={cn("size-4", (isRefreshing || refreshingTokens.has(account.access_token)) ? "animate-spin" : "")} />}
+            onClick={() => void handleRefreshAccounts([account.access_token])}
+            disabled={isRefreshing || refreshingTokens.has(account.access_token)}
+          />
+          <AntButton
+            danger
+            type="text"
+            size="small"
+            icon={<Trash2 className="size-4" />}
+            onClick={() => void handleDeleteTokens([account.access_token])}
+            disabled={isDeleting}
+          />
+        </Space>
+      ),
+    },
+  ];
+
+  return (
+    <div className="space-y-5">
+      <section className="rounded-lg bg-white p-5 shadow-sm">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="space-y-1">
+            <div className="text-xs font-semibold tracking-[0.18em] text-slate-400 uppercase">
+              Account Pool
+            </div>
+            <h1 className="text-2xl font-semibold tracking-tight text-slate-950">号池管理</h1>
+            <p className="text-sm text-slate-500">管理账号状态、额度、Codex 使用率和批量刷新任务。</p>
+          </div>
+
+          <Space wrap>
+            <AntButton
+              icon={<RefreshCw className={cn("size-4", isLoading ? "animate-spin" : "")} />}
+              onClick={() => void loadAccounts()}
+              disabled={isLoading || isRefreshing || isDeleting}
+            >
+              刷新
+            </AntButton>
+            <AntButton
+              type="primary"
+              icon={<RefreshCw className={cn("size-4", isRefreshing ? "animate-spin" : "")} />}
+              onClick={() => void handleRefreshAccounts(accounts.map((item) => item.access_token))}
+              disabled={isLoading || isRefreshing || isDeleting || accounts.length === 0}
+            >
+              一键刷新所有账号信息和额度
+            </AntButton>
+            <AccountImportDialog
+              disabled={isLoading || isRefreshing || isDeleting}
+              onImported={(items) => {
+                setAccounts(items);
+                setSelectedIds([]);
+                setPage(1);
+              }}
+            />
+            <AntButton
+              icon={<Download className="size-4" />}
+              onClick={() => downloadTokens(accounts)}
+              disabled={accounts.length === 0}
+            >
+              导出全部 Token
+            </AntButton>
+          </Space>
         </div>
       </section>
 
       {/* 进度条 */}
       {progress.visible && (
-        <div className="overflow-hidden rounded-2xl border border-stone-200 bg-white/90 shadow-sm">
-          <div className="px-4 py-3">
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-stone-600">
-                {progress.message}
-                {progress.email && <span className="ml-1 font-medium text-stone-700">{progress.email}</span>}
-              </span>
-              <span className="font-medium text-stone-700">
-                {progress.current}/{progress.total}
-              </span>
-            </div>
-            <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-stone-100">
-              <div
-                className="h-full rounded-full bg-gradient-to-r from-amber-400 to-orange-500 transition-all duration-300 ease-out"
-                style={{ width: `${progress.total > 0 ? (progress.current / progress.total) * 100 : 0}%` }}
+        <AntCard className="!mb-5">
+          <div className="space-y-4">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center justify-between gap-4 text-sm">
+                  <span className="truncate text-slate-600">
+                    {progress.message}
+                    {progress.email ? <span className="ml-1 font-medium text-slate-800">{progress.email}</span> : null}
+                  </span>
+                  <span className="shrink-0 font-medium text-slate-700">
+                    {progress.current}/{progress.total}
+                  </span>
+                </div>
+                <AntProgress
+                  className="mt-2"
+                  percent={progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0}
+                  strokeColor="#1677ff"
+                />
+              </div>
+              <Steps
+                className="lg:max-w-md"
+                size="small"
+                current={progress.total > 0 && progress.current >= progress.total ? 2 : progress.current > 0 ? 1 : 0}
+                items={[
+                  { title: "启动刷新" },
+                  { title: "实时处理" },
+                  { title: "完成同步" },
+                ]}
               />
             </div>
+            {progressResults.length > 0 ? (
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {progressResults.slice(-6).reverse().map((item, index) => (
+                  <div key={`${item.token}-${index}`} className="flex items-center justify-between gap-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs">
+                    <span className="min-w-0 truncate text-slate-600">{item.email || item.token}</span>
+                    <Tag color={item.error ? "error" : statusMeta[(item.status as AccountStatus) || "正常"]?.tagColor || "default"} className="m-0 shrink-0">
+                      {item.error ? "失败" : item.status}
+                    </Tag>
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </div>
-        </div>
+        </AntCard>
       )}
 
-      <Dialog open={Boolean(editingAccount)} onOpenChange={(open) => (!open ? setEditingAccount(null) : null)}>
-        <DialogContent showCloseButton={false} className="rounded-2xl p-6">
-          <DialogHeader className="gap-2">
-            <DialogTitle>编辑账户</DialogTitle>
-            <DialogDescription className="text-sm leading-6">
-              手动修改账号状态和专属代理。
-            </DialogDescription>
-          </DialogHeader>
+      <Modal
+        title="编辑账户"
+        open={Boolean(editingAccount)}
+        onCancel={() => setEditingAccount(null)}
+        footer={[
+          <AntButton key="cancel" onClick={() => setEditingAccount(null)} disabled={isUpdating}>
+            取消
+          </AntButton>,
+          <AntButton key="submit" type="primary" loading={isUpdating} onClick={() => void handleUpdateAccount()}>
+            保存修改
+          </AntButton>,
+        ]}
+      >
+        <div className="pt-2">
+          <p className="mb-4 text-sm text-slate-500">手动修改账号状态和专属代理。</p>
           <div className="space-y-4">
             <div className="space-y-2">
-              <label className="text-sm font-medium text-stone-700">状态</label>
-              <Select value={editStatus} onValueChange={(value) => setEditStatus(value as AccountStatus)}>
-                <SelectTrigger className="h-11 rounded-xl border-stone-200 bg-white">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {accountStatusOptions
-                    .filter((option) => option.value !== "all")
-                    .map((option) => (
-                      <SelectItem key={option.value} value={option.value}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                </SelectContent>
-              </Select>
+              <label className="text-sm font-medium text-slate-700">状态</label>
+              <AntSelect
+                value={editStatus}
+                onChange={(value) => setEditStatus(value as AccountStatus)}
+                className="w-full"
+                options={accountStatusOptions
+                  .filter((option) => option.value !== "all")
+                  .map((option) => ({ label: option.label, value: option.value }))}
+              />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium text-stone-700">账号代理</label>
+              <label className="text-sm font-medium text-slate-700">账号代理</label>
               <div className="flex flex-col gap-2 sm:flex-row">
-                <Input
+                <AntInput
                   value={editProxy}
                   onChange={(event) => setEditProxy(event.target.value)}
                   placeholder="留空走全局代理，例如 http://127.0.0.1:7890"
-                  className="h-11 rounded-xl border-stone-200 bg-white"
                 />
-                <Button
-                  variant="outline"
-                  className="h-11 rounded-xl border-stone-200 bg-white px-4 text-stone-700 sm:w-24"
+                <AntButton
+                  className="sm:w-24"
                   onClick={() => void handleTestAccountProxy()}
-                  disabled={isTestingProxy}
+                  loading={isTestingProxy}
                 >
-                  {isTestingProxy ? <LoaderCircle className="size-4 animate-spin" /> : <Link2 className="size-4" />}
                   测试
-                </Button>
+                </AntButton>
               </div>
             </div>
           </div>
-          <DialogFooter className="pt-2">
-            <Button
-              variant="secondary"
-              className="h-10 rounded-xl bg-stone-100 px-5 text-stone-700 hover:bg-stone-200"
-              onClick={() => setEditingAccount(null)}
-              disabled={isUpdating}
-            >
-              取消
-            </Button>
-            <Button
-              className="h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800"
-              onClick={() => void handleUpdateAccount()}
-              disabled={isUpdating}
-            >
-              {isUpdating ? <LoaderCircle className="size-4 animate-spin" /> : null}
-              保存修改
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        </div>
+      </Modal>
 
-      <section className="space-y-3">
-        <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+      <section className="space-y-5">
+        <Row gutter={[18, 18]}>
           {metricCards.map((item) => {
             const Icon = item.icon;
             const value = (refreshSummary ?? summary)[item.key];
             return (
-              <Card key={item.key} className="rounded-2xl border-white/80 bg-white/90 shadow-sm">
-                <CardContent className="p-4">
-                  <div className="mb-4 flex items-start justify-between">
-                    <span className="text-xs font-medium text-stone-400">{item.label}</span>
-                    <Icon className="size-4 text-stone-400" />
-                  </div>
-                  <div className={cn("text-[1.75rem] font-semibold tracking-tight", item.color)}>
-                    <span className={typeof value === "number" ? "" : "text-[1.1rem]"}>
-                      {typeof value === "number" ? formatCompact(value) : value}
-                    </span>
-                  </div>
-                </CardContent>
-              </Card>
+              <Col key={item.key} xs={24} sm={12} lg={8} xl={4}>
+              <AntCard size="small" styles={{ body: { minHeight: 92, padding: 16 } }}>
+                <div className="mb-3 flex items-center justify-between">
+                  <span className="text-xs text-slate-400">{item.label}</span>
+                  <Icon className="size-4 text-slate-400" />
+                </div>
+                <div className={cn("text-2xl font-semibold tracking-tight", item.color)}>
+                  {typeof value === "number" ? formatCompact(value) : value}
+                </div>
+              </AntCard>
+              </Col>
             );
           })}
-        </div>
-        <Card className="rounded-2xl border-white/80 bg-white/90 shadow-sm">
-          <CardContent className="p-4">
-            <div className="mb-3 text-sm font-medium text-stone-700">
+        </Row>
+        <AntCard size="small">
+          <div className="mb-3 text-sm font-medium text-slate-700">
               系统可用模型
-              <span className="ml-1 text-stone-400">({availableModels.length})</span>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {availableModels.length > 0 ? (
-                availableModels.map((model) => (
-                  <button
-                    key={model.id}
-                    type="button"
-                    className="inline-flex cursor-pointer items-center rounded-full border border-stone-200 bg-white px-2.5 py-1 text-xs font-medium text-stone-700 transition hover:border-stone-300 hover:bg-stone-50"
-                    onClick={() => {
-                      void navigator.clipboard.writeText(model.id);
-                      toast.success("模型名已复制");
-                    }}
-                    title={`点击复制 ${model.id}`}
-                  >
-                    <img
-                      src="/openai.svg"
-                      alt=""
-                      aria-hidden="true"
-                      className="mr-1.5 size-3.5 shrink-0"
-                    />
-                    {model.id}
-                  </button>
-                ))
-              ) : isLoadingModels ? (
-                <span className="text-sm text-stone-400">正在加载模型列表...</span>
-              ) : (
-                <span className="text-sm text-stone-400">当前暂无可用模型</span>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+            <span className="ml-1 text-slate-400">({availableModels.length})</span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {availableModels.length > 0 ? (
+              availableModels.map((model) => (
+                <Tag
+                  key={model.id}
+                  className="cursor-pointer rounded-full px-2.5 py-1"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(model.id);
+                    toast.success("模型名已复制");
+                  }}
+                >
+                  {model.id}
+                </Tag>
+              ))
+            ) : isLoadingModels ? (
+              <Spin size="small" />
+            ) : (
+              <span className="text-sm text-slate-400">当前暂无可用模型</span>
+            )}
+          </div>
+        </AntCard>
       </section>
 
-      <section className="space-y-4">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex items-center gap-3">
-            <h2 className="text-lg font-semibold tracking-tight">账户列表</h2>
-            <Badge variant="secondary" className="rounded-lg bg-stone-200 px-2 py-0.5 text-stone-700">
-              {filteredAccounts.length}
-            </Badge>
-          </div>
+      <section>
 
-          <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
-            <div className="relative min-w-[260px]">
-              <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-stone-400" />
-              <Input
+        {isLoading && accounts.length === 0 ? (
+          <AntCard>
+            <div className="flex flex-col items-center justify-center gap-3 px-6 py-14 text-center">
+              <Spin />
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-slate-700">正在加载账户</p>
+                <p className="text-sm text-slate-500">从后端同步账号列表和状态。</p>
+              </div>
+            </div>
+          </AntCard>
+        ) : null}
+
+        <AntCard
+          className={cn("accounts-table-card", isLoading && accounts.length === 0 ? "hidden" : "")}
+          title={
+            <Space>
+              <span>账户列表</span>
+              <Tag color="blue" className="m-0">{filteredAccounts.length}</Tag>
+            </Space>
+          }
+          extra={
+            <Space wrap>
+              <AntInput
+                allowClear
+                prefix={<Search className="size-4 text-slate-400" />}
                 value={query}
                 onChange={(event) => {
                   setQuery(event.target.value);
                   setPage(1);
                 }}
                 placeholder="搜索邮箱"
-                className="h-10 rounded-xl border-stone-200 bg-white/85 pl-10"
+                style={{ width: 260 }}
               />
-            </div>
-            <Select
-              value={typeFilter}
-              onValueChange={(value) => {
-                setTypeFilter(value);
-                setPage(1);
-              }}
-            >
-              <SelectTrigger className="h-10 w-full rounded-xl border-stone-200 bg-white/85 lg:w-[150px]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {accountTypeOptions.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select
-              value={statusFilter}
-              onValueChange={(value) => {
-                setStatusFilter(value as AccountStatus | "all");
-                setPage(1);
-              }}
-            >
-              <SelectTrigger className="h-10 w-full rounded-xl border-stone-200 bg-white/85 lg:w-[150px]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {accountStatusOptions.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-
-        {isLoading && accounts.length === 0 ? (
-          <Card className="rounded-2xl border-white/80 bg-white/90 shadow-sm">
-            <CardContent className="flex flex-col items-center justify-center gap-3 px-6 py-14 text-center">
-              <div className="rounded-xl bg-stone-100 p-3 text-stone-500">
-                <LoaderCircle className="size-5 animate-spin" />
-              </div>
-              <div className="space-y-1">
-                <p className="text-sm font-medium text-stone-700">正在加载账户</p>
-                <p className="text-sm text-stone-500">从后端同步账号列表和状态。</p>
-              </div>
-            </CardContent>
-          </Card>
-        ) : null}
-
-        <Card
-          className={cn(
-            "overflow-hidden rounded-2xl border-white/80 bg-white/90 shadow-sm",
-            isLoading && accounts.length === 0 ? "hidden" : "",
-          )}
+              <AntSelect
+                value={typeFilter}
+                onChange={(value) => {
+                  setTypeFilter(value);
+                  setPage(1);
+                }}
+                style={{ width: 150 }}
+                options={accountTypeOptions}
+              />
+              <AntSelect
+                value={statusFilter}
+                onChange={(value) => {
+                  setStatusFilter(value as AccountStatus | "all");
+                  setPage(1);
+                }}
+                style={{ width: 150 }}
+                options={accountStatusOptions}
+              />
+            </Space>
+          }
+          styles={{ body: { padding: 0 } }}
         >
-          <CardContent className="space-y-0 p-0">
-            <div className="flex flex-col gap-3 border-b border-stone-100 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
-              <div className="flex flex-wrap items-center gap-2 text-sm text-stone-500">
-                <Button
-                  variant="ghost"
-                  className="h-8 rounded-lg px-3 text-stone-500 hover:bg-stone-100"
+            <div className="flex flex-col gap-3 border-b border-slate-100 bg-slate-50/60 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="mr-1 text-xs font-medium text-slate-400">批量操作</span>
+                <AntButton
+                  size="small"
+                  icon={isRefreshing ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
                   onClick={() => void handleRefreshAccounts(selectedTokens)}
                   disabled={selectedTokens.length === 0 || isRefreshing}
                 >
-                  {isRefreshing ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-                  刷新选中账号信息和额度
-                </Button>
-                <Button
-                  variant="ghost"
-                  className="h-8 rounded-lg px-3 text-amber-600 hover:bg-amber-50 hover:text-amber-700"
+                  刷新选中
+                </AntButton>
+                <AntButton
+                  size="small"
+                  icon={isRelogining ? <LoaderCircle className="size-4 animate-spin" /> : <LogIn className="size-4" />}
                   onClick={() => void handleReLogin(selectedTokens)}
                   disabled={selectedTokens.length === 0 || isRelogining}
                   title="尝试密码登录恢复账号"
                 >
-                  {isRelogining ? <LoaderCircle className="size-4 animate-spin" /> : <LogIn className="size-4" />}
-                  尝试恢复异常账号
-                </Button>
-                <Button
-                  variant="ghost"
-                  className="h-8 rounded-lg px-3 text-rose-500 hover:bg-rose-50 hover:text-rose-600"
+                  恢复异常
+                </AntButton>
+                <span className="mx-1 h-5 w-px bg-slate-200" />
+                <AntButton
+                  danger
+                  size="small"
+                  icon={isDeleting ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
                   onClick={() => void handleDeleteTokens(abnormalTokens)}
                   disabled={abnormalTokens.length === 0 || isDeleting}
                 >
-                  {isDeleting ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
                   移除异常账号
-                </Button>
-                <Button
-                  variant="ghost"
-                  className="h-8 rounded-lg px-3 text-rose-500 hover:bg-rose-50 hover:text-rose-600"
+                </AntButton>
+                <AntButton
+                  danger
+                  size="small"
+                  icon={isDeleting ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
                   onClick={() => void handleDeleteTokens(selectedTokens)}
                   disabled={selectedTokens.length === 0 || isDeleting}
                 >
-                  {isDeleting ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
                   删除所选
-                </Button>
+                </AntButton>
                 {selectedIds.length > 0 ? (
-                  <span className="rounded-lg bg-stone-100 px-2.5 py-1 text-xs font-medium text-stone-600">
+                  <Tag color="processing" className="m-0 rounded-md">
                     已选择 {selectedIds.length} 项
-                  </span>
+                  </Tag>
                 ) : null}
               </div>
             </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[1000px] text-left">
-                <thead className="border-b border-stone-100 text-[11px] text-stone-400 uppercase tracking-[0.18em]">
-                  <tr>
-                    <th className="w-12 px-4 py-3">
-                      <Checkbox
-                        checked={allCurrentSelected}
-                        onCheckedChange={(checked) => toggleSelectAll(Boolean(checked))}
-                      />
-                    </th>
-                    <th className="w-56 px-4 py-3">token</th>
-                    <th className="w-28 px-4 py-3">类型</th>
-                    <th className="w-24 px-4 py-3">来源</th>
-                    <th className="w-24 px-4 py-3">状态</th>
-                    <th className="w-56 px-4 py-3">账号信息</th>
-                    <th className="w-32 px-4 py-3">创建时间</th>
-                    <th className="w-24 px-4 py-3">额度</th>
-                    <th className="w-40 px-4 py-3">恢复时间</th>
-                    <th className="w-18 px-4 py-3">成功</th>
-                    <th className="w-18 px-4 py-3">失败</th>
-                    <th className="w-24 px-4 py-3">操作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {currentRows.map((account) => {
-                    const status = statusMeta[account.status];
-                    const StatusIcon = status.icon;
+            <AntTable
+              className="accounts-table"
+              rowKey="access_token"
+              columns={accountColumns}
+              dataSource={currentRows}
+              loading={isLoading}
+              pagination={false}
+              size="small"
+              scroll={{ x: isCompactTable ? 1080 : 1680 }}
+              locale={{
+                emptyText: (
+                  <Empty
+                    image={Empty.PRESENTED_IMAGE_SIMPLE}
+                    description="没有匹配的账户，调整筛选条件或搜索关键字后重试。"
+                  />
+                ),
+              }}
+            />
 
-                    return (
-                      <tr
-                        key={account.access_token}
-                        className="border-b border-stone-100/80 text-sm text-stone-600 transition-colors hover:bg-stone-50/70"
-                      >
-                        <td className="px-4 py-3">
-                          <Checkbox
-                            checked={selectedIds.includes(account.access_token)}
-                            onCheckedChange={(checked) => {
-                              setSelectedIds((prev) =>
-                                checked
-                                  ? Array.from(new Set([...prev, account.access_token]))
-                                  : prev.filter((item) => item !== account.access_token),
-                              );
-                            }}
-                          />
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium tracking-tight text-stone-700">
-                              {maskToken(account.access_token)}
-                            </span>
-                            <button
-                              type="button"
-                              className="rounded-lg p-1 text-stone-400 transition hover:bg-stone-100 hover:text-stone-700"
-                              onClick={() => {
-                                void navigator.clipboard.writeText(account.access_token);
-                                toast.success("token 已复制");
-                              }}
-                            >
-                              <Copy className="size-4" />
-                            </button>
-                          </div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <Badge variant="secondary" className="rounded-md bg-stone-100 text-stone-700">
-                            {displayAccountType(account)}
-                          </Badge>
-                        </td>
-                        <td className="px-4 py-3">
-                          <Badge variant="outline" className="rounded-md border-stone-200 text-stone-600">
-                            {displayAccountSource(account)}
-                          </Badge>
-                        </td>
-                        <td className="px-4 py-3">
-                          <Badge
-                            variant={status.badge}
-                            className="inline-flex items-center gap-1 rounded-md px-2 py-1"
-                          >
-                            <StatusIcon className="size-3.5" />
-                            {account.status}
-                          </Badge>
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="text-xs leading-5 text-stone-500">{account.email ?? "—"}</div>
-                        </td>
-                        <td className="px-4 py-3 text-xs leading-5 text-stone-500">
-                          {(() => {
-                            const raw = (account as any).created_at;
-                            if (!raw) return "—";
-                            try {
-                              const d = new Date(raw + "Z");
-                              if (isNaN(d.getTime())) return String(raw).slice(0, 10);
-                              return d.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
-                            } catch { return String(raw).slice(0, 10); }
-                          })()}
-                        </td>
-                        <td className="px-4 py-3">
-                          <Badge variant="info" className="rounded-md">
-                            {formatQuota(account)}
-                          </Badge>
-                        </td>
-                        <td className="px-4 py-3 text-xs leading-5 text-stone-500">
-                          {(() => {
-                            const restore = formatRestoreAt(account.restore_at);
-                            return (
-                              <div className="space-y-0.5">
-                                {restore.relative ? <div className="font-medium text-stone-700">{restore.relative}</div> : null}
-                                <div>{restore.absolute}</div>
-                              </div>
-                            );
-                          })()}
-                        </td>
-                        <td className="px-4 py-3 text-stone-500">{account.success}</td>
-                        <td className="px-4 py-3 text-stone-500">{account.fail}</td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-1 text-stone-400">
-                            <button
-                              type="button"
-                              className="rounded-lg p-2 transition hover:bg-stone-100 hover:text-stone-700"
-                              onClick={() => openEditDialog(account)}
-                              disabled={isUpdating}
-                            >
-                              <Pencil className="size-4" />
-                            </button>
-                            <button
-                              type="button"
-                              className="rounded-lg p-2 transition hover:bg-stone-100 hover:text-stone-700"
-                              onClick={() => void handleRefreshAccounts([account.access_token])}
-                              disabled={isRefreshing || refreshingTokens.has(account.access_token)}
-                            >
-                              <RefreshCw className={cn("size-4", (isRefreshing || refreshingTokens.has(account.access_token)) ? "animate-spin" : "")} />
-                            </button>
-                            <button
-                              type="button"
-                              className="rounded-lg p-2 transition hover:bg-rose-50 hover:text-rose-500"
-                              onClick={() => void handleDeleteTokens([account.access_token])}
-                              disabled={isDeleting}
-                            >
-                              <Trash2 className="size-4" />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-
-              {!isLoading && currentRows.length === 0 ? (
-                <div className="flex flex-col items-center justify-center gap-3 px-6 py-14 text-center">
-                  <div className="rounded-xl bg-stone-100 p-3 text-stone-500">
-                    <Search className="size-5" />
-                  </div>
-                  <div className="space-y-1">
-                    <p className="text-sm font-medium text-stone-700">没有匹配的账户</p>
-                    <p className="text-sm text-stone-500">调整筛选条件或搜索关键字后重试。</p>
-                  </div>
-                </div>
-              ) : null}
-            </div>
-
-            <div className="border-t border-stone-100 px-4 py-4">
-              <div className="flex items-center justify-center gap-3 overflow-x-auto whitespace-nowrap">
-                <div className="shrink-0 text-sm text-stone-500">
-                显示第 {filteredAccounts.length === 0 ? 0 : startIndex + 1} -{" "}
-                {Math.min(startIndex + Number(pageSize), filteredAccounts.length)} 条，共{" "}
-                {filteredAccounts.length} 条
-                </div>
-
-                <span className="shrink-0 text-sm leading-none text-stone-500">
-                  {safePage} / {pageCount} 页
-                </span>
-                <Select
-                  value={pageSize}
-                  onValueChange={(value) => {
-                    setPageSize(value);
-                    setPage(1);
-                  }}
-                >
-                  <SelectTrigger className="h-10 w-[108px] shrink-0 rounded-lg border-stone-200 bg-white text-sm leading-none">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="10">10 / 页</SelectItem>
-                    <SelectItem value="20">20 / 页</SelectItem>
-                    <SelectItem value="50">50 / 页</SelectItem>
-                    <SelectItem value="100">100 / 页</SelectItem>
-                  </SelectContent>
-                </Select>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="size-10 shrink-0 rounded-lg border-stone-200 bg-white"
-                  disabled={safePage <= 1}
-                  onClick={() => setPage((prev) => Math.max(1, prev - 1))}
-                >
-                  <ChevronLeft className="size-4" />
-                </Button>
-                {paginationItems.map((item, index) =>
-                  item === "..." ? (
-                    <span key={`ellipsis-${index}`} className="px-1 text-sm text-stone-400">
-                      ...
-                    </span>
-                  ) : (
-                    <Button
-                      key={item}
-                      variant={item === safePage ? "default" : "outline"}
-                      className={cn(
-                        "h-10 min-w-10 shrink-0 rounded-lg px-3",
-                        item === safePage
-                          ? "bg-stone-950 text-white hover:bg-stone-800"
-                          : "border-stone-200 bg-white text-stone-700",
-                      )}
-                      onClick={() => setPage(item)}
-                    >
-                      {item}
-                    </Button>
-                  ),
-                )}
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="size-10 shrink-0 rounded-lg border-stone-200 bg-white"
-                  disabled={safePage >= pageCount}
-                  onClick={() => setPage((prev) => Math.min(pageCount, prev + 1))}
-                >
-                  <ChevronRight className="size-4" />
-                </Button>
+            <div className="flex flex-col gap-3 border-t border-slate-100 px-4 py-4 lg:flex-row lg:items-center lg:justify-between">
+              <div className="text-sm text-slate-500">
+                显示第 {groupedAccounts.length === 0 ? 0 : startIndex + 1} -{" "}
+                {Math.min(startIndex + Number(pageSize), groupedAccounts.length)} 条，共{" "}
+                {groupedAccounts.length} 条
               </div>
+              <AntPagination
+                current={safePage}
+                pageSize={Number(pageSize)}
+                total={groupedAccounts.length}
+                showSizeChanger
+                pageSizeOptions={[10, 20, 50, 100]}
+                showTotal={(total) => `共 ${total} 条`}
+                onChange={(nextPage, nextPageSize) => {
+                  setPage(nextPage);
+                  setPageSize(String(nextPageSize));
+                }}
+              />
             </div>
-          </CardContent>
-        </Card>
+        </AntCard>
       </section>
-    </>
+    </div>
   );
 }
 

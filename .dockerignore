@@ -6,9 +6,13 @@ __pycache__
 *.pyc
 *.pyo
 *.pyd
+.pytest_cache
 
 web/.next
 web/node_modules
+web/out
+web/tsconfig.tsbuildinfo
+web/package-lock.json
 
 assets
 README.md

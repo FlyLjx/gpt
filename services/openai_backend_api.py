@@ -56,6 +56,8 @@ DEFAULT_CLIENT_BUILD_NUMBER = "6708908"
 DEFAULT_POW_SCRIPT = "https://chatgpt.com/backend-api/sentinel/sdk.js"
 CODEX_IMAGE_MODEL = "codex-gpt-image-2"
 CODEX_RESPONSES_MODEL = "gpt-5.5"
+CODEX_PROBE_VERSION = "0.125.0"
+CODEX_PROBE_USER_AGENT = "codex-cli/0.125.0"
 SEARCH_MODEL = "gpt-5-5"
 SEARCH_TIMEOUT_SECS = 300.0
 SEARCH_POLL_INTERVAL_SECS = 3.0
@@ -240,11 +242,11 @@ class OpenAIBackendAPI:
         return headers
 
     @staticmethod
-    def _extract_quota_and_restore_at(limits_progress: list[Any]) -> tuple[int, str | None, bool]:
+    def _extract_quota_info(limits_progress: list[Any]) -> tuple[int, str | None, bool, Any]:
         for item in limits_progress:
             if isinstance(item, dict) and item.get("feature_name") == "image_gen":
-                return int(item.get("remaining") or 0), str(item.get("reset_after") or "") or None, False
-        return 0, None, True
+                return int(item.get("remaining") or 0), str(item.get("reset_after") or "") or None, False, item.get("usage")
+        return 0, None, True, None
 
     def _raise_on_error(self, response: Any, path: str) -> None:
         if response.status_code == 401:
@@ -317,12 +319,20 @@ class OpenAIBackendAPI:
 
         limits_progress = init_payload.get("limits_progress")
         limits_progress = limits_progress if isinstance(limits_progress, list) else []
-        quota, restore_at, image_quota_unknown = self._extract_quota_and_restore_at(limits_progress)
+        logger.debug({
+            "event": "backend_conversation_init_quota_payload",
+            "email": me_payload.get("email"),
+            "plan_type": plan_type,
+            "default_model_slug": init_payload.get("default_model_slug"),
+            "limits_progress": limits_progress,
+        })
+        quota, restore_at, image_quota_unknown, usage = self._extract_quota_info(limits_progress)
         result = {
             "email": me_payload.get("email"),
             "user_id": me_payload.get("id"),
             "type": plan_type,
             "quota": quota,
+            "usage": usage,
             "image_quota_unknown": image_quota_unknown,
             "limits_progress": limits_progress,
             "default_model_slug": init_payload.get("default_model_slug"),
@@ -335,6 +345,7 @@ class OpenAIBackendAPI:
             "user_id": result.get("user_id"),
             "type": result.get("type"),
             "quota": result.get("quota"),
+            "usage": result.get("usage"),
             "image_quota_unknown": result.get("image_quota_unknown"),
             "default_model_slug": result.get("default_model_slug"),
             "restore_at": result.get("restore_at"),
@@ -540,6 +551,23 @@ class OpenAIBackendAPI:
             "Content-Type": "application/json",
         }
 
+    def _codex_probe_headers(self) -> Dict[str, str]:
+        headers = self._codex_responses_headers()
+        headers.update({
+            "Accept": "text/event-stream",
+            "OpenAI-Beta": "responses=experimental",
+            "Originator": "codex_cli_rs",
+            "Version": CODEX_PROBE_VERSION,
+            "User-Agent": CODEX_PROBE_USER_AGENT,
+        })
+        token_payload = account_service._decode_jwt_payload(self.access_token)
+        auth_claim = token_payload.get("https://api.openai.com/auth")
+        auth_claim = auth_claim if isinstance(auth_claim, dict) else {}
+        chatgpt_account_id = str(auth_claim.get("chatgpt_account_id") or "").strip()
+        if chatgpt_account_id:
+            headers["chatgpt-account-id"] = chatgpt_account_id
+        return headers
+
     def _ensure_codex_source_account(self) -> None:
         account = account_service.get_account(self.access_token)
         source_type = str((account or {}).get("source_type") or "web").strip().lower()
@@ -654,6 +682,50 @@ class OpenAIBackendAPI:
                 "body_preview": self._codex_body_preview(body),
             },
         })
+
+    def probe_codex_usage(self) -> dict | None:
+        if not self.access_token:
+            return None
+        path = "/backend-api/codex/responses"
+        payload = {
+            "model": CODEX_RESPONSES_MODEL,
+            "instructions": "Reply with ok.",
+            "store": False,
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "ok"}]}],
+            "stream": True,
+        }
+        request = urllib.request.Request(
+            self.base_url + path,
+            json.dumps(payload).encode(),
+            self._codex_probe_headers(),
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as raw:
+                usage = account_service.update_codex_usage_from_headers(
+                    self.access_token,
+                    raw.headers,
+                    source="codex_probe",
+                )
+                logger.debug({
+                    "event": "codex_usage_probe_result",
+                    "status_code": getattr(raw, "status", None),
+                    "usage": usage,
+                })
+                return usage
+        except urllib.error.HTTPError as error:
+            usage = account_service.update_codex_usage_from_headers(
+                self.access_token,
+                error.headers,
+                source="codex_probe_error_headers",
+            )
+            logger.debug({
+                "event": "codex_usage_probe_result",
+                "status_code": error.code,
+                "usage": usage,
+                "error": "" if usage else str(error),
+            })
+            return usage
 
     @staticmethod
     def _iter_codex_response_events(raw: Any) -> Iterator[Dict[str, Any]]:
@@ -789,8 +861,22 @@ class OpenAIBackendAPI:
         })
         try:
             with urllib.request.urlopen(request, timeout=1200) as raw:
+                usage = account_service.update_codex_usage_from_headers(
+                    self.access_token,
+                    raw.headers,
+                    source="codex_response_headers",
+                )
+                if usage:
+                    logger.debug({"event": "codex_usage_headers_result", "usage": usage})
                 yield from self._iter_codex_response_events(raw)
         except urllib.error.HTTPError as error:
+            usage = account_service.update_codex_usage_from_headers(
+                self.access_token,
+                error.headers,
+                source="codex_error_headers",
+            )
+            if usage:
+                logger.debug({"event": "codex_usage_headers_result", "usage": usage})
             body_text = error.read().decode("utf-8", "replace")
             body: Any = body_text
             try:
@@ -1504,18 +1590,51 @@ class OpenAIBackendAPI:
             primary_mime_keywords: tuple[str, ...],
             primary_default_extension: str,
     ) -> Path:
-        download_url = self._resolve_editable_download_url(conversation_id, artifact)
-        if not download_url:
+        download_response = self._resolve_editable_download_response(conversation_id, artifact)
+        if download_response is None:
             raise RuntimeError(f"download url not found for artifact: {artifact}")
-        response = self.session.get(download_url, timeout=300)
-        ensure_ok(response, "artifact_download")
+        if isinstance(download_response, str):
+            response = self.session.get(download_response, timeout=300)
+            ensure_ok(response, "artifact_download")
+        else:
+            response = download_response
         content_type = self._clean_editable_mime_type(response.headers.get("Content-Type") or artifact.mime_type)
         file_name = self._resolve_editable_output_name(artifact, response.url, response.headers.get("Content-Disposition"), content_type, primary_mime_types, primary_mime_keywords, primary_default_extension)
         target_path = self._unique_editable_path(output_dir / file_name)
         target_path.write_bytes(response.content)
+        try:
+            response.close()
+        except Exception:
+            pass
         return target_path
 
-    def _resolve_editable_download_url(self, conversation_id: str, artifact: EditableFileArtifact) -> str:
+    @staticmethod
+    def _is_direct_editable_download_response(response: Any) -> bool:
+        content_type = str(response.headers.get("Content-Type") or "").lower()
+        if "application/json" in content_type:
+            return False
+        content_disposition = str(response.headers.get("Content-Disposition") or "").lower()
+        if "attachment" in content_disposition or "filename" in content_disposition:
+            return True
+        return bool(getattr(response, "content", b""))
+
+    def _download_url_or_direct_response(self, response: Any) -> str | Any:
+        url = self._download_url_from_response(response)
+        if url:
+            try:
+                response.close()
+            except Exception:
+                pass
+            return url
+        if self._is_direct_editable_download_response(response):
+            return response
+        try:
+            response.close()
+        except Exception:
+            pass
+        return ""
+
+    def _resolve_editable_download_response(self, conversation_id: str, artifact: EditableFileArtifact) -> str | Any:
         ids: list[str] = []
         for item in (artifact.attachment_id, artifact.file_id):
             if item and item not in ids:
@@ -1529,9 +1648,9 @@ class OpenAIBackendAPI:
                 timeout=60,
             )
             if 200 <= response.status_code < 300:
-                url = self._download_url_from_response(response)
-                if url:
-                    return url
+                resolved = self._download_url_or_direct_response(response)
+                if resolved:
+                    return resolved
         for attachment_id in ids:
             path = f"/backend-api/conversation/{conversation_id}/attachment/{attachment_id}/download"
             response = self.session.get(
@@ -1540,9 +1659,9 @@ class OpenAIBackendAPI:
                 timeout=60,
             )
             if 200 <= response.status_code < 300:
-                url = self._download_url_from_response(response)
-                if url:
-                    return url
+                resolved = self._download_url_or_direct_response(response)
+                if resolved:
+                    return resolved
         for file_id in ids:
             path = f"/backend-api/files/download/{file_id}"
             response = self.session.get(
@@ -1552,9 +1671,9 @@ class OpenAIBackendAPI:
                 timeout=60,
             )
             if 200 <= response.status_code < 300:
-                url = self._download_url_from_response(response)
-                if url:
-                    return url
+                resolved = self._download_url_or_direct_response(response)
+                if resolved:
+                    return resolved
         for file_id in ids:
             path = f"/backend-api/files/{file_id}/download"
             response = self.session.get(
@@ -1563,10 +1682,10 @@ class OpenAIBackendAPI:
                 timeout=60,
             )
             if 200 <= response.status_code < 300:
-                url = self._download_url_from_response(response)
-                if url:
-                    return url
-        return ""
+                resolved = self._download_url_or_direct_response(response)
+                if resolved:
+                    return resolved
+        return None
 
     def _editable_download_headers(self, path: str, conversation_id: str, route: str) -> Dict[str, str]:
         headers = self._editable_browser_headers(path, conversation_id)

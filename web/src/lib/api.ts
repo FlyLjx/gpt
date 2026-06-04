@@ -22,6 +22,7 @@ export type Account = {
   source_type?: string | null;
   status: AccountStatus;
   quota: number;
+  usage?: unknown;
   image_quota_unknown?: boolean;
   email?: string | null;
   user_id?: string | null;
@@ -91,7 +92,7 @@ export type RefreshProgressResponse = {
   status_counts?: Record<string, number>;
   total_quota?: number;
   result?: AccountRefreshResponse | null;
-  results?: Array<{ token: string; status: string; error?: string | null }>;
+  results?: Array<{ token: string; email?: string; status: string; quota?: number; error?: string | null }>;
 };
 
 type AccountUpdateResponse = {
@@ -112,6 +113,7 @@ export type SettingsConfig = {
     prompt?: string;
   };
   refresh_account_interval_minute?: number | string;
+  refresh_account_concurrency?: number | string;
   image_retention_days?: number | string;
   image_poll_timeout_secs?: number | string;
   image_account_concurrency?: number | string;

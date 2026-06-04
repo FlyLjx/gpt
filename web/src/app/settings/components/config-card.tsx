@@ -1,28 +1,71 @@
 "use client";
 
-import { Cloud, LoaderCircle, PlugZap, RefreshCw, Save } from "lucide-react";
 import { useState } from "react";
+import {
+  Alert,
+  Button,
+  Card,
+  Checkbox,
+  Col,
+  Divider,
+  Form,
+  Input,
+  Row,
+  Select,
+  Space,
+  Switch,
+  Tag,
+  Typography,
+} from "antd";
+import { Cloud, LoaderCircle, PlugZap, RefreshCw, Save, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
 import type { ImageStorageMode } from "@/lib/api";
 import { testProxy, type ProxyTestResult } from "@/lib/api";
 
 import { useSettingsStore } from "../store";
 
+const logLevelOptions = ["debug", "info", "warning", "error"];
+
+function SectionTitle({ title, description }: { title: string; description: string }) {
+  return (
+    <div className="mb-4">
+      <Typography.Title level={5} className="!mb-1">{title}</Typography.Title>
+      <Typography.Text type="secondary">{description}</Typography.Text>
+    </div>
+  );
+}
+
+function NumberInput({
+  label,
+  value,
+  onChange,
+  placeholder,
+  help,
+  disabled,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  help?: string;
+  disabled?: boolean;
+}) {
+  return (
+    <Form.Item label={label} extra={help}>
+      <Input value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} disabled={disabled} />
+    </Form.Item>
+  );
+}
+
 export function ConfigCard() {
   const [isTestingProxy, setIsTestingProxy] = useState(false);
   const [proxyTestResult, setProxyTestResult] = useState<ProxyTestResult | null>(null);
-  const logLevelOptions = ["debug", "info", "warning", "error"];
   const config = useSettingsStore((state) => state.config);
   const isLoadingConfig = useSettingsStore((state) => state.isLoadingConfig);
   const isSavingConfig = useSettingsStore((state) => state.isSavingConfig);
   const setRefreshAccountIntervalMinute = useSettingsStore((state) => state.setRefreshAccountIntervalMinute);
+  const setRefreshAccountConcurrency = useSettingsStore((state) => state.setRefreshAccountConcurrency);
   const setImageRetentionDays = useSettingsStore((state) => state.setImageRetentionDays);
   const setImagePollTimeoutSecs = useSettingsStore((state) => state.setImagePollTimeoutSecs);
   const setImageAccountConcurrency = useSettingsStore((state) => state.setImageAccountConcurrency);
@@ -70,368 +113,266 @@ export function ConfigCard() {
 
   if (isLoadingConfig) {
     return (
-      <Card className="rounded-2xl border-white/80 bg-white/90 shadow-sm">
-        <CardContent className="flex items-center justify-center p-10">
-          <LoaderCircle className="size-5 animate-spin text-stone-400" />
-        </CardContent>
+      <Card>
+        <div className="flex items-center justify-center py-12">
+          <LoaderCircle className="size-5 animate-spin text-slate-400" />
+        </div>
       </Card>
     );
   }
 
-  return (
-    <Card className="rounded-2xl border-white/80 bg-white/90 shadow-sm">
-      <CardContent className="space-y-4 p-6">
-        <div className="rounded-xl border border-stone-200 bg-stone-50 px-4 py-3 text-sm leading-6 text-stone-600">
-          管理员登录密钥继续从部署配置读取，不再在此页面展示；如需分发给其他人，请在下方创建普通用户密钥。
-        </div>
-        <div className="grid gap-4 md:grid-cols-2">
-          <div className="space-y-2">
-            <label className="text-sm text-stone-700">账号刷新间隔</label>
-            <Input
-              value={String(config?.refresh_account_interval_minute || "")}
-              onChange={(event) => setRefreshAccountIntervalMinute(event.target.value)}
-              placeholder="分钟"
-              className="h-10 rounded-xl border-stone-200 bg-white"
-            />
-            <p className="text-xs text-stone-500">单位分钟，控制账号自动刷新频率。</p>
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm text-stone-700">全局代理</label>
-            <Input
-              value={String(config?.proxy || "")}
-              onChange={(event) => {
-                setProxy(event.target.value);
-                setProxyTestResult(null);
-              }}
-              placeholder="http://127.0.0.1:7890"
-              className="h-10 rounded-xl border-stone-200 bg-white"
-            />
-            <p className="text-xs text-stone-500">留空表示不使用代理。</p>
-            {proxyTestResult ? (
-              <div
-                className={`rounded-xl border px-3 py-2 text-xs leading-6 ${
-                  proxyTestResult.ok
-                    ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-                    : "border-rose-200 bg-rose-50 text-rose-800"
-                }`}
-              >
-                {proxyTestResult.ok
-                  ? `代理可用：HTTP ${proxyTestResult.status}，用时 ${proxyTestResult.latency_ms} ms`
-                  : `代理不可用：${proxyTestResult.error ?? "未知错误"}（用时 ${proxyTestResult.latency_ms} ms）`}
-              </div>
-            ) : null}
-            <div className="flex justify-end">
-              <Button
-                type="button"
-                variant="outline"
-                className="h-9 rounded-xl border-stone-200 bg-white px-4 text-stone-700"
-                onClick={() => void handleTestProxy()}
-                disabled={isTestingProxy}
-              >
-                {isTestingProxy ? <LoaderCircle className="size-4 animate-spin" /> : <PlugZap className="size-4" />}
-                测试代理
-              </Button>
-            </div>
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm text-stone-700">图片访问地址</label>
-            <Input
-              value={String(config?.base_url || "")}
-              onChange={(event) => setBaseUrl(event.target.value)}
-              placeholder="https://example.com"
-              className="h-10 rounded-xl border-stone-200 bg-white"
-            />
-            <p className="text-xs text-stone-500">用于生成图片结果的访问前缀地址。</p>
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm text-stone-700">图片自动清理</label>
-            <Input
-              value={String(config?.image_retention_days || "")}
-              onChange={(event) => setImageRetentionDays(event.target.value)}
-              placeholder="30"
-              className="h-10 rounded-xl border-stone-200 bg-white"
-            />
-            <p className="text-xs text-stone-500">自动删除多少天前的本地图片。</p>
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm text-stone-700">图片轮询超时</label>
-            <Input
-              value={String(config?.image_poll_timeout_secs || "")}
-              onChange={(event) => setImagePollTimeoutSecs(event.target.value)}
-              placeholder="120"
-              className="h-10 rounded-xl border-stone-200 bg-white"
-            />
-            <p className="text-xs text-stone-500">单位秒，等待上游图片结果的最长时间。</p>
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm text-stone-700">单账号图片并发</label>
-            <Input
-              value={String(config?.image_account_concurrency || "")}
-              onChange={(event) => setImageAccountConcurrency(event.target.value)}
-              placeholder="1"
-              className="h-10 rounded-xl border-stone-200 bg-white"
-            />
-            <p className="text-xs text-stone-500">限制每个账号同时处理的图片请求数量，默认 3。</p>
-          </div>
-          <div className="space-y-2">
-            <label className="flex items-center gap-3 rounded-xl border border-stone-200 bg-white px-4 py-3 text-sm text-stone-700">
-              <Checkbox
-                checked={Boolean(config?.auto_remove_invalid_accounts)}
-                onCheckedChange={(checked) => setAutoRemoveInvalidAccounts(Boolean(checked))}
-              />
-              自动移除异常账号
-            </label>
-            <p className="text-xs text-stone-500">刷新时检测并移除</p>
-          </div>
-          <div className="space-y-2">
-            <div className="flex items-center gap-3 rounded-xl border border-stone-200 bg-white px-4 py-3">
-              <Checkbox
-                checked={Boolean(config?.image_settle_enabled !== false)}
-                onCheckedChange={(checked) => setImageSettleEnabled(Boolean(checked))}
-              />
-              <span className="text-sm text-stone-700">图片二次确认机制</span>
-            </div>
-            <p className="text-xs text-stone-500">打开后能稍微提升获取图片的成功率。</p>
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm text-stone-700">图片超时继续等待时间</label>
-            <Input
-              value={String(config?.image_timeout_retry_secs || "30")}
-              onChange={(event) => setImageTimeoutRetrySecs(event.target.value)}
-              placeholder="30"
-              className="h-10 rounded-xl border-stone-200 bg-white"
-            />
-            <p className="text-xs text-stone-500">单位秒，超时后点击"继续等待"额外等待的时间。</p>
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm text-stone-700">图片二次确认等待时间</label>
-            <Input
-              value={String(config?.image_settle_secs || "2.0")}
-              onChange={(event) => setImageSettleSecs(event.target.value)}
-              placeholder="2.0"
-              className="h-10 rounded-xl border-stone-200 bg-white disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={!config?.image_settle_enabled}
-            />
-            <p className="text-xs text-stone-500">单位秒，找到图片后等待多久再次确认。需配合图片二次确认机制使用。</p>
-          </div>
-          <div className="flex gap-4 md:col-span-2">
-            <div className="flex-1 space-y-2">
-              <label className="flex items-center gap-3 rounded-xl border border-stone-200 bg-white px-4 py-3 text-sm text-stone-700">
-                <Checkbox
-                  checked={Boolean(config?.auto_relogin_after_refresh)}
-                  onCheckedChange={(checked) => setAutoReloginAfterRefresh(Boolean(checked))}
-                />
-                刷新后自动尝试移除异常状态
-              </label>
-              <p className="text-xs text-stone-500">开启后刷新时自动尝试密码登录恢复账号。</p>
-            </div>
-            <div className="flex-1" aria-hidden="true" />
-          </div>
-          <label className="flex items-center gap-3 rounded-xl border border-stone-200 bg-white px-4 py-3 text-sm text-stone-700">
-            <Checkbox
-              checked={Boolean(config?.auto_remove_rate_limited_accounts)}
-              onCheckedChange={(checked) => setAutoRemoveRateLimitedAccounts(Boolean(checked))}
-            />
-            自动移除限流账号
-          </label>
-          <div className="space-y-3 rounded-xl border border-stone-200 bg-white px-4 py-3">
-            <div>
-              <label className="text-sm text-stone-700">控制台日志级别</label>
-              <p className="mt-1 text-xs text-stone-500">不选择时使用默认 info / warning / error。</p>
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              {logLevelOptions.map((level) => (
-                <label key={level} className="flex items-center gap-2 text-sm capitalize text-stone-700">
-                  <Checkbox
-                    checked={Boolean(config?.log_levels?.includes(level))}
-                    onCheckedChange={(checked) => setLogLevel(level, Boolean(checked))}
-                  />
-                  {level}
-                </label>
-              ))}
-            </div>
-          </div>
-          <div className="space-y-2 md:col-span-2">
-            <label className="text-sm text-stone-700">全局附加指令</label>
-            <Textarea
-              value={String(config?.global_system_prompt || "")}
-              onChange={(event) => setGlobalSystemPrompt(event.target.value)}
-              placeholder="例如：先判断用户提示词是否合规；遇到违法、色情、暴力、仇恨等请求时拒绝回答。"
-              className="min-h-28 rounded-xl border-stone-200 bg-white font-mono text-xs shadow-none"
-            />
-            <p className="text-xs text-stone-500">每次请求都会作为 system 消息注入，可用于审核用户提示词、避免违规内容、统一约束模型行为或固定角色设定。</p>
-          </div>
-          <div className="space-y-2 md:col-span-2">
-            <label className="text-sm text-stone-700">敏感词</label>
-            <Textarea
-              value={(config?.sensitive_words || []).join("\n")}
-              onChange={(event) => setSensitiveWordsText(event.target.value)}
-              placeholder="一行一个，命中即拒绝"
-              className="min-h-28 rounded-xl border-stone-200 bg-white font-mono text-xs shadow-none"
-            />
-            <p className="text-xs text-stone-500">只要用户请求包含任意敏感词，就直接返回拒绝。</p>
-          </div>
-          <div className="space-y-4 rounded-xl border border-stone-200 bg-white px-4 py-3 md:col-span-2">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <label className="flex items-center gap-3 text-sm text-stone-700">
-                <Checkbox
-                  checked={Boolean(config?.image_storage?.enabled)}
-                  onCheckedChange={(checked) => setImageStorageField("enabled", Boolean(checked))}
-                />
-                启用 WebDAV 图片存储
-              </label>
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="h-9 rounded-xl border-stone-200 bg-white px-4 text-stone-700"
-                  onClick={() => void testImageStorage()}
-                  disabled={isTestingImageStorage || !config?.image_storage?.enabled}
-                >
-                  {isTestingImageStorage ? <LoaderCircle className="size-4 animate-spin" /> : <Cloud className="size-4" />}
-                  测试 WebDAV
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="h-9 rounded-xl border-stone-200 bg-white px-4 text-stone-700"
-                  onClick={() => void syncImagesToWebDAV()}
-                  disabled={isSyncingImageStorage || !config?.image_storage?.enabled || config?.image_storage?.mode === "local"}
-                >
-                  {isSyncingImageStorage ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-                  全量同步
-                </Button>
-              </div>
-            </div>
-            <p className="text-xs leading-6 text-stone-500">
-              生成时只处理本次新图片；全量同步用于把已有本地图片补传到 WebDAV。
-            </p>
-            <div className="rounded-lg border border-stone-100 bg-stone-50 px-3 py-2 text-xs text-stone-600">
-              当前待保存模式：
-              <span className="ml-1 font-medium text-stone-900">
-                {config?.image_storage?.enabled
-                  ? config.image_storage.mode === "both"
-                    ? "本机 + WebDAV"
-                    : config.image_storage.mode === "webdav"
-                      ? "仅 WebDAV"
-                      : "仅本机"
-                  : "仅本机"}
-              </span>
-              <span className="ml-2 text-stone-400">修改后需要点保存，或通过测试/同步按钮自动保存。</span>
-            </div>
-            <div className="grid gap-4 md:grid-cols-3">
-              <div className="space-y-2">
-                <label className="text-sm text-stone-700">保存模式</label>
-                <Select
-                  value={String(config?.image_storage?.mode || "local")}
-                  onValueChange={(value) => setImageStorageField("mode", value as ImageStorageMode)}
-                  disabled={!config?.image_storage?.enabled}
-                >
-                  <SelectTrigger className="h-10 rounded-xl border-stone-200 bg-white shadow-none">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="local">仅本机</SelectItem>
-                    <SelectItem value="webdav">仅 WebDAV</SelectItem>
-                    <SelectItem value="both">本机 + WebDAV</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2 md:col-span-2">
-                <label className="text-sm text-stone-700">WebDAV URL</label>
-                <Input
-                  value={String(config?.image_storage?.webdav_url || "")}
-                  onChange={(event) => setImageStorageField("webdav_url", event.target.value)}
-                  placeholder="https://example.com/dav"
-                  className="h-10 rounded-xl border-stone-200 bg-white"
-                  disabled={!config?.image_storage?.enabled}
-                />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm text-stone-700">用户名</label>
-                <Input
-                  value={String(config?.image_storage?.webdav_username || "")}
-                  onChange={(event) => setImageStorageField("webdav_username", event.target.value)}
-                  className="h-10 rounded-xl border-stone-200 bg-white"
-                  disabled={!config?.image_storage?.enabled}
-                />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm text-stone-700">密码</label>
-                <Input
-                  type="password"
-                  value={String(config?.image_storage?.webdav_password || "")}
-                  onChange={(event) => setImageStorageField("webdav_password", event.target.value)}
-                  className="h-10 rounded-xl border-stone-200 bg-white"
-                  disabled={!config?.image_storage?.enabled}
-                />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm text-stone-700">远端目录</label>
-                <Input
-                  value={String(config?.image_storage?.webdav_root_path || "")}
-                  onChange={(event) => setImageStorageField("webdav_root_path", event.target.value)}
-                  placeholder="chatgpt2api/images"
-                  className="h-10 rounded-xl border-stone-200 bg-white"
-                  disabled={!config?.image_storage?.enabled}
-                />
-              </div>
-              <div className="space-y-2 md:col-span-3">
-                <label className="text-sm text-stone-700">公开访问前缀</label>
-                <Input
-                  value={String(config?.image_storage?.public_base_url || "")}
-                  onChange={(event) => setImageStorageField("public_base_url", event.target.value)}
-                  placeholder="https://cdn.example.com/chatgpt2api/images"
-                  className="h-10 rounded-xl border-stone-200 bg-white"
-                  disabled={!config?.image_storage?.enabled}
-                />
-                <p className="text-xs text-stone-500">留空时返回本应用 /images/... 代理地址；填入后直接返回公开图片地址。</p>
-              </div>
-            </div>
-          </div>
-          <div className="space-y-4 rounded-xl border border-stone-200 bg-white px-4 py-3 md:col-span-2">
-            <label className="flex items-center gap-3 text-sm text-stone-700">
-              <Checkbox
-                checked={Boolean(config?.ai_review?.enabled)}
-                onCheckedChange={(checked) => setAIReviewField("enabled", Boolean(checked))}
-              />
-              启用 AI 审核
-            </label>
-            <p className="text-xs leading-6 text-stone-500">
-              开启后会在请求进入生图账号前先调用审核模型，审核不通过会直接拒绝，减少违规提示词触达账号造成风控或封号的风险。
-            </p>
-            <div className="grid gap-4 md:grid-cols-3">
-              <div className="space-y-2">
-                <label className="text-sm text-stone-700">Base URL</label>
-                <Input value={String(config?.ai_review?.base_url || "")} onChange={(event) => setAIReviewField("base_url", event.target.value)} placeholder="https://api.openai.com" className="h-10 rounded-xl border-stone-200 bg-white" />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm text-stone-700">API Key</label>
-                <Input value={String(config?.ai_review?.api_key || "")} onChange={(event) => setAIReviewField("api_key", event.target.value)} placeholder="sk-..." className="h-10 rounded-xl border-stone-200 bg-white" />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm text-stone-700">Model</label>
-                <Input value={String(config?.ai_review?.model || "")} onChange={(event) => setAIReviewField("model", event.target.value)} placeholder="gpt-5.4-mini" className="h-10 rounded-xl border-stone-200 bg-white" />
-              </div>
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm text-stone-700">审核提示词</label>
-              <Textarea value={String(config?.ai_review?.prompt || "")} onChange={(event) => setAIReviewField("prompt", event.target.value)} placeholder="判断用户请求是否允许。只回答 ALLOW 或 REJECT。" className="min-h-24 rounded-xl border-stone-200 bg-white text-xs shadow-none" />
-            </div>
-          </div>
-        </div>
+  if (!config) {
+    return null;
+  }
 
-        <div className="flex justify-end">
-          <Button
-            className="h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800"
-            onClick={() => void saveConfig()}
-            disabled={isSavingConfig}
-          >
-            {isSavingConfig ? <LoaderCircle className="size-4 animate-spin" /> : <Save className="size-4" />}
-            保存
-          </Button>
-        </div>
-      </CardContent>
+  const imageStorageEnabled = Boolean(config.image_storage?.enabled);
+  const aiReviewEnabled = Boolean(config.ai_review?.enabled);
+
+  return (
+    <Card
+      title={
+        <Space>
+          <ShieldCheck className="size-4 text-blue-500" />
+          <span>系统配置</span>
+        </Space>
+      }
+      extra={
+        <Button type="primary" icon={isSavingConfig ? <LoaderCircle className="size-4 animate-spin" /> : <Save className="size-4" />} onClick={() => void saveConfig()} disabled={isSavingConfig}>
+          保存配置
+        </Button>
+      }
+    >
+      <Form layout="vertical" requiredMark={false}>
+        <Alert
+          type="info"
+          showIcon
+          className="mb-5"
+          title="管理员登录密钥继续从部署配置读取，不在页面展示。需要分发访问权限时，请在用户密钥管理里创建普通用户密钥。"
+        />
+
+        <SectionTitle title="基础运行" description="控制账号刷新、代理、图片访问地址和本地图片保留策略。" />
+        <Row gutter={[16, 16]}>
+          <Col xs={24} md={12} xl={6}>
+            <NumberInput label="账号刷新间隔" value={String(config.refresh_account_interval_minute || "")} onChange={setRefreshAccountIntervalMinute} placeholder="60" help="单位分钟，控制账号自动刷新频率。" />
+          </Col>
+          <Col xs={24} md={12} xl={6}>
+            <NumberInput label="账号刷新并发" value={String(config.refresh_account_concurrency || "")} onChange={setRefreshAccountConcurrency} placeholder="20" help="同时检测账号信息和额度的线程数，最高 100。过高可能触发代理或上游限流。" />
+          </Col>
+          <Col xs={24} md={12} xl={6}>
+            <NumberInput label="图片自动清理" value={String(config.image_retention_days || "")} onChange={setImageRetentionDays} placeholder="30" help="自动删除多少天前的本地图片。" />
+          </Col>
+          <Col xs={24} md={12} xl={6}>
+            <NumberInput label="图片轮询超时" value={String(config.image_poll_timeout_secs || "")} onChange={setImagePollTimeoutSecs} placeholder="120" help="单位秒，等待上游图片结果的最长时间。" />
+          </Col>
+          <Col xs={24} md={12} xl={6}>
+            <NumberInput label="单账号图片并发" value={String(config.image_account_concurrency || "")} onChange={setImageAccountConcurrency} placeholder="1" help="每个账号同时处理的图片请求数量。" />
+          </Col>
+          <Col xs={24} lg={12}>
+            <Form.Item label="全局代理" extra="留空表示不使用代理。">
+              <Space.Compact className="w-full">
+                <Input
+                  value={String(config.proxy || "")}
+                  onChange={(event) => {
+                    setProxy(event.target.value);
+                    setProxyTestResult(null);
+                  }}
+                  placeholder="http://127.0.0.1:7890"
+                />
+                <Button icon={isTestingProxy ? <LoaderCircle className="size-4 animate-spin" /> : <PlugZap className="size-4" />} onClick={() => void handleTestProxy()} disabled={isTestingProxy}>
+                  测试
+                </Button>
+              </Space.Compact>
+            </Form.Item>
+            {proxyTestResult ? (
+              <Alert
+                type={proxyTestResult.ok ? "success" : "error"}
+                showIcon
+                title={proxyTestResult.ok ? `代理可用：HTTP ${proxyTestResult.status}，用时 ${proxyTestResult.latency_ms} ms` : `代理不可用：${proxyTestResult.error ?? "未知错误"}（用时 ${proxyTestResult.latency_ms} ms）`}
+              />
+            ) : null}
+          </Col>
+          <Col xs={24} lg={12}>
+            <Form.Item label="图片访问地址" extra="用于生成图片结果的访问前缀地址。">
+              <Input value={String(config.base_url || "")} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://example.com" />
+            </Form.Item>
+          </Col>
+        </Row>
+
+        <Divider />
+        <SectionTitle title="账号策略" description="控制异常账号、限流账号、刷新后的恢复行为。谨慎开启自动删除，避免刷新时误删账号。" />
+        <Row gutter={[16, 16]}>
+          <Col xs={24} lg={8}>
+            <Card size="small" className="h-full">
+              <Space direction="vertical" size={8}>
+                <Switch checked={Boolean(config.auto_remove_invalid_accounts)} onChange={setAutoRemoveInvalidAccounts} />
+                <Typography.Text strong>自动移除异常账号</Typography.Text>
+                <Typography.Text type="secondary">刷新检测到 token 无效时会直接删除账号。一般建议关闭，只标记异常。</Typography.Text>
+              </Space>
+            </Card>
+          </Col>
+          <Col xs={24} lg={8}>
+            <Card size="small" className="h-full">
+              <Space direction="vertical" size={8}>
+                <Switch checked={Boolean(config.auto_remove_rate_limited_accounts)} onChange={setAutoRemoveRateLimitedAccounts} />
+                <Typography.Text strong>自动移除限流账号</Typography.Text>
+                <Typography.Text type="secondary">账号额度为 0 时直接移除。建议关闭，等待额度恢复。</Typography.Text>
+              </Space>
+            </Card>
+          </Col>
+          <Col xs={24} lg={8}>
+            <Card size="small" className="h-full">
+              <Space direction="vertical" size={8}>
+                <Switch checked={Boolean(config.auto_relogin_after_refresh)} onChange={setAutoReloginAfterRefresh} />
+                <Typography.Text strong>刷新后自动尝试恢复异常状态</Typography.Text>
+                <Typography.Text type="secondary">刷新后对包含邮箱密码的异常账号尝试重新登录。</Typography.Text>
+              </Space>
+            </Card>
+          </Col>
+        </Row>
+
+        <Divider />
+        <SectionTitle title="图片任务" description="控制图片结果确认、超时后继续等待和控制台日志输出。" />
+        <Row gutter={[16, 16]}>
+          <Col xs={24} lg={8}>
+            <Card size="small" className="h-full">
+              <Space direction="vertical" size={8} className="w-full">
+                <Switch checked={Boolean(config.image_settle_enabled !== false)} onChange={setImageSettleEnabled} />
+                <Typography.Text strong>图片二次确认机制</Typography.Text>
+                <Typography.Text type="secondary">找到图片后等待短时间再次确认，提升获取稳定性。</Typography.Text>
+                <Input value={String(config.image_settle_secs || "2.0")} onChange={(event) => setImageSettleSecs(event.target.value)} placeholder="2.0" disabled={!config.image_settle_enabled} addonAfter="秒" />
+              </Space>
+            </Card>
+          </Col>
+          <Col xs={24} lg={8}>
+            <NumberInput label="图片超时继续等待时间" value={String(config.image_timeout_retry_secs || "30")} onChange={setImageTimeoutRetrySecs} placeholder="30" help="单位秒，超时后点击继续等待的额外等待时间。" />
+          </Col>
+          <Col xs={24} lg={8}>
+            <Form.Item label="控制台日志级别" extra="不选择时使用默认 info / warning / error。">
+              <Checkbox.Group value={config.log_levels || []} onChange={(values) => {
+                for (const level of logLevelOptions) {
+                  setLogLevel(level, values.includes(level));
+                }
+              }}>
+                <Space wrap>
+                  {logLevelOptions.map((level) => (
+                    <Checkbox key={level} value={level}>
+                      <span className="capitalize">{level}</span>
+                    </Checkbox>
+                  ))}
+                </Space>
+              </Checkbox.Group>
+            </Form.Item>
+          </Col>
+        </Row>
+
+        <Divider />
+        <SectionTitle title="WebDAV 图片存储" description="可选择只保存在本机、只保存到 WebDAV，或两边都保留。" />
+        <Card size="small">
+          <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <Space>
+              <Switch checked={imageStorageEnabled} onChange={(checked) => setImageStorageField("enabled", checked)} />
+              <Typography.Text strong>启用 WebDAV 图片存储</Typography.Text>
+              <Tag color={imageStorageEnabled ? "blue" : "default"}>{imageStorageEnabled ? "已启用" : "仅本机"}</Tag>
+            </Space>
+            <Space wrap>
+              <Button icon={isTestingImageStorage ? <LoaderCircle className="size-4 animate-spin" /> : <Cloud className="size-4" />} onClick={() => void testImageStorage()} disabled={isTestingImageStorage || !imageStorageEnabled}>
+                测试 WebDAV
+              </Button>
+              <Button icon={isSyncingImageStorage ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />} onClick={() => void syncImagesToWebDAV()} disabled={isSyncingImageStorage || !imageStorageEnabled || config.image_storage?.mode === "local"}>
+                全量同步
+              </Button>
+            </Space>
+          </div>
+          <Row gutter={[16, 16]}>
+            <Col xs={24} md={8}>
+              <Form.Item label="保存模式">
+                <Select
+                  value={String(config.image_storage?.mode || "local")}
+                  onChange={(value) => setImageStorageField("mode", value as ImageStorageMode)}
+                  disabled={!imageStorageEnabled}
+                  options={[
+                    { value: "local", label: "仅本机" },
+                    { value: "webdav", label: "仅 WebDAV" },
+                    { value: "both", label: "本机 + WebDAV" },
+                  ]}
+                />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={16}>
+              <Form.Item label="WebDAV URL">
+                <Input value={String(config.image_storage?.webdav_url || "")} onChange={(event) => setImageStorageField("webdav_url", event.target.value)} placeholder="https://example.com/dav" disabled={!imageStorageEnabled} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={8}>
+              <Form.Item label="用户名">
+                <Input value={String(config.image_storage?.webdav_username || "")} onChange={(event) => setImageStorageField("webdav_username", event.target.value)} disabled={!imageStorageEnabled} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={8}>
+              <Form.Item label="密码">
+                <Input.Password value={String(config.image_storage?.webdav_password || "")} onChange={(event) => setImageStorageField("webdav_password", event.target.value)} disabled={!imageStorageEnabled} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={8}>
+              <Form.Item label="远端目录">
+                <Input value={String(config.image_storage?.webdav_root_path || "")} onChange={(event) => setImageStorageField("webdav_root_path", event.target.value)} placeholder="chatgpt2api/images" disabled={!imageStorageEnabled} />
+              </Form.Item>
+            </Col>
+            <Col xs={24}>
+              <Form.Item label="公开访问前缀" extra="留空时返回本应用 /images/... 代理地址；填入后直接返回公开图片地址。">
+                <Input value={String(config.image_storage?.public_base_url || "")} onChange={(event) => setImageStorageField("public_base_url", event.target.value)} placeholder="https://cdn.example.com/chatgpt2api/images" disabled={!imageStorageEnabled} />
+              </Form.Item>
+            </Col>
+          </Row>
+        </Card>
+
+        <Divider />
+        <SectionTitle title="内容安全" description="在请求进入账号池前进行全局提示词约束、敏感词拦截或 AI 审核。" />
+        <Row gutter={[16, 16]}>
+          <Col xs={24}>
+            <Form.Item label="全局附加指令" extra="每次请求都会作为 system 消息注入。">
+              <Input.TextArea value={String(config.global_system_prompt || "")} onChange={(event) => setGlobalSystemPrompt(event.target.value)} autoSize={{ minRows: 4, maxRows: 8 }} placeholder="例如：遇到违法、色情、暴力、仇恨等请求时拒绝回答。" />
+            </Form.Item>
+          </Col>
+          <Col xs={24}>
+            <Form.Item label="敏感词" extra="一行一个，命中任意敏感词会直接拒绝请求。">
+              <Input.TextArea value={(config.sensitive_words || []).join("\n")} onChange={(event) => setSensitiveWordsText(event.target.value)} autoSize={{ minRows: 4, maxRows: 8 }} placeholder="一行一个，命中即拒绝" />
+            </Form.Item>
+          </Col>
+        </Row>
+
+        <Card size="small">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <Space>
+              <Switch checked={aiReviewEnabled} onChange={(checked) => setAIReviewField("enabled", checked)} />
+              <Typography.Text strong>启用 AI 审核</Typography.Text>
+              <Tag color={aiReviewEnabled ? "green" : "default"}>{aiReviewEnabled ? "审核开启" : "未开启"}</Tag>
+            </Space>
+          </div>
+          <Row gutter={[16, 16]}>
+            <Col xs={24} md={8}>
+              <Form.Item label="Base URL">
+                <Input value={String(config.ai_review?.base_url || "")} onChange={(event) => setAIReviewField("base_url", event.target.value)} placeholder="https://api.openai.com" />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={8}>
+              <Form.Item label="API Key">
+                <Input.Password value={String(config.ai_review?.api_key || "")} onChange={(event) => setAIReviewField("api_key", event.target.value)} placeholder="sk-..." />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={8}>
+              <Form.Item label="Model">
+                <Input value={String(config.ai_review?.model || "")} onChange={(event) => setAIReviewField("model", event.target.value)} placeholder="gpt-5.4-mini" />
+              </Form.Item>
+            </Col>
+            <Col xs={24}>
+              <Form.Item label="审核提示词">
+                <Input.TextArea value={String(config.ai_review?.prompt || "")} onChange={(event) => setAIReviewField("prompt", event.target.value)} autoSize={{ minRows: 3, maxRows: 6 }} placeholder="判断用户请求是否允许。只回答 ALLOW 或 REJECT。" />
+              </Form.Item>
+            </Col>
+          </Row>
+        </Card>
+      </Form>
     </Card>
   );
 }

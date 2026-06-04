@@ -1,8 +1,7 @@
 "use client";
 
-import { LoaderCircle } from "lucide-react";
+import { Card, Spin, Tabs, Typography } from "antd";
 
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuthGuard } from "@/lib/use-auth-guard";
 
 import { ChatPanel } from "./components/chat-panel";
@@ -25,35 +24,30 @@ export default function DebugPage() {
   if (isCheckingAuth || !session || session.role !== "admin") {
     return (
       <div className="flex min-h-[calc(100vh-49px)] items-center justify-center">
-        <LoaderCircle className="size-5 animate-spin text-muted-foreground" />
+        <Spin />
       </div>
     );
   }
 
   return (
-    <Tabs defaultValue="skills" className="mx-auto flex min-h-[calc(100vh-49px)] w-full max-w-[1600px] flex-col gap-4 px-4 pt-3 pb-6 md:px-8">
-      <TabsList variant="line" className="w-full">
-        {tabs.map(({ value, title }) => (
-          <TabsTrigger key={value} value={value}>
-            {title}
-          </TabsTrigger>
-        ))}
-      </TabsList>
-      <TabsContent value="skills">
-        <SkillPanel />
-      </TabsContent>
-      <TabsContent value="search" className="min-h-0">
-        <SearchPanel />
-      </TabsContent>
-      <TabsContent value="ppt" className="min-h-0">
-        <PptPanel />
-      </TabsContent>
-      <TabsContent value="psd" className="min-h-0">
-        <PsdPanel />
-      </TabsContent>
-      <TabsContent value="chat" className="min-h-0">
-        <ChatPanel />
-      </TabsContent>
-    </Tabs>
+    <section className="space-y-4">
+      <Card>
+        <Typography.Text type="secondary" className="text-xs font-semibold uppercase tracking-[0.18em]">Debug</Typography.Text>
+        <Typography.Title level={3} className="!mb-0 !mt-1">调试工具</Typography.Title>
+        <Typography.Text type="secondary">集中测试搜索、生成和对话相关接口。</Typography.Text>
+      </Card>
+      <Card styles={{ body: { paddingTop: 8 } }}>
+        <Tabs
+          defaultActiveKey="skills"
+          items={[
+            { key: "skills", label: "搜索Skills", children: <SkillPanel /> },
+            { key: "search", label: "搜索", children: <SearchPanel /> },
+            { key: "ppt", label: "PPT生成", children: <PptPanel /> },
+            { key: "psd", label: "PSD生成", children: <PsdPanel /> },
+            { key: "chat", label: "对话", children: <ChatPanel /> },
+          ]}
+        />
+      </Card>
+    </section>
   );
 }

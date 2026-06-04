@@ -1,13 +1,7 @@
 "use client";
 
-import { format, parse } from "date-fns";
-import { CalendarIcon } from "lucide-react";
-import type { DateRange } from "react-day-picker";
-
-import { Button } from "@/components/ui/button";
-import { Calendar } from "@/components/ui/calendar";
-import { Field } from "@/components/ui/field";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { DatePicker } from "antd";
+import dayjs from "dayjs";
 
 type DateRangeFilterProps = {
   startDate: string;
@@ -16,34 +10,18 @@ type DateRangeFilterProps = {
 };
 
 export function DateRangeFilter({ startDate, endDate, onChange }: DateRangeFilterProps) {
-  const selected: DateRange | undefined = startDate
-    ? {
-        from: parse(startDate, "yyyy-MM-dd", new Date()),
-        to: endDate ? parse(endDate, "yyyy-MM-dd", new Date()) : undefined,
-      }
-    : undefined;
-
-  const label = startDate ? `${startDate} 至 ${endDate || startDate}` : "选择日期范围";
+  const value = startDate
+    ? ([dayjs(startDate), endDate ? dayjs(endDate) : dayjs(startDate)] as [dayjs.Dayjs, dayjs.Dayjs])
+    : null;
 
   return (
-    <Field className="w-[240px]">
-      <Popover>
-        <PopoverTrigger asChild>
-          <Button variant="outline" className="h-10 justify-start rounded-xl border-stone-200 bg-white px-3 font-normal text-stone-700">
-            <CalendarIcon className="size-4 text-stone-400" />
-            {label}
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent className="w-auto p-3" align="start">
-          <Calendar
-            mode="range"
-            defaultMonth={selected?.from}
-            selected={selected}
-            onSelect={(value) => onChange(value?.from ? format(value.from, "yyyy-MM-dd") : "", value?.to ? format(value.to, "yyyy-MM-dd") : "")}
-            numberOfMonths={2}
-          />
-        </PopoverContent>
-      </Popover>
-    </Field>
+    <DatePicker.RangePicker
+      allowClear
+      className="h-10 w-[260px]"
+      format="YYYY-MM-DD"
+      placeholder={["开始日期", "结束日期"]}
+      value={value}
+      onChange={(_, dateStrings) => onChange(dateStrings[0] || "", dateStrings[1] || "")}
+    />
   );
 }

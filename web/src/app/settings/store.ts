@@ -84,6 +84,7 @@ function normalizeConfig(config: SettingsConfig): SettingsConfig {
   return {
     ...config,
     refresh_account_interval_minute: Number(config.refresh_account_interval_minute || 5),
+    refresh_account_concurrency: Number(config.refresh_account_concurrency || 20),
     image_retention_days: Number(config.image_retention_days || 30),
     image_poll_timeout_secs: Number(config.image_poll_timeout_secs || 120),
     image_account_concurrency: Number(config.image_account_concurrency || 3),
@@ -206,6 +207,7 @@ type SettingsStore = {
   removeBackup: (key: string) => Promise<void>;
   testBackup: () => Promise<void>;
   setRefreshAccountIntervalMinute: (value: string) => void;
+  setRefreshAccountConcurrency: (value: string) => void;
   setImageRetentionDays: (value: string) => void;
   setImagePollTimeoutSecs: (value: string) => void;
   setImageAccountConcurrency: (value: string) => void;
@@ -347,6 +349,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       const data = await updateSettingsConfig({
         ...config,
         refresh_account_interval_minute: Math.max(1, Number(config.refresh_account_interval_minute) || 1),
+        refresh_account_concurrency: Math.min(100, Math.max(1, Number(config.refresh_account_concurrency) || 20)),
         image_retention_days: Math.max(1, Number(config.image_retention_days) || 30),
         image_poll_timeout_secs: Math.max(1, Number(config.image_poll_timeout_secs) || 120),
         image_account_concurrency: Math.max(1, Number(config.image_account_concurrency) || 3),
@@ -414,6 +417,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         },
       };
     });
+  },
+
+  setRefreshAccountConcurrency: (value) => {
+    set((state) => state.config ? { config: { ...state.config, refresh_account_concurrency: value } } : {});
   },
 
   setImageRetentionDays: (value) => {
@@ -764,9 +771,14 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     if (!registerConfig) return;
     try {
       set({ isSavingRegister: true });
+      const proxy = registerConfig.proxy.trim();
+      const mail = { ...registerConfig.mail, proxy: proxy || undefined };
+      if (!proxy) {
+        delete mail.proxy;
+      }
       const data = await updateRegisterConfig({
-        mail: registerConfig.mail,
-        proxy: registerConfig.proxy.trim(),
+        mail,
+        proxy,
         total: Math.max(1, Number(registerConfig.total) || 1),
         threads: Math.max(1, Number(registerConfig.threads) || 1),
         mode: registerConfig.mode,
@@ -789,9 +801,14 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     set({ isSavingRegister: true });
     try {
       if (!registerConfig.enabled) {
+        const proxy = registerConfig.proxy.trim();
+        const mail = { ...registerConfig.mail, proxy: proxy || undefined };
+        if (!proxy) {
+          delete mail.proxy;
+        }
         await updateRegisterConfig({
-          mail: registerConfig.mail,
-          proxy: registerConfig.proxy.trim(),
+          mail,
+          proxy,
           total: Math.max(1, Number(registerConfig.total) || 1),
           threads: Math.max(1, Number(registerConfig.threads) || 1),
           mode: registerConfig.mode,

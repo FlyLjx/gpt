@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Card as AntCard, Spin, Typography } from "antd";
 import { ArrowDown, History, LoaderCircle, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -1583,8 +1584,13 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
   };
 
   return (
-    <>
-      <section className="mx-auto grid h-[calc(100dvh-6.5rem)] min-h-0 w-full max-w-[1380px] grid-cols-1 gap-2 overflow-hidden px-0 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] sm:h-[calc(100dvh-5.25rem)] sm:gap-3 sm:px-3 sm:pb-6 lg:grid-cols-[240px_minmax(0,1fr)]">
+    <section className="space-y-4">
+      <AntCard>
+        <Typography.Text type="secondary" className="text-xs font-semibold uppercase tracking-[0.18em]">Image Studio</Typography.Text>
+        <Typography.Title level={3} className="!mb-0 !mt-1">生图工作台</Typography.Title>
+        <Typography.Text type="secondary">选择模型、参考图和画幅，在对话式历史中持续生成与编辑图片。</Typography.Text>
+      </AntCard>
+      <section className="mx-auto grid h-[calc(100dvh-13rem)] min-h-[640px] w-full max-w-[1380px] grid-cols-1 gap-2 overflow-hidden px-0 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] sm:gap-3 sm:px-3 sm:pb-6 lg:grid-cols-[240px_minmax(0,1fr)]">
         <div className="hidden h-full min-h-0 border-r border-stone-200/70 pr-3 lg:block">
           <ImageSidebar
             conversations={conversations}
@@ -1753,7 +1759,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
       ) : null}
 
 
-    </>
+    </section>
   );
 }
 
@@ -1763,7 +1769,7 @@ export default function ImagePage() {
   if (isCheckingAuth || !session) {
     return (
       <div className="flex min-h-[40vh] items-center justify-center">
-        <LoaderCircle className="size-5 animate-spin text-stone-400" />
+        <Spin />
       </div>
     );
   }

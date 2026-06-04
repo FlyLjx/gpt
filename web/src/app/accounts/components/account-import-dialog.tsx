@@ -3,6 +3,13 @@
 import { useRouter } from "next/navigation";
 import { useRef, useState, type ChangeEvent } from "react";
 import {
+  Button as AntButton,
+  Card as AntCard,
+  Input as AntInput,
+  Modal,
+  Tag,
+} from "antd";
+import {
   ArrowLeft,
   Copy,
   ExternalLink,
@@ -10,24 +17,13 @@ import {
   FileText,
   Files,
   KeyRound,
-  LoaderCircle,
   LogIn,
   ServerCog,
   Upload,
+  type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Textarea } from "@/components/ui/textarea";
 import {
   createAccounts,
   finishOAuthLogin,
@@ -36,7 +32,6 @@ import {
   type AccountImportPayload,
   type OAuthLoginStartResponse,
 } from "@/lib/api";
-import { cn } from "@/lib/utils";
 
 type ImportMethod = "menu" | "token" | "session" | "codex-auth" | "cpa" | "oauth";
 
@@ -128,30 +123,37 @@ function MethodCard({
   description,
   icon: Icon,
   onClick,
+  featured = false,
+  tag,
 }: {
   title: string;
   description: string;
-  icon: typeof KeyRound;
+  icon: LucideIcon;
   onClick: () => void;
+  featured?: boolean;
+  tag?: string;
 }) {
   return (
-    <button
-      type="button"
+    <AntCard
+      hoverable
+      size="small"
       onClick={onClick}
-      className="w-full rounded-2xl border border-stone-200 bg-white p-0 text-left transition hover:border-stone-300 hover:bg-stone-50"
+      className={`cursor-pointer transition ${featured ? "border-blue-200 bg-blue-50/50" : "bg-white"}`}
+      styles={{ body: { padding: featured ? 20 : 18 } }}
     >
-      <Card className="rounded-2xl border-0 bg-transparent shadow-none">
-        <CardContent className="flex items-start gap-4 p-4">
-          <div className="rounded-xl bg-stone-100 p-3 text-stone-700">
-            <Icon className="size-5" />
+      <div className={`flex items-start ${featured ? "gap-4" : "gap-3"}`}>
+        <div className={`shrink-0 rounded-xl ${featured ? "bg-blue-600 p-3 text-white" : "bg-blue-50 p-2.5 text-blue-600"}`}>
+          <Icon className={featured ? "size-5" : "size-4"} />
+        </div>
+        <div className="min-w-0 flex-1 space-y-1">
+          <div className="flex items-center gap-2">
+            <div className={`${featured ? "text-base" : "text-sm"} font-semibold text-slate-900`}>{title}</div>
+            {tag ? <Tag color="blue" className="m-0">{tag}</Tag> : null}
           </div>
-          <div className="space-y-1">
-            <div className="text-sm font-semibold text-stone-900">{title}</div>
-            <div className="text-sm leading-6 text-stone-500">{description}</div>
-          </div>
-        </CardContent>
-      </Card>
-    </button>
+          <div className={`${featured ? "text-sm leading-6" : "text-xs leading-5"} text-slate-500`}>{description}</div>
+        </div>
+      </div>
+    </AntCard>
   );
 }
 
@@ -437,11 +439,11 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
           </div>
           <div className="space-y-2">
             <label className="text-sm font-medium text-stone-700">Access Token 列表</label>
-            <Textarea
+            <AntInput.TextArea
               placeholder="每行一个 Access Token..."
               value={tokenInput}
               onChange={(event) => setTokenInput(event.target.value)}
-              className="min-h-56 resize-none rounded-xl border-stone-200"
+              rows={9}
             />
           </div>
           <div className="rounded-2xl border border-dashed border-stone-200 bg-stone-50 p-4">
@@ -450,16 +452,13 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
                 <div className="text-sm font-medium text-stone-800">从 TXT 文件导入</div>
                 <div className="text-sm leading-6 text-stone-500">支持 `.txt`，文件内容也是一行一个 Token。</div>
               </div>
-              <Button
-                type="button"
-                variant="outline"
-                className="rounded-xl border-stone-200 bg-white"
+              <AntButton
                 onClick={() => txtInputRef.current?.click()}
                 disabled={isSubmitting}
+                icon={<FileText className="size-4" />}
               >
-                <FileText className="size-4" />
                 选择 TXT
-              </Button>
+              </AntButton>
             </div>
           </div>
           <input
@@ -506,11 +505,12 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
           </div>
           <div className="space-y-2">
             <label className="text-sm font-medium text-stone-700">Session JSON</label>
-            <Textarea
+            <AntInput.TextArea
               placeholder='粘贴完整 JSON，例如包含 "accessToken" 的对象...'
               value={sessionInput}
               onChange={(event) => setSessionInput(event.target.value)}
-              className="min-h-56 resize-none rounded-xl border-stone-200 font-mono text-xs"
+              rows={9}
+              className="font-mono text-xs"
             />
           </div>
         </div>
@@ -539,68 +539,58 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
           </div>
           <div className="space-y-2">
             <label className="text-sm font-medium text-stone-700">邮箱（可选预填）</label>
-            <input
+            <AntInput
               type="email"
               placeholder="you@example.com"
               value={oauthEmailHint}
               onChange={(event) => setOauthEmailHint(event.target.value)}
               disabled={Boolean(oauthSession) || oauthStarting}
-              className="w-full rounded-xl border border-stone-200 bg-white px-3 py-2 text-sm outline-none focus:border-stone-400"
             />
           </div>
           {!oauthSession ? (
-            <Button
-              type="button"
-              className="h-10 rounded-xl bg-stone-950 text-white hover:bg-stone-800"
+            <AntButton
+              type="primary"
               onClick={() => void handleStartOAuth()}
-              disabled={oauthStarting}
+              loading={oauthStarting}
+              icon={!oauthStarting ? <ExternalLink className="size-4" /> : undefined}
             >
-              {oauthStarting ? <LoaderCircle className="size-4 animate-spin" /> : <ExternalLink className="size-4" />}
               打开授权页面
-            </Button>
+            </AntButton>
           ) : (
             <div className="space-y-3">
               <div className="rounded-2xl border border-stone-200 bg-white p-3 text-xs leading-6 text-stone-600 break-all font-mono">
                 {oauthSession.authorize_url}
               </div>
               <div className="flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="rounded-xl border-stone-200 bg-white"
+                <AntButton
                   onClick={() => void handleCopyAuthorizeUrl()}
+                  icon={<Copy className="size-4" />}
                 >
-                  <Copy className="size-4" />
                   复制授权 URL
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="rounded-xl border-stone-200 bg-white"
+                </AntButton>
+                <AntButton
                   onClick={() => window.open(oauthSession.authorize_url, "_blank", "noopener,noreferrer")}
+                  icon={<ExternalLink className="size-4" />}
                 >
-                  <ExternalLink className="size-4" />
                   再次打开
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="rounded-xl border-stone-200 bg-white"
+                </AntButton>
+                <AntButton
                   onClick={() => {
                     setOauthSession(null);
                     setOauthCallbackInput("");
                   }}
                 >
                   重新生成
-                </Button>
+                </AntButton>
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium text-stone-700">粘贴 callback URL（或仅 code）</label>
-                <Textarea
+                <AntInput.TextArea
                   placeholder={"https://platform.openai.com/auth/callback?code=...&state=..."}
                   value={oauthCallbackInput}
                   onChange={(event) => setOauthCallbackInput(event.target.value)}
-                  className="min-h-24 resize-none rounded-xl border-stone-200 font-mono text-xs"
+                  rows={4}
+                  className="font-mono text-xs"
                 />
               </div>
             </div>
@@ -634,15 +624,15 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
                 每个文件应为一个 JSON 对象。系统会从对象中自动提取 `access_token` 或 `accessToken`，
               </div>
             </div>
-            <Button
-              type="button"
-              className="mt-4 rounded-xl bg-stone-950 text-white hover:bg-stone-800"
+            <AntButton
+              type="primary"
+              className="mt-4"
               onClick={() => cpaInputRef.current?.click()}
               disabled={isSubmitting}
+              icon={<Files className="size-4" />}
             >
-              <Files className="size-4" />
               选择多个 JSON 文件
-            </Button>
+            </AntButton>
           </div>
           <input
             ref={cpaInputRef}
@@ -675,11 +665,12 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
           </button>
           <div className="space-y-2">
             <label className="text-sm font-medium text-stone-700">Codex 认证 JSON</label>
-            <Textarea
+            <AntInput.TextArea
               placeholder='粘贴包含 "access_token"、"refresh_token"、"id_token" 的 Codex 认证 JSON...'
               value={codexAuthInput}
               onChange={(event) => setCodexAuthInput(event.target.value)}
-              className="min-h-64 resize-none rounded-xl border-stone-200 font-mono text-xs"
+              rows={10}
+              className="font-mono text-xs"
             />
           </div>
         </div>
@@ -687,57 +678,63 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
     }
 
     return (
-      <div className="space-y-3">
-        <MethodCard
-          title="OAuth 登录已有账号（带自动刷新）"
-          description="用浏览器登录自己的 ChatGPT 账号，回填 callback URL 即可拿到 refresh_token，后台会自动续期。"
-          icon={LogIn}
-          onClick={() => setMethod("oauth")}
-        />
-        <MethodCard
-          title="导入 Access Token"
-          description="支持直接粘贴，一行一个；也支持从 TXT 文件读取，一行一个。"
-          icon={KeyRound}
-          onClick={() => setMethod("token")}
-        />
-        <MethodCard
-          title="导入 Session JSON"
-          description="从 chatgpt.com 的 session 接口复制完整 JSON，自动提取 accessToken。"
-          icon={FileJson}
-          onClick={() => setMethod("session")}
-        />
-        <MethodCard
-          title="导入 Codex 认证 JSON"
-          description="粘贴 Codex 认证 JSON，导入后账号来源标记为 codex。"
-          icon={FileJson}
-          onClick={() => setMethod("codex-auth")}
-        />
-        <MethodCard
-          title="导入 CPA JSON 文件"
-          description="支持一次多选多个本地 JSON 文件，逐个读取对象里的 access_token 后导入。"
-          icon={Files}
-          onClick={() => setMethod("cpa")}
-        />
-        <MethodCard
-          title="从远程 CPA 服务器导入"
-          description="前往设置页面配置远程 CPA 服务器后再执行导入。"
-          icon={Files}
-          onClick={() => {
-            setOpen(false);
-            resetState();
-            router.push("/settings");
-          }}
-        />
-        <MethodCard
-          title="从 Sub2API 服务器导入"
-          description="前往设置页面配置 Sub2API 服务器，再选择其中的 OpenAI 账号导入。"
-          icon={ServerCog}
-          onClick={() => {
-            setOpen(false);
-            resetState();
-            router.push("/settings");
-          }}
-        />
+      <div>
+        <div className="mb-6">
+          <MethodCard
+            title="OAuth 登录已有账号（带自动刷新）"
+            description="用浏览器登录自己的 ChatGPT 账号，回填 callback URL 即可拿到 refresh_token，后台会自动续期。"
+            icon={LogIn}
+            onClick={() => setMethod("oauth")}
+            featured
+            tag="推荐"
+          />
+        </div>
+        <div className="grid gap-x-5 gap-y-5 md:grid-cols-2">
+          <MethodCard
+            title="导入 Access Token"
+            description="粘贴或读取 TXT，一行一个。"
+            icon={KeyRound}
+            onClick={() => setMethod("token")}
+          />
+          <MethodCard
+            title="导入 Session JSON"
+            description="从 session 接口复制 JSON，自动提取 accessToken。"
+            icon={FileJson}
+            onClick={() => setMethod("session")}
+          />
+          <MethodCard
+            title="导入 Codex 认证 JSON"
+            description="导入后账号来源标记为 codex。"
+            icon={FileJson}
+            onClick={() => setMethod("codex-auth")}
+          />
+          <MethodCard
+            title="导入 CPA JSON 文件"
+            description="多选本地 JSON，逐个读取 access_token。"
+            icon={Files}
+            onClick={() => setMethod("cpa")}
+          />
+          <MethodCard
+            title="从远程 CPA 服务器导入"
+            description="先到设置页配置 CPA 服务器。"
+            icon={Files}
+            onClick={() => {
+              setOpen(false);
+              resetState();
+              router.push("/settings");
+            }}
+          />
+          <MethodCard
+            title="从 Sub2API 服务器导入"
+            description="配置 Sub2API 后选择 OpenAI 账号导入。"
+            icon={ServerCog}
+            onClick={() => {
+              setOpen(false);
+              resetState();
+              router.push("/settings");
+            }}
+          />
+        </div>
       </div>
     );
   };
@@ -746,154 +743,114 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
 
   return (
     <>
-      <Dialog open={open} onOpenChange={handleOpenChange}>
-        <Button
-          className="h-10 rounded-xl bg-stone-950 px-4 text-white hover:bg-stone-800"
+      <AntButton
+          type="primary"
+          icon={<Upload className="size-4" />}
           onClick={() => setOpen(true)}
           disabled={disabled}
         >
-          <Upload className="size-4" />
           导入
-        </Button>
-        <DialogContent showCloseButton={false} className="rounded-2xl p-6">
-          <DialogHeader className="gap-2">
-            <DialogTitle>
-              {method === "menu"
-                ? "导入账户"
-                : method === "token"
-                  ? "导入 Access Token"
-                  : method === "session"
-                    ? "导入 Session JSON"
-                    : method === "codex-auth"
-                      ? "导入 Codex 认证 JSON"
-                    : method === "oauth"
-                      ? "OAuth 登录已有账号"
-                      : "导入 CPA JSON"}
-            </DialogTitle>
-            <DialogDescription className="text-sm leading-6">
-              {method === "menu"
-                ? "选择一种导入方式。导入成功后会自动拉取邮箱、类型和额度。"
-                : method === "token"
-                  ? "支持手动粘贴或从 TXT 文件导入，一行一个 Token。"
-                  : method === "session"
-                    ? "粘贴完整 Session JSON，系统会自动提取 accessToken。"
-                    : method === "codex-auth"
-                      ? "粘贴 Codex 认证 JSON，系统会按 codex 来源导入。"
-                    : method === "oauth"
-                      ? "用浏览器跑一遍 OpenAI 标准 OAuth，拿回 refresh_token 后系统会自动续期。"
-                      : "支持一次读取多个本地 JSON 文件，并在提交前做数量确认。"}
-            </DialogDescription>
-          </DialogHeader>
+      </AntButton>
+      <Modal
+        title={
+          method === "menu"
+            ? "导入账户"
+            : method === "token"
+              ? "导入 Access Token"
+              : method === "session"
+                ? "导入 Session JSON"
+                : method === "codex-auth"
+                  ? "导入 Codex 认证 JSON"
+                : method === "oauth"
+                  ? "OAuth 登录已有账号"
+                  : "导入 CPA JSON"
+        }
+        open={open}
+        onCancel={() => handleOpenChange(false)}
+        width={760}
+        styles={{ body: { paddingTop: 12 } }}
+        footer={[
+          <AntButton key="cancel" onClick={() => setOpen(false)} disabled={footerDisabled}>
+            取消
+          </AntButton>,
+          method === "token" ? (
+            <AntButton key="token" type="primary" onClick={() => void handleImportTokenText()} disabled={footerDisabled} loading={isSubmitting}>
+              导入 Token
+            </AntButton>
+          ) : null,
+          method === "session" ? (
+            <AntButton key="session" type="primary" onClick={() => void handleImportSessionJson()} disabled={footerDisabled} loading={isSubmitting}>
+              导入 JSON
+            </AntButton>
+          ) : null,
+          method === "codex-auth" ? (
+            <AntButton key="codex" type="primary" onClick={() => void handleImportCodexAuthJson()} disabled={footerDisabled} loading={isSubmitting}>
+              导入 JSON
+            </AntButton>
+          ) : null,
+          method === "oauth" && oauthSession ? (
+            <AntButton key="oauth" type="primary" onClick={() => void handleFinishOAuth()} disabled={footerDisabled || !oauthCallbackInput.trim()} loading={isSubmitting}>
+              完成导入
+            </AntButton>
+          ) : null,
+          method === "cpa" && pendingCpaImport ? (
+            <AntButton key="cpa" type="primary" onClick={() => setConfirmOpen(true)} disabled={footerDisabled || !pendingCpaImport}>
+              查看导入确认
+            </AntButton>
+          ) : null,
+        ].filter(Boolean)}
+      >
+        <div className="mb-5 rounded-xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-500">
+          {method === "menu"
+            ? "选择一种导入方式。导入成功后会自动拉取邮箱、类型和额度。"
+            : method === "token"
+              ? "支持手动粘贴或从 TXT 文件导入，一行一个 Token。"
+              : method === "session"
+                ? "粘贴完整 Session JSON，系统会自动提取 accessToken。"
+                : method === "codex-auth"
+                  ? "粘贴 Codex 认证 JSON，系统会按 codex 来源导入。"
+                : method === "oauth"
+                  ? "用浏览器跑一遍 OpenAI 标准 OAuth，拿回 refresh_token 后系统会自动续期。"
+                  : "支持一次读取多个本地 JSON 文件，并在提交前做数量确认。"}
+        </div>
 
-          {renderMethodBody()}
+        {renderMethodBody()}
+      </Modal>
 
-          <DialogFooter className="pt-2">
-            <Button
-              variant="secondary"
-              className="h-10 rounded-xl bg-stone-100 px-5 text-stone-700 hover:bg-stone-200"
-              onClick={() => setOpen(false)}
-              disabled={footerDisabled}
-            >
-              取消
-            </Button>
-            {method === "token" ? (
-              <Button
-                className="h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800"
-                onClick={() => void handleImportTokenText()}
-                disabled={footerDisabled}
-              >
-                {isSubmitting ? <LoaderCircle className="size-4 animate-spin" /> : null}
-                导入 Token
-              </Button>
-            ) : null}
-            {method === "session" ? (
-              <Button
-                className="h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800"
-                onClick={() => void handleImportSessionJson()}
-                disabled={footerDisabled}
-              >
-                {isSubmitting ? <LoaderCircle className="size-4 animate-spin" /> : null}
-                导入 JSON
-              </Button>
-            ) : null}
-            {method === "codex-auth" ? (
-              <Button
-                className="h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800"
-                onClick={() => void handleImportCodexAuthJson()}
-                disabled={footerDisabled}
-              >
-                {isSubmitting ? <LoaderCircle className="size-4 animate-spin" /> : null}
-                导入 JSON
-              </Button>
-            ) : null}
-            {method === "oauth" ? (
-              <Button
-                className={cn(
-                  "h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800",
-                  !oauthSession ? "hidden" : "",
-                )}
-                onClick={() => void handleFinishOAuth()}
-                disabled={footerDisabled || !oauthSession || !oauthCallbackInput.trim()}
-              >
-                {isSubmitting ? <LoaderCircle className="size-4 animate-spin" /> : null}
-                完成导入
-              </Button>
-            ) : null}
-            {method === "cpa" ? (
-              <Button
-                className={cn(
-                  "h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800",
-                  !pendingCpaImport ? "hidden" : "",
-                )}
-                onClick={() => setConfirmOpen(true)}
-                disabled={footerDisabled || !pendingCpaImport}
-              >
-                查看导入确认
-              </Button>
-            ) : null}
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <DialogContent className="rounded-2xl p-6">
-          <DialogHeader className="gap-2">
-            <DialogTitle>确认导入 CPA Token</DialogTitle>
-            <DialogDescription className="text-sm leading-6">
-              {pendingCpaImport
-                ? `确认识别到 ${pendingCpaImport.parsedFileCount} 个 Token，是否确认导入？`
-                : "尚未读取到可导入的 Token。"}
-              {pendingCpaImport?.errorCount
-                ? `，另有 ${pendingCpaImport.errorCount} 个文件未提取成功。`
-                : "。"}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter className="pt-2">
-            <Button
-              variant="secondary"
-              className="h-10 rounded-xl bg-stone-100 px-5 text-stone-700 hover:bg-stone-200"
-              onClick={() => setConfirmOpen(false)}
-              disabled={isSubmitting}
-            >
-              返回
-            </Button>
-            <Button
-              className="h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800"
-              onClick={() =>
-                void submitTokens(
-                  pendingCpaImport?.tokens ?? [],
-                  "CPA JSON 导入完成",
-                  pendingCpaImport?.accounts ?? [],
-                )
-              }
-              disabled={isSubmitting || !pendingCpaImport}
-            >
-              {isSubmitting ? <LoaderCircle className="size-4 animate-spin" /> : null}
-              确认导入
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <Modal
+        title="确认导入 CPA Token"
+        open={confirmOpen}
+        onCancel={() => setConfirmOpen(false)}
+        footer={[
+          <AntButton key="back" onClick={() => setConfirmOpen(false)} disabled={isSubmitting}>
+            返回
+          </AntButton>,
+          <AntButton
+            key="confirm"
+            type="primary"
+            loading={isSubmitting}
+            onClick={() =>
+              void submitTokens(
+                pendingCpaImport?.tokens ?? [],
+                "CPA JSON 导入完成",
+                pendingCpaImport?.accounts ?? [],
+              )
+            }
+            disabled={!pendingCpaImport}
+          >
+            确认导入
+          </AntButton>,
+        ]}
+      >
+        <p className="text-sm leading-6 text-slate-500">
+          {pendingCpaImport
+            ? `确认识别到 ${pendingCpaImport.parsedFileCount} 个 Token，是否确认导入？`
+            : "尚未读取到可导入的 Token。"}
+          {pendingCpaImport?.errorCount
+            ? `，另有 ${pendingCpaImport.errorCount} 个文件未提取成功。`
+            : "。"}
+        </p>
+      </Modal>
     </>
   );
 }

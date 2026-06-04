@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { Card, Typography } from "antd";
 import { LoaderCircle } from "lucide-react";
 
 import webConfig from "@/constants/common-env";
@@ -44,18 +45,19 @@ function RegisterDataController() {
 
 function RegisterPageContent() {
   return (
-    <>
+    <section className="space-y-4">
       <RegisterDataController />
-      <section className="mb-2 flex flex-col gap-1 lg:flex-row lg:items-start lg:justify-between">
-        <div className="space-y-1">
-          <div className="text-xs font-semibold tracking-[0.18em] text-stone-500 uppercase">Register</div>
-          <h1 className="text-2xl font-semibold tracking-tight">ChatGPT注册机</h1>
+      <Card styles={{ body: { padding: "20px 24px" } }}>
+        <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <Typography.Text type="secondary" className="text-xs font-semibold uppercase tracking-[0.18em]">Register</Typography.Text>
+            <Typography.Title level={3} className="!mb-0 !mt-1">ChatGPT注册机</Typography.Title>
+            <Typography.Text type="secondary">配置邮箱 provider、注册目标和运行参数，实时查看注册进度。</Typography.Text>
+          </div>
         </div>
-      </section>
-      <section>
-        <RegisterCard />
-      </section>
-    </>
+      </Card>
+      <RegisterCard />
+    </section>
   );
 }
 

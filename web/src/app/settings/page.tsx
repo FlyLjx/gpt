@@ -61,19 +61,23 @@ function SettingsDataController() {
 
 function SettingsPageContent() {
   return (
-    <>
+    <section className="settings-console">
       <SettingsDataController />
       <SettingsHeader />
-      <section className="space-y-6">
-        <ConfigCard />
-        <BackupSettingsCard />
-        <UserKeysCard />
-        <CPAPoolsCard />
-        <Sub2APIConnections />
+      <section className="settings-layout">
+        <div className="settings-main-column">
+          <ConfigCard />
+          <BackupSettingsCard />
+        </div>
+        <aside className="settings-side-column">
+          <UserKeysCard />
+          <CPAPoolsCard />
+          <Sub2APIConnections />
+        </aside>
       </section>
       <CPAPoolDialog />
       <ImportBrowserDialog />
-    </>
+    </section>
   );
 }
 

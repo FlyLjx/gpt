@@ -1,12 +1,15 @@
 "use client";
 
+import { Card, Typography } from "antd";
+
 export function SettingsHeader() {
   return (
-    <section className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-      <div className="space-y-1">
-        <div className="text-xs font-semibold tracking-[0.18em] text-stone-500 uppercase">Settings</div>
-        <h1 className="text-2xl font-semibold tracking-tight">设置</h1>
+    <Card>
+      <div className="py-1">
+        <Typography.Text type="secondary" className="text-xs font-semibold uppercase tracking-[0.18em]">Settings</Typography.Text>
+        <Typography.Title level={3} className="!mb-0 !mt-1">设置</Typography.Title>
+        <Typography.Text type="secondary" className="block !mt-2">管理运行配置、备份、用户 Key、账号池和 Sub2API 连接。</Typography.Text>
       </div>
-    </section>
+    </Card>
   );
 }

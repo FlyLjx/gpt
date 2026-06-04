@@ -31,6 +31,7 @@ class AccountService:
     _REFRESH_TOKEN_KEEPALIVE_ERROR_BACKOFF_SECONDS = 6 * 60 * 60
     _REFRESH_TOKEN_KEEPALIVE_BATCH_SIZE = 3
     _TOKEN_REFRESH_ERROR_BACKOFF_SECONDS = 5 * 60
+    _CODEX_USAGE_PROBE_TTL_SECONDS = 10 * 60
     _OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
     _OAUTH_CLIENT_ID = "app_2SKx67EdpoN0G6j64rFvigXD"
     _OAUTH_USER_AGENT = (
@@ -116,6 +117,140 @@ class AccountService:
             return ""
         tz = timezone(timedelta(hours=8))
         return datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(tz).isoformat()
+
+    @staticmethod
+    def _float_or_none(value: object) -> float | None:
+        try:
+            return float(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _int_or_none(value: object) -> int | None:
+        try:
+            return int(float(str(value).strip()))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _header_value(headers: object, key: str) -> str:
+        if not headers:
+            return ""
+        try:
+            value = headers.get(key)  # type: ignore[attr-defined]
+            if value is not None:
+                return str(value).strip()
+        except Exception:
+            pass
+        key_lower = key.lower()
+        try:
+            items = headers.items()  # type: ignore[attr-defined]
+        except Exception:
+            items = []
+        for item_key, item_value in items:
+            if str(item_key).lower() == key_lower:
+                return str(item_value).strip()
+        return ""
+
+    @classmethod
+    def _normalize_usage_progress(cls, value: object, now: datetime | None = None) -> dict | None:
+        if not isinstance(value, dict):
+            return None
+        now = now or datetime.now(timezone.utc)
+        utilization = cls._float_or_none(value.get("utilization"))
+        if utilization is None:
+            utilization = cls._float_or_none(value.get("used_percent"))
+        if utilization is None:
+            return None
+
+        progress: dict[str, Any] = {"utilization": round(max(0.0, utilization), 2)}
+        resets_at = cls._parse_time(value.get("resets_at") or value.get("reset_at"))
+        remaining_seconds = cls._int_or_none(value.get("remaining_seconds"))
+        if resets_at is None:
+            reset_after = cls._int_or_none(value.get("reset_after_seconds"))
+            if reset_after is not None and reset_after > 0:
+                resets_at = now + timedelta(seconds=reset_after)
+        if resets_at is not None:
+            progress["resets_at"] = resets_at.isoformat()
+            remaining_seconds = max(0, int((resets_at - now).total_seconds()))
+            if now >= resets_at:
+                progress["utilization"] = 0
+        if remaining_seconds is not None:
+            progress["remaining_seconds"] = max(0, remaining_seconds)
+        window_minutes = cls._int_or_none(value.get("window_minutes"))
+        if window_minutes is not None:
+            progress["window_minutes"] = window_minutes
+        return progress
+
+    @classmethod
+    def _normalize_usage(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        now = datetime.now(timezone.utc)
+        normalized = dict(value)
+        for key in ("five_hour", "seven_day"):
+            progress = cls._normalize_usage_progress(normalized.get(key), now)
+            if progress is not None:
+                normalized[key] = progress
+            else:
+                normalized.pop(key, None)
+        normalized["source"] = str(normalized.get("source") or "unknown").strip() or "unknown"
+        normalized["updated_at"] = normalized.get("updated_at") or now.isoformat()
+        return normalized
+
+    @classmethod
+    def _codex_usage_from_headers(cls, headers: object, source: str = "codex_headers") -> dict | None:
+        now = datetime.now(timezone.utc)
+
+        def progress(prefix: str) -> dict | None:
+            used = cls._float_or_none(cls._header_value(headers, f"x-codex-{prefix}-used-percent"))
+            if used is None:
+                return None
+            item: dict[str, Any] = {"utilization": round(max(0.0, used), 2)}
+            reset_after = cls._int_or_none(cls._header_value(headers, f"x-codex-{prefix}-reset-after-seconds"))
+            if reset_after is not None and reset_after >= 0:
+                reset_at = now + timedelta(seconds=reset_after)
+                item["resets_at"] = reset_at.isoformat()
+                item["remaining_seconds"] = reset_after
+            window_minutes = cls._int_or_none(cls._header_value(headers, f"x-codex-{prefix}-window-minutes"))
+            if window_minutes is not None:
+                item["window_minutes"] = window_minutes
+            return item
+
+        usage: dict[str, Any] = {
+            "source": source,
+            "updated_at": now.isoformat(),
+        }
+        if primary := progress("primary"):
+            usage["five_hour"] = primary
+        if secondary := progress("secondary"):
+            usage["seven_day"] = secondary
+        if "five_hour" not in usage and "seven_day" not in usage:
+            return None
+        return cls._normalize_usage(usage) if isinstance(usage, dict) else None
+
+    @staticmethod
+    def _merge_usage(existing: object, new_usage: object) -> object:
+        if not isinstance(existing, dict) or not isinstance(new_usage, dict):
+            return new_usage if new_usage is not None else existing
+        merged = dict(existing)
+        merged.update({k: v for k, v in new_usage.items() if v is not None})
+        return merged
+
+    def _should_probe_codex_usage(self, account: dict | None) -> bool:
+        if not isinstance(account, dict):
+            return False
+        if self._normalize_source_type(account.get("source_type")) != "codex":
+            return False
+        usage = account.get("usage")
+        if not isinstance(usage, dict):
+            return True
+        if not usage.get("five_hour") or not usage.get("seven_day"):
+            return True
+        updated_at = self._parse_time(usage.get("updated_at"))
+        if updated_at is None:
+            return True
+        return (datetime.now(timezone.utc) - updated_at).total_seconds() >= self._CODEX_USAGE_PROBE_TTL_SECONDS
 
     def _load_accounts(self) -> dict[str, dict]:
         accounts = self.storage.load_accounts()
@@ -220,6 +355,7 @@ class AccountService:
         normalized["type"] = normalized.get("type") or "free"
         normalized["status"] = normalized.get("status") or "正常"
         normalized["quota"] = max(0, int(normalized.get("quota") if normalized.get("quota") is not None else 0))
+        normalized["usage"] = self._normalize_usage(normalized.get("usage"))
         normalized["image_quota_unknown"] = bool(normalized.get("image_quota_unknown"))
         normalized["email"] = normalized.get("email") or None
         normalized["user_id"] = normalized.get("user_id") or None
@@ -1184,6 +1320,9 @@ class AccountService:
             current = self._accounts.get(access_token)
             if current is None:
                 return None
+            if updates.get("usage") is None and current.get("usage") is not None:
+                updates = dict(updates)
+                updates.pop("usage", None)
             account = self._normalize_account({**current, **updates, "access_token": access_token})
             if account is None:
                 return None
@@ -1269,6 +1408,20 @@ class AccountService:
             image_quota_unknown = bool(next_item.get("image_quota_unknown"))
             if success:
                 next_item["success"] = int(next_item.get("success") or 0) + 1
+                if next_item.get("usage") is None:
+                    next_item["usage"] = {
+                        "source": "local_image_counter",
+                        "image_gen_used": 0,
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                if isinstance(next_item.get("usage"), dict):
+                    usage = dict(next_item["usage"])
+                    usage["source"] = usage.get("source") or "local_image_counter"
+                    usage["image_gen_used"] = int(usage.get("image_gen_used") or 0) + 1
+                    usage["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    if next_item.get("restore_at"):
+                        usage["image_gen_resets_at"] = next_item.get("restore_at")
+                    next_item["usage"] = usage
                 if not image_quota_unknown:
                     next_item["quota"] = max(0, int(next_item.get("quota") or 0) - 1)
                 if not image_quota_unknown and next_item["quota"] == 0:
@@ -1314,7 +1467,46 @@ class AccountService:
                     self.remove_invalid_token(active_token, event)
                 raise
         self._record_refresh_success(active_token)
-        return self.update_account(active_token, result)
+        account = self.update_account(active_token, result)
+        if account and self._should_probe_codex_usage(account):
+            usage = self.probe_codex_usage(active_token)
+            if usage:
+                account = self.update_account(active_token, {"usage": usage}, quiet=True) or account
+        return account
+
+    def update_codex_usage_from_headers(self, access_token: str, headers: object, source: str = "codex_headers") -> dict | None:
+        usage = self._codex_usage_from_headers(headers, source=source)
+        if not usage:
+            return None
+        if not access_token:
+            return usage
+        with self._lock:
+            access_token = self._resolve_access_token_locked(access_token)
+            current = self._accounts.get(access_token)
+            if current is None:
+                return usage
+            next_item = dict(current)
+            next_item["usage"] = self._merge_usage(current.get("usage"), usage)
+            account = self._normalize_account(next_item)
+            if account is None:
+                return usage
+            self._accounts[access_token] = account
+            self._save_accounts()
+            return dict(account.get("usage") or usage)
+
+    def probe_codex_usage(self, access_token: str) -> dict | None:
+        if not access_token:
+            return None
+        try:
+            from services.openai_backend_api import OpenAIBackendAPI
+            return OpenAIBackendAPI(access_token).probe_codex_usage()
+        except Exception as exc:
+            log_service.add(
+                LOG_TYPE_ACCOUNT,
+                "Codex 使用量采样失败",
+                {"token": anonymize_token(access_token), "error": str(exc)[:300]},
+            )
+            return None
 
     # ---- 刷新进度追踪 ----
 
@@ -1328,13 +1520,15 @@ class AccountService:
                 "error": None,
                 "status_counts": {"正常": 0, "限流": 0, "异常": 0, "禁用": 0},
                 "total_quota": 0,
+                "results": [],
             }
 
-    def update_refresh_progress(self, progress_id: str, token: str) -> None:
+    def update_refresh_progress(self, progress_id: str, token: str, error: str | None = None) -> None:
         """刷新单个账号后，更新进度计数。"""
         account = self.get_account(token)
         status = str(account.get("status") or "正常").strip() if account else "正常"
         quota = max(0, int(account.get("quota") or 0)) if account else 0
+        email = str((account or {}).get("email") or "").strip()
 
         with self._refresh_progress_lock:
             progress = self._refresh_progress.get(progress_id)
@@ -1343,6 +1537,13 @@ class AccountService:
             progress["processed"] += 1
             progress["status_counts"][status] = progress["status_counts"].get(status, 0) + 1
             progress["total_quota"] += quota
+            progress.setdefault("results", []).append({
+                "token": anonymize_token(token),
+                "email": email,
+                "status": status,
+                "quota": quota,
+                "error": error,
+            })
 
     def finish_refresh_progress(self, progress_id: str, result: dict | None = None, error: str | None = None) -> None:
         """标记刷新完成。"""
@@ -1427,7 +1628,7 @@ class AccountService:
 
         refreshed = 0
         errors = []
-        max_workers = min(10, len(access_tokens))
+        max_workers = min(config.refresh_account_concurrency, len(access_tokens))
 
         if progress_id:
             self.init_refresh_progress(progress_id, len(access_tokens))
@@ -1451,12 +1652,14 @@ class AccountService:
                     from services.protocol.conversation import is_tls_connection_error
                     if not is_tls_connection_error(error_str):
                         errors.append({"token": anonymize_token(token), "error": error_str})
+                    progress_error = error_str
                 else:
                     if account is not None:
                         refreshed += 1
+                    progress_error = None
 
                 if progress_id:
-                    self.update_refresh_progress(progress_id, token)
+                    self.update_refresh_progress(progress_id, token, progress_error)
         except (KeyboardInterrupt, SystemExit):
             if progress_id:
                 self.finish_refresh_progress(progress_id, error="cancelled")

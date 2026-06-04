@@ -3,6 +3,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        APT_MIRROR: http://mirrors.aliyun.com/debian
+        INSTALL_SYSTEM_DEPS: "0"
     image: chatgpt2api:local
     container_name: chatgpt2api-local
     ports:

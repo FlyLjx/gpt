@@ -61,6 +61,47 @@ def _collect_image_urls(data: list[Any]) -> list[str]:
     return urls
 
 
+def _build_log_detail(
+    identity: dict[str, object],
+    *,
+    endpoint: str,
+    model: str,
+    started: float,
+    request_preview: str = "",
+    status: str = "success",
+    error: str = "",
+    urls: list[str] | None = None,
+    account_email: str = "",
+    conversation_id: str = "",
+    finished: bool = True,
+) -> dict[str, Any]:
+    detail = {
+        "key_id": identity.get("id"),
+        "key_name": identity.get("name"),
+        "role": identity.get("role"),
+        "endpoint": endpoint,
+        "model": model,
+        "started_at": datetime.fromtimestamp(started).strftime("%Y-%m-%d %H:%M:%S"),
+        "duration_ms": int((time.time() - started) * 1000) if finished else 0,
+        "status": status,
+    }
+    if finished:
+        detail["ended_at"] = _now_iso()
+    else:
+        detail["submitted_at"] = _now_iso()
+    if request_preview:
+        detail["request_text"] = request_preview
+    if error:
+        detail["error"] = error
+    if account_email:
+        detail["account_email"] = account_email
+    if conversation_id:
+        detail["conversation_id"] = conversation_id
+    if urls:
+        detail["urls"] = list(dict.fromkeys(urls))
+    return detail
+
+
 def _public_task(task: dict[str, Any]) -> dict[str, Any]:
     item = {
         "id": task.get("id"),
@@ -223,6 +264,13 @@ class ImageTaskService:
                 "updated_at": now,
                 "created_ts": time.time(),
             }
+            task["log_id"] = self._log_task_submit(
+                identity,
+                mode,
+                task["model"],
+                float(task["created_ts"]),
+                request_text(payload.get("prompt")),
+            )
             self._tasks[key] = task
             self._save_locked()
             should_start = True
@@ -275,6 +323,7 @@ class ImageTaskService:
             duration_ms = int((time.time() - started) * 1000)
             self._update_task(key, status=TASK_STATUS_SUCCESS, data=data, usage=usage, error="", duration_ms=duration_ms)
             self._log_call(
+                key,
                 identity,
                 mode,
                 model,
@@ -293,6 +342,7 @@ class ImageTaskService:
                               duration_ms=duration_ms,
                               **({"conversation_id": conversation_id} if conversation_id else {}))
             self._log_call(
+                key,
                 identity,
                 mode,
                 model,
@@ -306,6 +356,7 @@ class ImageTaskService:
 
     def _log_call(
         self,
+        key: str,
         identity: dict[str, object],
         mode: str,
         model: str,
@@ -320,29 +371,50 @@ class ImageTaskService:
     ) -> None:
         endpoint = "/v1/images/edits" if mode == "edit" else "/v1/images/generations"
         summary_prefix = "图生图" if mode == "edit" else "文生图"
-        detail = {
-            "key_id": identity.get("id"),
-            "key_name": identity.get("name"),
-            "role": identity.get("role"),
-            "endpoint": endpoint,
-            "model": model,
-            "started_at": datetime.fromtimestamp(started).strftime("%Y-%m-%d %H:%M:%S"),
-            "ended_at": _now_iso(),
-            "duration_ms": int((time.time() - started) * 1000),
-            "status": status,
-        }
-        if request_preview:
-            detail["request_text"] = request_preview
-        if error:
-            detail["error"] = error
-        if account_email:
-            detail["account_email"] = account_email
-        if urls:
-            detail["urls"] = list(dict.fromkeys(urls))
+        detail = _build_log_detail(
+            identity,
+            endpoint=endpoint,
+            model=model,
+            started=started,
+            request_preview=request_preview,
+            status=status,
+            error=error,
+            urls=urls,
+            account_email=account_email,
+        )
         try:
-            log_service.add(LOG_TYPE_CALL, f"{summary_prefix}{suffix}", detail)
+            with self._lock:
+                log_id = _clean((self._tasks.get(key) or {}).get("log_id"))
+            summary = f"{summary_prefix}{suffix}"
+            if log_id and log_service.update(log_id, summary, detail):
+                return
+            log_service.add(LOG_TYPE_CALL, summary, detail)
         except Exception:
             pass
+
+    def _log_task_submit(
+        self,
+        identity: dict[str, object],
+        mode: str,
+        model: str,
+        started: float,
+        request_preview: str = "",
+    ) -> str:
+        endpoint = "/v1/images/edits" if mode == "edit" else "/v1/images/generations"
+        summary_prefix = "图生图" if mode == "edit" else "文生图"
+        detail = _build_log_detail(
+            identity,
+            endpoint=endpoint,
+            model=model,
+            started=started,
+            request_preview=request_preview,
+            status="running",
+            finished=False,
+        )
+        try:
+            return log_service.add(LOG_TYPE_CALL, f"{summary_prefix}已提交", detail)
+        except Exception:
+            return ""
 
     def _update_task(self, key: str, **updates: Any) -> None:
         with self._lock:
@@ -389,6 +461,7 @@ class ImageTaskService:
                 "updated_ts": item.get("updated_ts"),
                 "started_ts": item.get("started_ts"),
                 "duration_ms": item.get("duration_ms"),
+                "log_id": _clean(item.get("log_id")),
             }
             data = item.get("data")
             if isinstance(data, list):
@@ -518,6 +591,7 @@ class ImageTaskService:
             )["data"]
             self._update_task(key, status=TASK_STATUS_SUCCESS, data=data, error="", duration_ms=int((time.time() - started) * 1000))
             self._log_call(
+                key,
                 identity,
                 mode,
                 model,
@@ -531,6 +605,7 @@ class ImageTaskService:
             duration_ms = int((time.time() - started) * 1000)
             self._update_task(key, status=TASK_STATUS_ERROR, error=error_message, data=[], duration_ms=duration_ms)
             self._log_call(
+                key,
                 identity,
                 mode,
                 model,
