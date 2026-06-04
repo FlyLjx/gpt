@@ -10,6 +10,17 @@ from services.log_service import LOG_TYPE_ACCOUNT, log_service
 from services.register_service import register_service
 
 
+REASON_TEXT = {
+    "checking": "正在检查号池",
+    "disabled": "自动补池未启用",
+    "threshold_not_reached": "号池充足，未触发补池",
+    "register_running": "注册机已在运行",
+    "refill_started": "已启动注册机补池",
+    "already_checking": "上一次补池检查仍在运行",
+    "error": "补池检查异常",
+}
+
+
 def _is_available_account(account: dict) -> bool:
     return str(account.get("status") or "") == "正常"
 
@@ -34,19 +45,33 @@ class AccountRefillService:
             "target_available": target,
         }
 
+    def _detail(self, reason: str, source: str, stats: dict[str, object] | None = None, **extra: object) -> dict[str, object]:
+        return {
+            "event": "auto_refill_check",
+            "source": source,
+            "enabled": config.auto_refill_enabled,
+            "reason": reason,
+            "reason_text": REASON_TEXT.get(reason, reason),
+            "interval_minutes": config.auto_refill_interval_minutes,
+            **(stats or {}),
+            **extra,
+        }
+
+    def _log(self, summary: str, detail: dict[str, object]) -> None:
+        log_service.add(LOG_TYPE_ACCOUNT, summary, detail)
+
     def run_once(self, source: str = "auto") -> dict[str, object]:
         if not self._lock.acquire(blocking=False):
-            return {"started": False, "reason": "already_checking"}
+            detail = self._detail("already_checking", source)
+            self._log("自动补池跳过：上次检查未结束", detail)
+            return {"started": False, **detail}
         try:
             stats = self._stats()
-            result: dict[str, object] = {
-                "event": "auto_refill_check",
-                "source": source,
-                "enabled": config.auto_refill_enabled,
-                **stats,
-            }
+            check_detail = self._detail("checking", source, stats)
+            self._log("自动补池检查号池", check_detail)
             if not config.auto_refill_enabled:
-                return {"started": False, "reason": "disabled", **result}
+                detail = self._detail("disabled", source, stats)
+                return {"started": False, **detail}
 
             total = int(stats["total"])
             available = int(stats["available"])
@@ -56,39 +81,49 @@ class AccountRefillService:
             below_target = available < target
             below_ratio = total > 0 and available_percent < threshold
             if not below_target and not below_ratio:
-                return {"started": False, "reason": "threshold_not_reached", **result}
+                detail = self._detail(
+                    "threshold_not_reached",
+                    source,
+                    stats,
+                    below_target=below_target,
+                    below_ratio=below_ratio,
+                )
+                self._log("自动补池未触发：号池充足", detail)
+                return {"started": False, **detail}
 
             register_state = register_service.get()
             if register_state.get("enabled"):
-                log_service.add(
-                    LOG_TYPE_ACCOUNT,
-                    "自动补池跳过：注册机已在运行",
-                    {**result, "reason": "register_running"},
+                detail = self._detail(
+                    "register_running",
+                    source,
+                    stats,
+                    below_target=below_target,
+                    below_ratio=below_ratio,
+                    register_mode=register_state.get("mode"),
+                    register_target_available=register_state.get("target_available"),
                 )
-                return {"started": False, "reason": "register_running", **result}
+                self._log("自动补池跳过：注册机已在运行", detail)
+                return {"started": False, **detail}
 
             register_service.update({
                 "mode": "available",
                 "target_available": target,
             })
             register_service.start()
-            started_result = {
-                "started": True,
-                "reason": "refill_started",
-                "register_mode": "available",
-                **result,
-            }
-            log_service.add(LOG_TYPE_ACCOUNT, "自动补池已启动注册机", started_result)
-            return started_result
+            detail = self._detail(
+                "refill_started",
+                source,
+                stats,
+                below_target=below_target,
+                below_ratio=below_ratio,
+                register_mode="available",
+            )
+            self._log("自动补池已启动注册机", detail)
+            return {"started": True, **detail}
         except Exception as exc:
-            error_result = {
-                "started": False,
-                "reason": "error",
-                "error": str(exc),
-                "source": source,
-            }
-            log_service.add(LOG_TYPE_ACCOUNT, "自动补池检查失败", error_result)
-            return error_result
+            detail = self._detail("error", source, error=str(exc))
+            self._log("自动补池检查失败", detail)
+            return {"started": False, **detail}
         finally:
             self._last_run_at = time.time()
             self._lock.release()
