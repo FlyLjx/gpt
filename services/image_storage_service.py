@@ -51,12 +51,29 @@ def _safe_relative_path(path: str) -> str:
     return Path(*parts).as_posix()
 
 
-def _image_dimensions(payload: bytes) -> tuple[int, int] | None:
+def _image_info(payload: bytes) -> tuple[tuple[int, int], str] | None:
     try:
         with Image.open(io.BytesIO(payload)) as image:
-            return image.size
+            return image.size, str(image.format or "PNG").lower()
     except Exception:
         return None
+
+
+def _image_dimensions(payload: bytes) -> tuple[int, int] | None:
+    info = _image_info(payload)
+    return info[0] if info else None
+
+
+def _image_extension(payload: bytes) -> str:
+    info = _image_info(payload)
+    if not info:
+        return ".png"
+    image_format = info[1]
+    if image_format in {"jpeg", "jpg"}:
+        return ".jpg"
+    if image_format == "webp":
+        return ".webp"
+    return ".png"
 
 
 def _is_image_rel(path: str) -> bool:
@@ -198,7 +215,7 @@ class ImageStorageService:
 
     def make_relative_path(self, image_data: bytes) -> str:
         file_hash = hashlib.md5(image_data).hexdigest()
-        filename = f"{int(time.time())}_{file_hash}.png"
+        filename = f"{int(time.time())}_{file_hash}{_image_extension(image_data)}"
         relative_dir = Path(time.strftime("%Y"), time.strftime("%m"), time.strftime("%d"))
         return f"{relative_dir.as_posix()}/{filename}"
 

@@ -48,6 +48,23 @@ DEFAULT_CHAT_COMPLETION_CACHE = {
     "drop_assistant_history": False,
 }
 
+DEFAULT_COMFYUI_TEXT_UPSCALE = {
+    "enabled": False,
+    "base_url": "",
+    "workflow_path": "",
+    "input_image_node": "",
+    "input_image_field": "image",
+    "positive_prompt_node": "",
+    "positive_prompt_field": "text",
+    "size_node": "",
+    "width_field": "width",
+    "height_field": "height",
+    "output_node": "",
+    "timeout_secs": 300,
+    "poll_interval_secs": 2,
+    "fallback_to_openai": True,
+}
+
 
 def _normalize_bool(value: object, default: bool = False) -> bool:
     if isinstance(value, str):
@@ -163,6 +180,27 @@ def _normalize_chat_completion_cache_settings(value: object) -> dict[str, object
     }
 
 
+def _normalize_comfyui_text_upscale_settings(value: object) -> dict[str, object]:
+    source = value if isinstance(value, dict) else {}
+    base_url = str(source.get("base_url") or "").strip().rstrip("/")
+    return {
+        "enabled": _normalize_bool(source.get("enabled"), bool(DEFAULT_COMFYUI_TEXT_UPSCALE["enabled"])),
+        "base_url": base_url,
+        "workflow_path": str(source.get("workflow_path") or "").strip(),
+        "input_image_node": str(source.get("input_image_node") or "").strip(),
+        "input_image_field": str(source.get("input_image_field") or DEFAULT_COMFYUI_TEXT_UPSCALE["input_image_field"]).strip() or "image",
+        "positive_prompt_node": str(source.get("positive_prompt_node") or "").strip(),
+        "positive_prompt_field": str(source.get("positive_prompt_field") or DEFAULT_COMFYUI_TEXT_UPSCALE["positive_prompt_field"]).strip() or "text",
+        "size_node": str(source.get("size_node") or "").strip(),
+        "width_field": str(source.get("width_field") or DEFAULT_COMFYUI_TEXT_UPSCALE["width_field"]).strip() or "width",
+        "height_field": str(source.get("height_field") or DEFAULT_COMFYUI_TEXT_UPSCALE["height_field"]).strip() or "height",
+        "output_node": str(source.get("output_node") or "").strip(),
+        "timeout_secs": _normalize_positive_int(source.get("timeout_secs"), int(DEFAULT_COMFYUI_TEXT_UPSCALE["timeout_secs"]), 10),
+        "poll_interval_secs": _normalize_positive_int(source.get("poll_interval_secs"), int(DEFAULT_COMFYUI_TEXT_UPSCALE["poll_interval_secs"]), 1),
+        "fallback_to_openai": _normalize_bool(source.get("fallback_to_openai"), bool(DEFAULT_COMFYUI_TEXT_UPSCALE["fallback_to_openai"])),
+    }
+
+
 def _validate_image_storage_settings(settings: dict[str, object]) -> None:
     if not _normalize_bool(settings.get("enabled"), False):
         return
@@ -170,6 +208,20 @@ def _validate_image_storage_settings(settings: dict[str, object]) -> None:
         raise ValueError("启用 WebDAV 图片存储后必须填写 WebDAV URL")
     if not str(settings.get("webdav_password") or "").strip():
         raise ValueError("启用 WebDAV 图片存储后必须填写 WebDAV 密码")
+
+
+def _validate_comfyui_text_upscale_settings(settings: dict[str, object]) -> None:
+    if not _normalize_bool(settings.get("enabled"), False):
+        return
+    required = {
+        "base_url": "ComfyUI 地址",
+        "workflow_path": "ComfyUI workflow JSON 路径",
+        "input_image_node": "输入图片节点 ID",
+        "positive_prompt_node": "正向提示词节点 ID",
+    }
+    for key, label in required.items():
+        if not str(settings.get(key) or "").strip():
+            raise ValueError(f"启用 ComfyUI 文字增强后必须填写{label}")
 
 
 @dataclass(frozen=True)
@@ -308,6 +360,39 @@ class ConfigStore:
     @property
     def image_parallel_generation(self) -> bool:
         value = self.data.get("image_parallel_generation", True)
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    @property
+    def image_upscale_enabled(self) -> bool:
+        value = self.data.get("image_upscale_enabled", True)
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    @property
+    def image_upscale_target_long_edge(self) -> int:
+        try:
+            return min(4096, max(1024, int(self.data.get("image_upscale_target_long_edge", 4096))))
+        except (TypeError, ValueError):
+            return 4096
+
+    @property
+    def image_upscale_format(self) -> str:
+        value = str(self.data.get("image_upscale_format", "jpeg") or "jpeg").strip().lower()
+        return value if value in {"jpeg", "png", "webp"} else "jpeg"
+
+    @property
+    def image_upscale_quality(self) -> int:
+        try:
+            return min(95, max(50, int(self.data.get("image_upscale_quality", 95))))
+        except (TypeError, ValueError):
+            return 95
+
+    @property
+    def image_text_upscale_workflow_enabled(self) -> bool:
+        value = self.data.get("image_text_upscale_workflow_enabled", True)
         if isinstance(value, str):
             return value.strip().lower() in {"1", "true", "yes", "on"}
         return bool(value)
@@ -466,6 +551,11 @@ class ConfigStore:
         data["image_poll_initial_wait_secs"] = self.image_poll_initial_wait_secs
         data["image_account_concurrency"] = self.image_account_concurrency
         data["image_parallel_generation"] = self.image_parallel_generation
+        data["image_upscale_enabled"] = self.image_upscale_enabled
+        data["image_upscale_target_long_edge"] = self.image_upscale_target_long_edge
+        data["image_upscale_format"] = self.image_upscale_format
+        data["image_upscale_quality"] = self.image_upscale_quality
+        data["image_text_upscale_workflow_enabled"] = self.image_text_upscale_workflow_enabled
         data["auto_remove_invalid_accounts"] = self.auto_remove_invalid_accounts
         data["auto_remove_rate_limited_accounts"] = self.auto_remove_rate_limited_accounts
         data["auto_relogin_after_refresh"] = self.auto_relogin_after_refresh
@@ -481,6 +571,7 @@ class ConfigStore:
         data["backup"] = self.get_backup_settings()
         data["image_storage"] = self.get_image_storage_settings()
         data["chat_completion_cache"] = self.get_chat_completion_cache_settings()
+        data["comfyui_text_upscale"] = self.get_comfyui_text_upscale_settings()
         data.pop("auth-key", None)
         return data
 
@@ -499,6 +590,11 @@ class ConfigStore:
             next_data["chat_completion_cache"] = _normalize_chat_completion_cache_settings(
                 next_data.get("chat_completion_cache")
             )
+        if "comfyui_text_upscale" in next_data:
+            next_data["comfyui_text_upscale"] = _normalize_comfyui_text_upscale_settings(
+                next_data.get("comfyui_text_upscale")
+            )
+            _validate_comfyui_text_upscale_settings(next_data["comfyui_text_upscale"])
         next_data.pop("backup_state", None)
         self.data = next_data
         self._save()
@@ -512,6 +608,9 @@ class ConfigStore:
 
     def get_chat_completion_cache_settings(self) -> dict[str, object]:
         return _normalize_chat_completion_cache_settings(self.data.get("chat_completion_cache"))
+
+    def get_comfyui_text_upscale_settings(self) -> dict[str, object]:
+        return _normalize_comfyui_text_upscale_settings(self.data.get("comfyui_text_upscale"))
 
     def get_storage_backend(self) -> StorageBackend:
         """获取存储后端实例（单例）"""

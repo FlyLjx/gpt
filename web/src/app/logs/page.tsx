@@ -38,6 +38,10 @@ function getDetailText(item: SystemLog, key: string) {
   return typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : "-";
 }
 
+function getRecord(value: unknown) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
 function formatDuration(item: SystemLog) {
   if (item.detail?.status === "running") {
     return "进行中";
@@ -319,6 +323,19 @@ function LogsContent() {
                 </div>
               ))}
           </div>
+          {getRecord(detailLog?.detail?.request_params) ? (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+              <Typography.Text className="!text-emerald-800" strong>请求参数</Typography.Text>
+              <div className="mt-3 grid gap-3 text-sm md:grid-cols-3">
+                {Object.entries(getRecord(detailLog?.detail?.request_params) || {}).map(([key, value]) => (
+                  <div key={key} className="rounded-lg bg-white px-3 py-2 shadow-sm">
+                    <div className="text-xs text-slate-400">{key}</div>
+                    <div className="mt-1 break-all font-semibold text-slate-800">{value === null || value === undefined || value === "" ? "未指定" : String(value)}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
           <pre className="max-h-[72vh] overflow-auto rounded-xl border border-slate-200 bg-slate-950 p-4 text-xs leading-6 text-slate-100">
             {JSON.stringify(detailLog?.detail || {}, null, 2)}
           </pre>

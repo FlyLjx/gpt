@@ -91,6 +91,8 @@ export function ConfigCard() {
   const setImageSettleEnabled = useSettingsStore((state) => state.setImageSettleEnabled);
   const setImageSettleSecs = useSettingsStore((state) => state.setImageSettleSecs);
   const setImageTimeoutRetrySecs = useSettingsStore((state) => state.setImageTimeoutRetrySecs);
+  const setImageTextUpscaleWorkflowEnabled = useSettingsStore((state) => state.setImageTextUpscaleWorkflowEnabled);
+  const setComfyUITextUpscaleField = useSettingsStore((state) => state.setComfyUITextUpscaleField);
   const setAutoRemoveInvalidAccounts = useSettingsStore((state) => state.setAutoRemoveInvalidAccounts);
   const setAutoRemoveRateLimitedAccounts = useSettingsStore((state) => state.setAutoRemoveRateLimitedAccounts);
   const setAutoReloginAfterRefresh = useSettingsStore((state) => state.setAutoReloginAfterRefresh);
@@ -335,6 +337,93 @@ export function ConfigCard() {
             </Form.Item>
           </Col>
         </Row>
+
+        <Card size="small" className="mt-4">
+          <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <Space>
+              <Switch checked={Boolean(config.image_text_upscale_workflow_enabled !== false)} onChange={setImageTextUpscaleWorkflowEnabled} />
+              <Typography.Text strong>文字类 4K 增强工作流</Typography.Text>
+              <Tag color={config.image_text_upscale_workflow_enabled !== false ? "green" : "default"}>{config.image_text_upscale_workflow_enabled !== false ? "已启用" : "未启用"}</Tag>
+            </Space>
+            <Typography.Text type="secondary">触发条件：free 图像模型 + 4K 超分 + quality=high。优先 ComfyUI，失败后可回退 OpenAI 二阶段。</Typography.Text>
+          </div>
+          <Row gutter={[16, 16]}>
+            <Col xs={24} md={8}>
+              <Card size="small" className="h-full">
+                <Space direction="vertical" size={8} className="w-full">
+                  <Switch checked={Boolean(config.comfyui_text_upscale?.enabled)} onChange={(checked) => setComfyUITextUpscaleField("enabled", checked)} disabled={config.image_text_upscale_workflow_enabled === false} />
+                  <Typography.Text strong>启用 ComfyUI OCR/文字重绘</Typography.Text>
+                  <Typography.Text type="secondary">关闭时会走 OpenAI 二阶段文字增强。</Typography.Text>
+                </Space>
+              </Card>
+            </Col>
+            <Col xs={24} md={16}>
+              <Form.Item label="ComfyUI 地址" extra="例如 http://127.0.0.1:8188，服务器 Docker 内访问宿主机时通常要填可达内网地址。">
+                <Input value={String(config.comfyui_text_upscale?.base_url || "")} onChange={(event) => setComfyUITextUpscaleField("base_url", event.target.value)} placeholder="http://127.0.0.1:8188" disabled={!config.comfyui_text_upscale?.enabled} />
+              </Form.Item>
+            </Col>
+            <Col xs={24}>
+              <Form.Item label="Workflow JSON 路径" extra="填写服务器容器内可读取路径，必须是 ComfyUI API 格式 workflow。">
+                <Input value={String(config.comfyui_text_upscale?.workflow_path || "")} onChange={(event) => setComfyUITextUpscaleField("workflow_path", event.target.value)} placeholder="/app/data/comfyui/text-upscale-workflow.json" disabled={!config.comfyui_text_upscale?.enabled} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={6}>
+              <Form.Item label="输入图片节点 ID">
+                <Input value={String(config.comfyui_text_upscale?.input_image_node || "")} onChange={(event) => setComfyUITextUpscaleField("input_image_node", event.target.value)} placeholder="12" disabled={!config.comfyui_text_upscale?.enabled} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={6}>
+              <Form.Item label="输入图片字段">
+                <Input value={String(config.comfyui_text_upscale?.input_image_field || "image")} onChange={(event) => setComfyUITextUpscaleField("input_image_field", event.target.value)} placeholder="image" disabled={!config.comfyui_text_upscale?.enabled} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={6}>
+              <Form.Item label="正向提示词节点 ID">
+                <Input value={String(config.comfyui_text_upscale?.positive_prompt_node || "")} onChange={(event) => setComfyUITextUpscaleField("positive_prompt_node", event.target.value)} placeholder="6" disabled={!config.comfyui_text_upscale?.enabled} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={6}>
+              <Form.Item label="正向提示词字段">
+                <Input value={String(config.comfyui_text_upscale?.positive_prompt_field || "text")} onChange={(event) => setComfyUITextUpscaleField("positive_prompt_field", event.target.value)} placeholder="text" disabled={!config.comfyui_text_upscale?.enabled} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={6}>
+              <Form.Item label="尺寸节点 ID">
+                <Input value={String(config.comfyui_text_upscale?.size_node || "")} onChange={(event) => setComfyUITextUpscaleField("size_node", event.target.value)} placeholder="可选" disabled={!config.comfyui_text_upscale?.enabled} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={6}>
+              <Form.Item label="宽度字段">
+                <Input value={String(config.comfyui_text_upscale?.width_field || "width")} onChange={(event) => setComfyUITextUpscaleField("width_field", event.target.value)} placeholder="width" disabled={!config.comfyui_text_upscale?.enabled} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={6}>
+              <Form.Item label="高度字段">
+                <Input value={String(config.comfyui_text_upscale?.height_field || "height")} onChange={(event) => setComfyUITextUpscaleField("height_field", event.target.value)} placeholder="height" disabled={!config.comfyui_text_upscale?.enabled} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={6}>
+              <Form.Item label="输出节点 ID">
+                <Input value={String(config.comfyui_text_upscale?.output_node || "")} onChange={(event) => setComfyUITextUpscaleField("output_node", event.target.value)} placeholder="可选，留空取首个输出图" disabled={!config.comfyui_text_upscale?.enabled} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={8}>
+              <NumberInput label="ComfyUI 超时" value={String(config.comfyui_text_upscale?.timeout_secs || "300")} onChange={(value) => setComfyUITextUpscaleField("timeout_secs", value)} placeholder="300" help="单位秒。" disabled={!config.comfyui_text_upscale?.enabled} />
+            </Col>
+            <Col xs={24} md={8}>
+              <NumberInput label="轮询间隔" value={String(config.comfyui_text_upscale?.poll_interval_secs || "2")} onChange={(value) => setComfyUITextUpscaleField("poll_interval_secs", value)} placeholder="2" help="单位秒。" disabled={!config.comfyui_text_upscale?.enabled} />
+            </Col>
+            <Col xs={24} md={8}>
+              <Card size="small" className="h-full">
+                <Space direction="vertical" size={8}>
+                  <Switch checked={Boolean(config.comfyui_text_upscale?.fallback_to_openai !== false)} onChange={(checked) => setComfyUITextUpscaleField("fallback_to_openai", checked)} disabled={!config.comfyui_text_upscale?.enabled} />
+                  <Typography.Text strong>失败回退 OpenAI 二阶段</Typography.Text>
+                  <Typography.Text type="secondary">建议开启，ComfyUI 出错时不会直接中断生图。</Typography.Text>
+                </Space>
+              </Card>
+            </Col>
+          </Row>
+        </Card>
 
         <Divider />
         <SectionTitle title="WebDAV 图片存储" description="可选择只保存在本机、只保存到 WebDAV，或两边都保留。" />

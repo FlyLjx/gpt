@@ -88,6 +88,27 @@ function normalizeConfig(config: SettingsConfig): SettingsConfig {
     image_retention_days: Number(config.image_retention_days || 30),
     image_poll_timeout_secs: Number(config.image_poll_timeout_secs || 120),
     image_account_concurrency: Number(config.image_account_concurrency || 3),
+    image_upscale_enabled: Boolean(config.image_upscale_enabled !== false),
+    image_upscale_target_long_edge: Number(config.image_upscale_target_long_edge || 4096),
+    image_upscale_format: String(config.image_upscale_format || "jpeg"),
+    image_upscale_quality: Number(config.image_upscale_quality || 95),
+    image_text_upscale_workflow_enabled: Boolean(config.image_text_upscale_workflow_enabled !== false),
+    comfyui_text_upscale: {
+      enabled: Boolean(config.comfyui_text_upscale?.enabled),
+      base_url: String(config.comfyui_text_upscale?.base_url || ""),
+      workflow_path: String(config.comfyui_text_upscale?.workflow_path || ""),
+      input_image_node: String(config.comfyui_text_upscale?.input_image_node || ""),
+      input_image_field: String(config.comfyui_text_upscale?.input_image_field || "image"),
+      positive_prompt_node: String(config.comfyui_text_upscale?.positive_prompt_node || ""),
+      positive_prompt_field: String(config.comfyui_text_upscale?.positive_prompt_field || "text"),
+      size_node: String(config.comfyui_text_upscale?.size_node || ""),
+      width_field: String(config.comfyui_text_upscale?.width_field || "width"),
+      height_field: String(config.comfyui_text_upscale?.height_field || "height"),
+      output_node: String(config.comfyui_text_upscale?.output_node || ""),
+      timeout_secs: Number(config.comfyui_text_upscale?.timeout_secs || 300),
+      poll_interval_secs: Number(config.comfyui_text_upscale?.poll_interval_secs || 2),
+      fallback_to_openai: Boolean(config.comfyui_text_upscale?.fallback_to_openai !== false),
+    },
     image_settle_enabled: Boolean(config.image_settle_enabled !== false),
     image_check_before_hit_enabled: Boolean(config.image_check_before_hit_enabled !== false),
     image_settle_secs: Number(config.image_settle_secs || 2.0),
@@ -217,6 +238,8 @@ type SettingsStore = {
   setImageAccountConcurrency: (value: string) => void;
   setImageSettleEnabled: (value: boolean) => void;
   setImageCheckBeforeHitEnabled: (value: boolean) => void;
+  setImageTextUpscaleWorkflowEnabled: (value: boolean) => void;
+  setComfyUITextUpscaleField: (key: keyof NonNullable<SettingsConfig["comfyui_text_upscale"]>, value: string | boolean) => void;
   setImageSettleSecs: (value: string) => void;
   setImageTimeoutRetrySecs: (value: string) => void;
   setAutoRemoveInvalidAccounts: (value: boolean) => void;
@@ -361,6 +384,27 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         image_retention_days: Math.max(1, Number(config.image_retention_days) || 30),
         image_poll_timeout_secs: Math.max(1, Number(config.image_poll_timeout_secs) || 120),
         image_account_concurrency: Math.max(1, Number(config.image_account_concurrency) || 3),
+        image_upscale_enabled: Boolean(config.image_upscale_enabled !== false),
+        image_upscale_target_long_edge: Math.min(4096, Math.max(1024, Number(config.image_upscale_target_long_edge) || 4096)),
+        image_upscale_format: ["jpeg", "png", "webp"].includes(String(config.image_upscale_format)) ? String(config.image_upscale_format) : "jpeg",
+        image_upscale_quality: Math.min(95, Math.max(50, Number(config.image_upscale_quality) || 95)),
+        image_text_upscale_workflow_enabled: Boolean(config.image_text_upscale_workflow_enabled !== false),
+        comfyui_text_upscale: {
+          enabled: Boolean(config.comfyui_text_upscale?.enabled),
+          base_url: String(config.comfyui_text_upscale?.base_url || "").trim(),
+          workflow_path: String(config.comfyui_text_upscale?.workflow_path || "").trim(),
+          input_image_node: String(config.comfyui_text_upscale?.input_image_node || "").trim(),
+          input_image_field: String(config.comfyui_text_upscale?.input_image_field || "image").trim() || "image",
+          positive_prompt_node: String(config.comfyui_text_upscale?.positive_prompt_node || "").trim(),
+          positive_prompt_field: String(config.comfyui_text_upscale?.positive_prompt_field || "text").trim() || "text",
+          size_node: String(config.comfyui_text_upscale?.size_node || "").trim(),
+          width_field: String(config.comfyui_text_upscale?.width_field || "width").trim() || "width",
+          height_field: String(config.comfyui_text_upscale?.height_field || "height").trim() || "height",
+          output_node: String(config.comfyui_text_upscale?.output_node || "").trim(),
+          timeout_secs: Math.max(10, Number(config.comfyui_text_upscale?.timeout_secs) || 300),
+          poll_interval_secs: Math.max(1, Number(config.comfyui_text_upscale?.poll_interval_secs) || 2),
+          fallback_to_openai: Boolean(config.comfyui_text_upscale?.fallback_to_openai !== false),
+        },
         image_settle_enabled: Boolean(config.image_settle_enabled !== false),
         image_check_before_hit_enabled: Boolean(config.image_check_before_hit_enabled !== false),
         image_settle_secs: Math.max(0.5, Number(config.image_settle_secs) || 2.0),
@@ -453,6 +497,22 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   setImageCheckBeforeHitEnabled: (value) => {
     set((state) => state.config ? { config: { ...state.config, image_check_before_hit_enabled: value } } : {});
+  },
+
+  setImageTextUpscaleWorkflowEnabled: (value) => {
+    set((state) => state.config ? { config: { ...state.config, image_text_upscale_workflow_enabled: value } } : {});
+  },
+
+  setComfyUITextUpscaleField: (key, value) => {
+    set((state) => state.config ? {
+      config: {
+        ...state.config,
+        comfyui_text_upscale: {
+          ...(state.config.comfyui_text_upscale || {}),
+          [key]: value,
+        },
+      },
+    } : {});
   },
 
   setImageSettleSecs: (value) => {

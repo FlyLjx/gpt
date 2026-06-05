@@ -43,6 +43,14 @@ def _clean(value: object, default: str = "") -> str:
     return str(value or default).strip()
 
 
+def _optional_bool(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value is None or value == "":
+        return None
+    return str(value).strip().lower() in {"true", "1", "yes", "y", "on"}
+
+
 def _owner_id(identity: dict[str, object]) -> str:
     return _clean(identity.get("id")) or "anonymous"
 
@@ -73,6 +81,7 @@ def _build_log_detail(
     urls: list[str] | None = None,
     account_email: str = "",
     conversation_id: str = "",
+    request_params: dict[str, Any] | None = None,
     finished: bool = True,
 ) -> dict[str, Any]:
     detail = {
@@ -91,6 +100,8 @@ def _build_log_detail(
         detail["submitted_at"] = _now_iso()
     if request_preview:
         detail["request_text"] = request_preview
+    if request_params:
+        detail["request_params"] = request_params
     if error:
         detail["error"] = error
     if account_email:
@@ -100,6 +111,41 @@ def _build_log_detail(
     if urls:
         detail["urls"] = list(dict.fromkeys(urls))
     return detail
+
+
+def _request_params_from_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        key: payload.get(key)
+        for key in ("n", "size", "quality", "upscale", "response_format", "stream")
+        if key in payload
+    }
+
+
+def _image_result_meta(data: object) -> dict[str, Any]:
+    items = [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+    meta: dict[str, Any] = {}
+    if any(bool(item.get("upscaled")) for item in items):
+        meta["upscaled"] = True
+    for key in ("original_width", "original_height", "width", "height"):
+        for item in items:
+            if item.get(key) is not None:
+                meta[key] = item.get(key)
+                break
+    return meta
+
+
+def _public_image_data(data: object) -> list[Any]:
+    if not isinstance(data, list):
+        return []
+    items: list[Any] = []
+    for item in data:
+        if isinstance(item, dict):
+            items.append({key: value for key, value in item.items() if key != "_b64_json"})
+        else:
+            items.append(item)
+    return items
 
 
 def _public_task(task: dict[str, Any]) -> dict[str, Any]:
@@ -116,7 +162,7 @@ def _public_task(task: dict[str, Any]) -> dict[str, Any]:
     if task.get("conversation_id"):
         item["conversation_id"] = task.get("conversation_id")
     if task.get("data") is not None:
-        item["data"] = task.get("data")
+        item["data"] = _public_image_data(task.get("data"))
     if task.get("usage") is not None:
         item["usage"] = task.get("usage")
     if task.get("error"):
@@ -169,6 +215,7 @@ class ImageTaskService:
         model: str,
         size: str | None,
         quality: str = "auto",
+        upscale: bool | None = None,
         base_url: str = "",
     ) -> dict[str, Any]:
         payload = {
@@ -177,6 +224,7 @@ class ImageTaskService:
             "n": 1,
             "size": size,
             "quality": quality,
+            "upscale": upscale,
             "response_format": "url",
             "base_url": base_url,
         }
@@ -191,6 +239,7 @@ class ImageTaskService:
         model: str,
         size: str | None,
         quality: str = "auto",
+        upscale: bool | None = None,
         base_url: str = "",
         images: list[tuple[bytes, str, str]] | None = None,
     ) -> dict[str, Any]:
@@ -201,6 +250,7 @@ class ImageTaskService:
             "n": 1,
             "size": size,
             "quality": quality,
+            "upscale": upscale,
             "response_format": "url",
             "base_url": base_url,
         }
@@ -260,6 +310,7 @@ class ImageTaskService:
                 "model": _clean(payload.get("model"), "gpt-image-2"),
                 "size": _clean(payload.get("size")),
                 "quality": _clean(payload.get("quality"), "auto"),
+                "upscale": payload.get("upscale"),
                 "created_at": now,
                 "updated_at": now,
                 "created_ts": time.time(),
@@ -270,6 +321,7 @@ class ImageTaskService:
                 task["model"],
                 float(task["created_ts"]),
                 request_text(payload.get("prompt")),
+                request_params=_request_params_from_payload(payload),
             )
             self._tasks[key] = task
             self._save_locked()
@@ -330,8 +382,10 @@ class ImageTaskService:
                 started,
                 "调用完成",
                 request_preview=request_text(payload.get("prompt")),
+                request_params=_request_params_from_payload(payload),
                 urls=_collect_image_urls(data),
                 account_email=account_email,
+                result_data=data,
             )
         except Exception as exc:
             error_message = str(exc) or "image task failed"
@@ -349,6 +403,7 @@ class ImageTaskService:
                 started,
                 "调用失败",
                 request_preview=request_text(payload.get("prompt")),
+                request_params=_request_params_from_payload(payload),
                 status="failed",
                 error=error_message,
                 account_email=account_email,
@@ -368,6 +423,8 @@ class ImageTaskService:
         error: str = "",
         urls: list[str] | None = None,
         account_email: str = "",
+        request_params: dict[str, Any] | None = None,
+        result_data: object = None,
     ) -> None:
         endpoint = "/v1/images/edits" if mode == "edit" else "/v1/images/generations"
         summary_prefix = "图生图" if mode == "edit" else "文生图"
@@ -381,7 +438,9 @@ class ImageTaskService:
             error=error,
             urls=urls,
             account_email=account_email,
+            request_params=request_params,
         )
+        detail.update(_image_result_meta(result_data))
         try:
             with self._lock:
                 log_id = _clean((self._tasks.get(key) or {}).get("log_id"))
@@ -399,6 +458,7 @@ class ImageTaskService:
         model: str,
         started: float,
         request_preview: str = "",
+        request_params: dict[str, Any] | None = None,
     ) -> str:
         endpoint = "/v1/images/edits" if mode == "edit" else "/v1/images/generations"
         summary_prefix = "图生图" if mode == "edit" else "文生图"
@@ -408,6 +468,7 @@ class ImageTaskService:
             model=model,
             started=started,
             request_preview=request_preview,
+            request_params=request_params,
             status="running",
             finished=False,
         )
@@ -455,6 +516,7 @@ class ImageTaskService:
                 "model": _clean(item.get("model"), "gpt-image-2"),
                 "size": _clean(item.get("size")),
                 "quality": _clean(item.get("quality"), "auto"),
+                "upscale": _optional_bool(item.get("upscale")),
                 "created_at": _clean(item.get("created_at"), _now_iso()),
                 "updated_at": _clean(item.get("updated_at"), _clean(item.get("created_at"), _now_iso())),
                 "created_ts": item.get("created_ts"),
@@ -582,12 +644,17 @@ class ImageTaskService:
                 task = self._tasks.get(key)
                 quality = _clean(task.get("quality"), "auto") if task else "auto"
                 size = _clean(task.get("size")) if task else None
+                upscale = _optional_bool(task.get("upscale")) if task else None
             data = format_image_result(
                 image_items,
                 "",  # prompt 已不重要，结果已经拿到了
                 "b64_json",
                 "",
                 int(time.time()),
+                model=model,
+                size=size,
+                quality=quality,
+                upscale=upscale,
             )["data"]
             self._update_task(key, status=TASK_STATUS_SUCCESS, data=data, error="", duration_ms=int((time.time() - started) * 1000))
             self._log_call(
@@ -599,6 +666,8 @@ class ImageTaskService:
                 "调用完成（续轮询）",
                 status="success",
                 urls=_collect_image_urls(data),
+                request_params=_request_params_from_payload(task or {}),
+                result_data=data,
             )
         except Exception as exc:
             error_message = str(exc) or "resume poll failed"

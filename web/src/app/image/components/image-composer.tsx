@@ -74,6 +74,7 @@ const aspectOptions = [
   { ratio: "1:1", tier: "2k", width: "2048", height: "2048", label: "1:1(2k)", icon: Square },
   { ratio: "16:9", tier: "2k", width: "2560", height: "1440", label: "16:9(2k)", icon: RectangleHorizontal },
   { ratio: "9:16", tier: "2k", width: "1440", height: "2560", label: "9:16(2k)", icon: RectangleVertical },
+  { ratio: "1:1", tier: "4k", width: "4096", height: "4096", label: "1:1(4k)", icon: Square },
   { ratio: "16:9", tier: "4k", width: "3840", height: "2160", label: "16:9(4k)", icon: RectangleHorizontal },
   { ratio: "9:16", tier: "4k", width: "2160", height: "3840", label: "9:16(4k)", icon: RectangleVertical },
   { ratio: "auto", tier: "auto", width: "1024", height: "1024", label: "auto", icon: null },
@@ -125,9 +126,10 @@ export function ImageComposer({
   );
   const qualityLabel = qualityOptions.find((option) => option.value === imageQuality)?.label || "自动";
   const ratioLabel = imageRatio === "auto" ? "auto" : `${imageRatio}(${imageTier})`;
-  const imageSizeLabel = `${qualityLabel} · ${ratioLabel} · ${imageCount || 1} 张`;
   const selectedModelLabel = modelOptions.find((option) => option.value === imageModel)?.label || imageModel;
   const isCodexModel = imageModel.toLowerCase().includes("codex");
+  const usesUpscale = !isCodexModel && imageTier === "4k";
+  const imageSizeLabel = `${qualityLabel} · ${ratioLabel}${usesUpscale ? "超分" : ""} · ${imageCount || 1} 张`;
 
   useEffect(() => {
     if (!isSizeMenuOpen) {
@@ -452,7 +454,8 @@ export function ImageComposer({
                             {aspectOptions.map((option) => {
                               const active = option.ratio === imageRatio && option.tier === imageTier && option.width === imageWidth && option.height === imageHeight;
                               const Icon = option.icon;
-                              const disabled = !isCodexModel && (option.tier === "2k" || option.tier === "4k");
+                              const disabled = !isCodexModel && option.tier === "2k";
+                              const upscale = !isCodexModel && option.tier === "4k";
                               return (
                                 <button
                                   key={`${option.ratio}-${option.tier}-${option.label}`}
@@ -476,7 +479,7 @@ export function ImageComposer({
                                   {Icon ? (
                                     <>
                                       <Icon className="size-3.5 stroke-[1.8]" />
-                                      <span>{option.label}</span>
+                                      <span>{upscale ? `${option.label}超分` : option.label}</span>
                                     </>
                                   ) : (
                                     <span>{option.label}</span>

@@ -21,7 +21,8 @@ from utils.helper import anthropic_sse_stream, sse_json_stream
 
 LOG_TYPE_CALL = "call"
 LOG_TYPE_ACCOUNT = "account"
-INTERNAL_RESPONSE_KEYS = {"_account_email", "_conversation_id"}
+INTERNAL_RESPONSE_KEYS = {"_account_email", "_conversation_id", "_b64_json"}
+IMAGE_REQUEST_PARAM_KEYS = ("n", "size", "quality", "upscale", "response_format", "stream")
 
 
 class LogService:
@@ -193,6 +194,33 @@ def _collect_conversation_ids(value: object) -> list[str]:
     return ids
 
 
+def image_request_params(payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    return {key: payload.get(key) for key in IMAGE_REQUEST_PARAM_KEYS if key in payload}
+
+
+def _collect_image_result_meta(value: object) -> dict[str, Any]:
+    meta: dict[str, Any] = {}
+    items: list[dict[str, Any]] = []
+    if isinstance(value, dict):
+        data = value.get("data")
+        if isinstance(data, list):
+            items = [item for item in data if isinstance(item, dict)]
+    elif isinstance(value, list):
+        items = [item for item in value if isinstance(item, dict)]
+    if not items:
+        return meta
+    if any(bool(item.get("upscaled")) for item in items):
+        meta["upscaled"] = True
+    for key in ("original_width", "original_height", "width", "height"):
+        for item in items:
+            if item.get(key) is not None:
+                meta[key] = item.get(key)
+                break
+    return meta
+
+
 def _strip_internal_response_fields(value: object) -> object:
     if isinstance(value, dict):
         return {
@@ -259,6 +287,7 @@ class LoggedCall:
     started: float = field(default_factory=time.time)
     request_text: str = ""
     request_shape: dict[str, int] | None = None
+    request_params: dict[str, Any] | None = None
     log_id: str = ""
 
     async def run(self, handler, *args, sse: str = "openai"):
@@ -282,9 +311,7 @@ class LoggedCall:
 
         if isinstance(result, dict):
             self.log("调用完成", result)
-            response = dict(result)
-            response.pop("_account_email", None)
-            return response
+            return _strip_internal_response_fields(result)
 
         sender = anthropic_sse_stream if sse == "anthropic" else sse_json_stream
         try:
@@ -360,6 +387,8 @@ class LoggedCall:
             detail["request_text"] = request_excerpt
         if self.request_shape:
             detail["request_shape"] = self.request_shape
+        if self.request_params:
+            detail["request_params"] = self.request_params
         if error:
             detail["error"] = error
         email = str(account_email or "").strip()
@@ -377,6 +406,8 @@ class LoggedCall:
         collected_urls = [*(urls or []), *_collect_urls(result)]
         if collected_urls and not self.endpoint.startswith("/v1/search"):
             detail["urls"] = list(dict.fromkeys(collected_urls))
+        if self.endpoint.startswith(("/v1/images", "/api/image-tasks")):
+            detail.update(_collect_image_result_meta(result))
         summary = f"{self.summary}{suffix}"
         if self.log_id:
             if log_service.update(self.log_id, summary, detail):
