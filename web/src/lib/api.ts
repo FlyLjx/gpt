@@ -117,6 +117,7 @@ export type SettingsConfig = {
   image_retention_days?: number | string;
   image_poll_timeout_secs?: number | string;
   image_account_concurrency?: number | string;
+  image_account_precheck_interval_minutes?: number | string;
   image_parallel_generation?: boolean;
   image_upscale_enabled?: boolean;
   image_upscale_target_long_edge?: number | string;

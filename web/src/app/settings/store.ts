@@ -88,6 +88,7 @@ function normalizeConfig(config: SettingsConfig): SettingsConfig {
     image_retention_days: Number(config.image_retention_days || 30),
     image_poll_timeout_secs: Number(config.image_poll_timeout_secs || 120),
     image_account_concurrency: Number(config.image_account_concurrency || 3),
+    image_account_precheck_interval_minutes: Number(config.image_account_precheck_interval_minutes || 10),
     image_upscale_enabled: false,
     image_upscale_target_long_edge: Number(config.image_upscale_target_long_edge || 4096),
     image_upscale_format: String(config.image_upscale_format || "jpeg"),
@@ -236,6 +237,7 @@ type SettingsStore = {
   setImageRetentionDays: (value: string) => void;
   setImagePollTimeoutSecs: (value: string) => void;
   setImageAccountConcurrency: (value: string) => void;
+  setImageAccountPrecheckIntervalMinutes: (value: string) => void;
   setImageSettleEnabled: (value: boolean) => void;
   setImageCheckBeforeHitEnabled: (value: boolean) => void;
   setImageSettleSecs: (value: string) => void;
@@ -382,6 +384,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         image_retention_days: Math.max(1, Number(config.image_retention_days) || 30),
         image_poll_timeout_secs: Math.max(1, Number(config.image_poll_timeout_secs) || 120),
         image_account_concurrency: Math.max(1, Number(config.image_account_concurrency) || 3),
+        image_account_precheck_interval_minutes: Math.max(1, Number(config.image_account_precheck_interval_minutes) || 10),
         image_upscale_enabled: false,
         image_upscale_target_long_edge: Math.min(4096, Math.max(1024, Number(config.image_upscale_target_long_edge) || 4096)),
         image_upscale_format: ["jpeg", "png", "webp"].includes(String(config.image_upscale_format)) ? String(config.image_upscale_format) : "jpeg",
@@ -487,6 +490,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   setImageAccountConcurrency: (value) => {
     set((state) => state.config ? { config: { ...state.config, image_account_concurrency: value } } : {});
+  },
+
+  setImageAccountPrecheckIntervalMinutes: (value) => {
+    set((state) => state.config ? { config: { ...state.config, image_account_precheck_interval_minutes: value } } : {});
   },
 
   setImageSettleEnabled: (value) => {

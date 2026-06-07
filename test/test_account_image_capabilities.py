@@ -151,6 +151,68 @@ class AccountCapabilityTests(unittest.TestCase):
 
         self.assertEqual(tokens, ["token-stale"])
 
+    def test_image_precheck_due_respects_last_account_refresh_time(self) -> None:
+        now = datetime.now(timezone.utc)
+        stale = (now - timedelta(minutes=30)).isoformat()
+        recent = now.isoformat()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service.add_account_items([
+                {"access_token": "token-stale", "status": "正常", "quota": 3, "last_account_refresh_at": stale},
+                {"access_token": "token-recent", "status": "正常", "quota": 3, "last_account_refresh_at": recent},
+            ])
+
+            with mock.patch("services.account_service.config", mock.Mock(image_account_precheck_interval_minutes=10)):
+                self.assertTrue(service._image_precheck_due(service.get_account("token-stale"), "token-stale"))
+                self.assertFalse(service._image_precheck_due(service.get_account("token-recent"), "token-recent"))
+                self.assertTrue(service._image_precheck_due(None, "token-missing"))
+
+    def test_get_available_access_token_skips_remote_precheck_for_fresh_account(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service.add_account_items([
+                {
+                    "access_token": "token-fresh",
+                    "status": "正常",
+                    "quota": 3,
+                    "last_account_refresh_at": datetime.now(timezone.utc).isoformat(),
+                },
+            ])
+            service.fetch_remote_info = mock.Mock(side_effect=AssertionError("fresh account should not precheck"))
+
+            with mock.patch("services.account_service.config", mock.Mock(
+                image_account_concurrency=3,
+                image_account_precheck_interval_minutes=10,
+            )):
+                token = service.get_available_access_token()
+
+            service.release_image_slot(token)
+            self.assertEqual(token, "token-fresh")
+            service.fetch_remote_info.assert_not_called()
+
+    def test_get_available_access_token_prechecks_stale_account(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service.add_account_items([
+                {
+                    "access_token": "token-stale",
+                    "status": "正常",
+                    "quota": 3,
+                    "last_account_refresh_at": (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat(),
+                },
+            ])
+            service.fetch_remote_info = mock.Mock(side_effect=lambda access_token, event="": service.get_account(access_token))
+
+            with mock.patch("services.account_service.config", mock.Mock(
+                image_account_concurrency=3,
+                image_account_precheck_interval_minutes=10,
+            )):
+                token = service.get_available_access_token()
+
+            service.release_image_slot(token)
+            self.assertEqual(token, "token-stale")
+            service.fetch_remote_info.assert_called_once_with("token-stale", "get_available_access_token")
+
     def test_split_image_model_supports_plan_type_prefix(self) -> None:
         self.assertEqual(split_image_model("gpt-image-2"), (None, "gpt-image-2"))
         self.assertEqual(split_image_model("plus-codex-gpt-image-2"), ("plus", "codex-gpt-image-2"))

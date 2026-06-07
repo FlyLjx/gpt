@@ -106,6 +106,7 @@ export function ConfigCard() {
   const setImageRetentionDays = useSettingsStore((state) => state.setImageRetentionDays);
   const setImagePollTimeoutSecs = useSettingsStore((state) => state.setImagePollTimeoutSecs);
   const setImageAccountConcurrency = useSettingsStore((state) => state.setImageAccountConcurrency);
+  const setImageAccountPrecheckIntervalMinutes = useSettingsStore((state) => state.setImageAccountPrecheckIntervalMinutes);
   const setImageSettleEnabled = useSettingsStore((state) => state.setImageSettleEnabled);
   const setImageSettleSecs = useSettingsStore((state) => state.setImageSettleSecs);
   const setImageTimeoutRetrySecs = useSettingsStore((state) => state.setImageTimeoutRetrySecs);
@@ -207,6 +208,9 @@ export function ConfigCard() {
           </Col>
           <Col xs={24} md={12} xl={6}>
             <NumberInput label="单账号图片并发" value={String(config.image_account_concurrency || "")} onChange={setImageAccountConcurrency} placeholder="1" help="每个账号同时处理的图片请求数量。" />
+          </Col>
+          <Col xs={24} md={12} xl={6}>
+            <NumberInput label="生图前预检间隔" value={String(config.image_account_precheck_interval_minutes || "")} onChange={setImageAccountPrecheckIntervalMinutes} placeholder="10" help="单位分钟，账号超过该时间未刷新时，生图前先刷新状态和额度。" />
           </Col>
           <Col xs={24} lg={12}>
             <Form.Item label="全局代理" extra="留空表示不使用代理。">

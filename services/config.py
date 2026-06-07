@@ -358,6 +358,13 @@ class ConfigStore:
             return 3
 
     @property
+    def image_account_precheck_interval_minutes(self) -> int:
+        try:
+            return max(1, int(self.data.get("image_account_precheck_interval_minutes", 10)))
+        except (TypeError, ValueError):
+            return 10
+
+    @property
     def image_parallel_generation(self) -> bool:
         value = self.data.get("image_parallel_generation", True)
         if isinstance(value, str):
@@ -550,6 +557,7 @@ class ConfigStore:
         data["image_poll_interval_secs"] = self.image_poll_interval_secs
         data["image_poll_initial_wait_secs"] = self.image_poll_initial_wait_secs
         data["image_account_concurrency"] = self.image_account_concurrency
+        data["image_account_precheck_interval_minutes"] = self.image_account_precheck_interval_minutes
         data["image_parallel_generation"] = self.image_parallel_generation
         data["image_upscale_enabled"] = self.image_upscale_enabled
         data["image_upscale_target_long_edge"] = self.image_upscale_target_long_edge

@@ -1020,6 +1020,17 @@ class AccountService:
         due_items.sort(key=lambda item: item[0])
         return [token for _, token in due_items]
 
+    def _image_precheck_due(self, account: dict | None, access_token: str) -> bool:
+        if not isinstance(account, dict):
+            return True
+        if self._token_needs_refresh(access_token):
+            return True
+        interval_seconds = max(60, int(config.image_account_precheck_interval_minutes or 1) * 60)
+        last_refresh = self._parse_time(account.get("last_account_refresh_at"))
+        if last_refresh is None:
+            return True
+        return (datetime.now(timezone.utc) - last_refresh).total_seconds() >= interval_seconds
+
     def keepalive_refresh_tokens(self, access_tokens: list[str]) -> dict[str, Any]:
         access_tokens = list(dict.fromkeys(token for token in access_tokens if token))
         if not access_tokens:
@@ -1139,8 +1150,10 @@ class AccountService:
                 plan_types=plan_types,
             )
             attempted_tokens.add(access_token)
+            account = self.get_account(access_token)
             try:
-                account = self.fetch_remote_info(access_token, "get_available_access_token")
+                if self._image_precheck_due(account, access_token):
+                    account = self.fetch_remote_info(access_token, "get_available_access_token")
             except Exception:
                 self.release_image_slot(access_token)
                 continue
