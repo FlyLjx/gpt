@@ -366,7 +366,7 @@ class ConfigStore:
 
     @property
     def image_upscale_enabled(self) -> bool:
-        value = self.data.get("image_upscale_enabled", True)
+        value = self.data.get("image_upscale_enabled", False)
         if isinstance(value, str):
             return value.strip().lower() in {"1", "true", "yes", "on"}
         return bool(value)
@@ -392,7 +392,7 @@ class ConfigStore:
 
     @property
     def image_text_upscale_workflow_enabled(self) -> bool:
-        value = self.data.get("image_text_upscale_workflow_enabled", True)
+        value = self.data.get("image_text_upscale_workflow_enabled", False)
         if isinstance(value, str):
             return value.strip().lower() in {"1", "true", "yes", "on"}
         return bool(value)

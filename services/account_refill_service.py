@@ -23,7 +23,16 @@ REASON_TEXT = {
 
 
 def _is_available_account(account: dict) -> bool:
-    return str(account.get("status") or "") == "正常"
+    return account_service._is_image_account_available(account)
+
+
+def _refresh_candidate_tokens(accounts: list[dict]) -> list[str]:
+    return [
+        str(account.get("access_token") or "").strip()
+        for account in accounts
+        if str(account.get("status") or "") not in {"禁用", "异常"}
+           and str(account.get("access_token") or "").strip()
+    ]
 
 
 class AccountRefillService:
@@ -31,8 +40,8 @@ class AccountRefillService:
         self._lock = threading.Lock()
         self._last_run_at = 0.0
 
-    def _stats(self) -> dict[str, object]:
-        accounts = account_service.list_accounts()
+    def _stats(self, accounts: list[dict] | None = None) -> dict[str, object]:
+        accounts = accounts if accounts is not None else account_service.list_accounts()
         total = len(accounts)
         available = sum(1 for account in accounts if _is_available_account(account))
         available_percent = round((available / total * 100.0) if total else 0.0, 2)
@@ -44,6 +53,24 @@ class AccountRefillService:
             "available_percent": available_percent,
             "threshold_percent": threshold,
             "target_available": target,
+        }
+
+    def _refresh_pool(self) -> dict[str, object]:
+        accounts = account_service.list_accounts()
+        tokens = _refresh_candidate_tokens(accounts)
+        if not tokens:
+            return {
+                "attempted": 0,
+                "refreshed": 0,
+                "errors": 0,
+                "relogined": 0,
+            }
+        result = account_service.refresh_accounts(tokens)
+        return {
+            "attempted": len(tokens),
+            "refreshed": int(result.get("refreshed") or 0),
+            "errors": len(result.get("errors") or []),
+            "relogined": int(result.get("relogined") or 0),
         }
 
     def _detail(self, reason: str, source: str, stats: dict[str, object] | None = None, **extra: object) -> dict[str, object]:
@@ -68,11 +95,14 @@ class AccountRefillService:
             return {"started": False, **detail}
         try:
             stats = self._stats()
-            check_detail = self._detail("checking", source, stats)
-            self._log("自动补池检查号池", check_detail)
             if not config.auto_refill_enabled:
                 detail = self._detail("disabled", source, stats)
                 return {"started": False, **detail}
+
+            refresh = self._refresh_pool()
+            stats = self._stats()
+            check_detail = self._detail("checking", source, stats, refresh=refresh)
+            self._log("自动补池检查号池", check_detail)
 
             total = int(stats["total"])
             available = int(stats["available"])
@@ -86,6 +116,7 @@ class AccountRefillService:
                     "threshold_not_reached",
                     source,
                     stats,
+                    refresh=refresh,
                     below_target=below_target,
                     below_ratio=below_ratio,
                 )
@@ -98,6 +129,7 @@ class AccountRefillService:
                     "register_running",
                     source,
                     stats,
+                    refresh=refresh,
                     below_target=below_target,
                     below_ratio=below_ratio,
                     register_mode=register_state.get("mode"),
@@ -115,6 +147,7 @@ class AccountRefillService:
                 "refill_started",
                 source,
                 stats,
+                refresh=refresh,
                 below_target=below_target,
                 below_ratio=below_ratio,
                 register_mode="available",

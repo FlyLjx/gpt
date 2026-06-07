@@ -113,6 +113,29 @@ class AccountExportTests(unittest.TestCase):
         self.assertEqual(account["refresh_token"], "rt_test")
         self.assertEqual(account["account_id"], "acct_123")
 
+    def test_add_account_items_tolerates_blank_numeric_fields(self) -> None:
+        service = AccountService(MemoryStorage())
+
+        result = service.add_account_items(
+            [
+                {
+                    "access_token": "access_token_blank_numbers",
+                    "quota": "",
+                    "success": "",
+                    "fail": " ",
+                    "invalid_count": "not-a-number",
+                }
+            ]
+        )
+
+        account = service.get_account("access_token_blank_numbers")
+        self.assertEqual(result["added"], 1)
+        self.assertIsNotNone(account)
+        self.assertEqual(account["quota"], 0)
+        self.assertEqual(account["success"], 0)
+        self.assertEqual(account["fail"], 0)
+        self.assertEqual(account["invalid_count"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

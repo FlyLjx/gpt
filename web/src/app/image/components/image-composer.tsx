@@ -128,8 +128,7 @@ export function ImageComposer({
   const ratioLabel = imageRatio === "auto" ? "auto" : `${imageRatio}(${imageTier})`;
   const selectedModelLabel = modelOptions.find((option) => option.value === imageModel)?.label || imageModel;
   const isCodexModel = imageModel.toLowerCase().includes("codex");
-  const usesUpscale = !isCodexModel && imageTier === "4k";
-  const imageSizeLabel = `${qualityLabel} · ${ratioLabel}${usesUpscale ? "超分" : ""} · ${imageCount || 1} 张`;
+  const imageSizeLabel = `${qualityLabel} · ${ratioLabel} · ${imageCount || 1} 张`;
 
   useEffect(() => {
     if (!isSizeMenuOpen) {
@@ -455,7 +454,6 @@ export function ImageComposer({
                               const active = option.ratio === imageRatio && option.tier === imageTier && option.width === imageWidth && option.height === imageHeight;
                               const Icon = option.icon;
                               const disabled = !isCodexModel && option.tier === "2k";
-                              const upscale = !isCodexModel && option.tier === "4k";
                               return (
                                 <button
                                   key={`${option.ratio}-${option.tier}-${option.label}`}
@@ -479,7 +477,7 @@ export function ImageComposer({
                                   {Icon ? (
                                     <>
                                       <Icon className="size-3.5 stroke-[1.8]" />
-                                      <span>{upscale ? `${option.label}超分` : option.label}</span>
+                                      <span>{option.label}</span>
                                     </>
                                   ) : (
                                     <span>{option.label}</span>

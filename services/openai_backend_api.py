@@ -21,7 +21,7 @@ from PIL import Image
 
 from services.account_service import account_service
 from services.config import config
-from services.proxy_service import proxy_settings
+from services.proxy_service import build_urllib_opener, get_urllib_proxy_error, proxy_settings
 from utils.helper import UpstreamHTTPError, ensure_ok, iter_sse_payloads, new_uuid, split_image_model
 from utils.log import logger
 from utils.pow import build_legacy_requirements_token, build_proof_token, parse_pow_resources
@@ -169,6 +169,8 @@ class OpenAIBackendAPI:
         self.pow_script_sources: list[str] = []
         self.pow_data_build = ""
         self.progress_callback: Callable[[str], None] | None = None
+        self.urllib_proxy_error = get_urllib_proxy_error(account=self.account)
+        self.urllib_opener = build_urllib_opener(account=self.account)
         self.session = requests.Session(**proxy_settings.build_session_kwargs(
             account=self.account,
             impersonate=self.fp["impersonate"],
@@ -568,11 +570,11 @@ class OpenAIBackendAPI:
             headers["chatgpt-account-id"] = chatgpt_account_id
         return headers
 
-    def _ensure_codex_source_account(self) -> None:
+    def _ensure_codex_capable_account(self) -> None:
         account = account_service.get_account(self.access_token)
-        source_type = str((account or {}).get("source_type") or "web").strip().lower()
-        if source_type != "codex":
-            raise RuntimeError("codex responses endpoint requires a codex source account")
+        account_type = account_service._normalize_account_type((account or {}).get("type"))
+        if account_type not in {"Plus", "Team", "Pro"}:
+            raise RuntimeError("codex responses endpoint requires a plus/team/pro account")
 
     @staticmethod
     def _codex_image_input(prompt: str, images: list[str]) -> list[Dict[str, Any]]:
@@ -686,6 +688,9 @@ class OpenAIBackendAPI:
     def probe_codex_usage(self) -> dict | None:
         if not self.access_token:
             return None
+        if self.urllib_proxy_error:
+            logger.debug({"event": "codex_usage_probe_skipped", "error": self.urllib_proxy_error})
+            return None
         path = "/backend-api/codex/responses"
         payload = {
             "model": CODEX_RESPONSES_MODEL,
@@ -701,7 +706,7 @@ class OpenAIBackendAPI:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=30) as raw:
+            with self.urllib_opener.open(request, timeout=30) as raw:
                 usage = account_service.update_codex_usage_from_headers(
                     self.access_token,
                     raw.headers,
@@ -794,7 +799,9 @@ class OpenAIBackendAPI:
     ) -> Iterator[Dict[str, Any]]:
         if not self.access_token:
             raise RuntimeError("access_token is required for codex image endpoints")
-        self._ensure_codex_source_account()
+        if self.urllib_proxy_error:
+            raise RuntimeError(self.urllib_proxy_error)
+        self._ensure_codex_capable_account()
         path = "/backend-api/codex/responses"
         payload = {
             "model": CODEX_RESPONSES_MODEL,
@@ -858,9 +865,10 @@ class OpenAIBackendAPI:
                 key: value for key, value in self._codex_responses_headers().items()
                 if key.lower() != "authorization"
             },
+            "urllib_proxy_enabled": bool(str((self.account or {}).get("proxy") or config.get_proxy_settings() or "").strip()),
         })
         try:
-            with urllib.request.urlopen(request, timeout=1200) as raw:
+            with self.urllib_opener.open(request, timeout=1200) as raw:
                 usage = account_service.update_codex_usage_from_headers(
                     self.access_token,
                     raw.headers,

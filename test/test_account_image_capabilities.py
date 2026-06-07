@@ -4,11 +4,13 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 os.environ.setdefault("CHATGPT2API_AUTH_KEY", "test-auth")
 
 from services.account_service import AccountService
 from services.auth_service import AuthService
+from services.openai_backend_api import OpenAIBackendAPI
 from services.storage.json_storage import JSONStorageBackend
 from utils.helper import anonymize_token, split_image_model
 
@@ -93,6 +95,19 @@ class AccountCapabilityTests(unittest.TestCase):
 
             self.assertEqual(plus_token, "token-plus")
             self.assertEqual(pro_token, "token-pro")
+
+    def test_codex_route_allows_premium_account_types(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service.add_account_items([
+                {"access_token": "token-plus", "type": "Plus", "source_type": "web", "quota": 3},
+                {"access_token": "token-free", "type": "free", "source_type": "codex", "quota": 3},
+            ])
+
+            with mock.patch("services.openai_backend_api.account_service", service):
+                OpenAIBackendAPI("token-plus")._ensure_codex_capable_account()
+                with self.assertRaisesRegex(RuntimeError, "plus/team/pro"):
+                    OpenAIBackendAPI("token-free")._ensure_codex_capable_account()
 
 
 class TokenLogTests(unittest.TestCase):

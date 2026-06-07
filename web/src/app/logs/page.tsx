@@ -55,6 +55,7 @@ function getStatus(item: SystemLog) {
   if (status === "success") return "成功";
   if (status === "failed") return "失败";
   if (status === "running") return "处理中";
+  if (status === "selected") return "已选账号";
   return "-";
 }
 
@@ -62,6 +63,7 @@ function getStatusColor(item: SystemLog) {
   const status = item.detail?.status;
   if (status === "failed") return "red";
   if (status === "running") return "processing";
+  if (status === "selected") return "blue";
   return "green";
 }
 
@@ -93,6 +95,26 @@ function formatAccountTarget(item: SystemLog) {
   if (target !== "-") parts.push(`目标 ${target}`);
   if (interval !== "-") parts.push(`${interval} 分钟`);
   return parts.length ? parts.join(" / ") : "-";
+}
+
+function formatImageAccount(item: SystemLog) {
+  const email = getDetailText(item, "account_email");
+  const accountType = getDetailText(item, "account_type");
+  const sourceType = getDetailText(item, "account_source_type");
+  const parts = [];
+  if (email !== "-") parts.push(email);
+  if (accountType !== "-") parts.push(accountType);
+  if (sourceType !== "-") parts.push(sourceType);
+  return parts.length ? parts.join(" / ") : "-";
+}
+
+function formatImageChannel(item: SystemLog) {
+  const channel = getDetailText(item, "image_channel_label");
+  const backendModel = getDetailText(item, "backend_model");
+  if (channel === "-" && backendModel === "-") return "-";
+  if (channel === "-") return backendModel;
+  if (backendModel === "-") return channel;
+  return `${channel} / ${backendModel}`;
 }
 
 function LogsContent() {
@@ -187,6 +209,8 @@ function LogsContent() {
     ...(isCallLog
       ? [
           { title: "令牌名称", width: 160, render: (_: unknown, item: SystemLog) => getDetailText(item, "key_name") },
+          { title: "使用账户", width: 240, render: (_: unknown, item: SystemLog) => <span className="break-all">{formatImageAccount(item)}</span> },
+          { title: "最终渠道", width: 220, render: (_: unknown, item: SystemLog) => <span className="text-slate-600">{formatImageChannel(item)}</span> },
           { title: "调用耗时", width: 120, render: (_: unknown, item: SystemLog) => formatDuration(item) },
           {
             title: "状态",
@@ -289,7 +313,7 @@ function LogsContent() {
           dataSource={currentRows}
           loading={isLoading}
           pagination={false}
-          scroll={{ x: 980 }}
+          scroll={{ x: 1420 }}
           locale={{ emptyText: <Empty description="没有找到日志" /> }}
         />
         <div className="flex items-center justify-end border-t border-slate-100 px-4 py-3">

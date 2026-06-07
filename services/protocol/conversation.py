@@ -5,7 +5,7 @@ import json
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Iterator
 
 import tiktoken
@@ -18,6 +18,7 @@ from services.log_service import LOG_TYPE_CALL, log_service
 from services.image_upscale_service import upstream_image_size, upscale_image_bytes
 from services.openai_backend_api import ImageContentPolicyError, ImagePollTimeoutError, OpenAIBackendAPI
 from utils.helper import (
+    CODEX_IMAGE_MODEL,
     IMAGE_MODELS,
     extract_image_from_message_content,
     is_codex_image_model,
@@ -38,6 +39,8 @@ class ImageGenerationError(Exception):
         param: str | None = None,
         account_email: str = "",
         conversation_id: str = "",
+        image_route: dict[str, Any] | None = None,
+        image_route_attempts: list[dict[str, Any]] | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
@@ -46,6 +49,8 @@ class ImageGenerationError(Exception):
         self.param = param
         self.account_email = account_email
         self.conversation_id = conversation_id
+        self.image_route = dict(image_route or {})
+        self.image_route_attempts = list(image_route_attempts or [])
 
     def to_openai_error(self) -> dict[str, Any]:
         error_dict = {
@@ -123,6 +128,20 @@ REFERENCED_IMAGE_IDS_RE = re.compile(r'"referenced_image_ids"\s*:\s*\[([^\]]+)\]
 TOOL_PARAMS_JSON_RE = re.compile(
     r'\{\s*"size"\s*:\s*"\d+x\d+"\s*,\s*"n"\s*:\s*\d+\s*\}'
 )
+AUTO_CODEX_PLAN_TYPES = ("plus", "team", "pro")
+DEFAULT_IMAGE_MODEL = "gpt-image-2"
+IMAGE_CHANNEL_CODEX = "codex"
+IMAGE_CHANNEL_REGULAR = "image-2"
+IMAGE_CHANNEL_LABELS = {
+    IMAGE_CHANNEL_CODEX: "Codex线路",
+    IMAGE_CHANNEL_REGULAR: "普通 Image-2 线路",
+}
+IMAGE_ROUTE_LABELS = {
+    "explicit_codex": "指定 Codex 线路",
+    "auto_premium_codex": "高级账号自动 Codex 线路",
+    "free_image2_fallback": "Free 账号普通 Image-2 线路",
+    "requested_image2": "指定普通 Image-2 线路",
+}
 
 
 def is_model_text_reply_instead_of_image(message: str) -> bool:
@@ -144,6 +163,100 @@ def is_model_text_reply_instead_of_image(message: str) -> bool:
     if TOOL_PARAMS_JSON_RE.search(message):
         return True
     return False
+
+
+def _uses_default_image_route(model: object) -> bool:
+    plan_type, base_model = split_image_model(model)
+    return plan_type is None and base_model == DEFAULT_IMAGE_MODEL
+
+
+def _image_route_meta(request: ConversationRequest, routed_request: ConversationRequest, route: str) -> dict[str, Any]:
+    channel = IMAGE_CHANNEL_CODEX if is_codex_image_model(routed_request.model) else IMAGE_CHANNEL_REGULAR
+    return {
+        "requested_model": request.model,
+        "backend_model": routed_request.model,
+        "image_channel": channel,
+        "image_channel_label": IMAGE_CHANNEL_LABELS.get(channel, channel),
+        "image_route": route,
+        "image_route_label": IMAGE_ROUTE_LABELS.get(route, route),
+    }
+
+
+def _account_route_meta(route_meta: dict[str, Any], account: dict[str, Any] | None) -> dict[str, Any]:
+    meta = dict(route_meta or {})
+    item = account or {}
+    email = str(item.get("email") or "").strip()
+    account_type = str(item.get("type") or item.get("plan_type") or "").strip()
+    source_type = str(item.get("source_type") or "").strip()
+    default_model = str(item.get("default_model_slug") or "").strip()
+    if email:
+        meta["account_email"] = email
+    if account_type:
+        meta["account_type"] = account_type
+    if source_type:
+        meta["account_source_type"] = source_type
+    if default_model:
+        meta["account_default_model_slug"] = default_model
+    return meta
+
+
+def _attach_image_route(exc: Exception, route_meta: dict[str, Any]) -> None:
+    if route_meta and not getattr(exc, "image_route", None):
+        setattr(exc, "image_route", dict(route_meta))
+
+
+def _attach_image_route_attempts(exc: Exception, attempts: list[dict[str, Any]]) -> None:
+    if attempts and not getattr(exc, "image_route_attempts", None):
+        setattr(exc, "image_route_attempts", [dict(item) for item in attempts])
+
+
+def _exception_image_route(exc: Exception) -> dict[str, Any]:
+    route = getattr(exc, "image_route", None)
+    return dict(route) if isinstance(route, dict) else {}
+
+
+def _exception_image_route_attempts(exc: Exception) -> list[dict[str, Any]]:
+    attempts = getattr(exc, "image_route_attempts", None)
+    return [dict(item) for item in attempts if isinstance(item, dict)] if isinstance(attempts, list) else []
+
+
+def _select_image_request_route(request: ConversationRequest) -> tuple[str, ConversationRequest, dict[str, Any]]:
+    """Pick the token and effective backend model for one image attempt.
+
+    The public default model stays `gpt-image-2`, but when a ready Codex-source
+    Plus/Team/Pro account exists we transparently use the Codex image endpoint.
+    Free accounts remain on the regular image endpoint.
+    """
+    plan_type, _ = split_image_model(request.model)
+    codex_model = is_codex_image_model(request.model)
+
+    if codex_model:
+        token = account_service.get_available_access_token(
+            plan_type=plan_type,
+            plan_types=AUTO_CODEX_PLAN_TYPES if not plan_type else None,
+        )
+        return token, request, _image_route_meta(request, request, "explicit_codex")
+
+    if _uses_default_image_route(request.model):
+        try:
+            token = account_service.get_available_access_token(
+                plan_types=AUTO_CODEX_PLAN_TYPES,
+            )
+        except RuntimeError as codex_error:
+            logger.info({
+                "event": "image_auto_route_codex_unavailable",
+                "model": request.model,
+                "error": str(codex_error),
+            })
+        else:
+            routed_request = replace(request, model=CODEX_IMAGE_MODEL)
+            return token, routed_request, _image_route_meta(request, routed_request, "auto_premium_codex")
+
+        token = account_service.get_available_access_token(plan_type="free")
+        return token, request, _image_route_meta(request, request, "free_image2_fallback")
+
+    token = account_service.get_available_access_token(plan_type=plan_type)
+    return token, request, _image_route_meta(request, request, "requested_image2")
 
 
 def encode_images(images: Iterable[tuple[bytes, str, str]]) -> list[str]:
@@ -373,6 +486,8 @@ class ImageOutput:
     data: list[dict[str, Any]] = field(default_factory=list)
     account_email: str = ""
     conversation_id: str = ""
+    route_meta: dict[str, Any] = field(default_factory=dict)
+    route_attempts: list[dict[str, Any]] = field(default_factory=list)
 
     def to_chunk(self) -> dict[str, Any]:
         chunk: dict[str, Any] = {
@@ -389,6 +504,10 @@ class ImageOutput:
             chunk["_account_email"] = self.account_email
         if self.conversation_id:
             chunk["_conversation_id"] = self.conversation_id
+        if self.route_meta:
+            chunk["_image_route"] = dict(self.route_meta)
+        if self.route_attempts:
+            chunk["_image_route_attempts"] = [dict(item) for item in self.route_attempts]
         if self.kind == "message":
             chunk.update({
                 "object": "image.generation.message",
@@ -1274,15 +1393,10 @@ def stream_codex_image_outputs(
 
 
 def _should_run_text_upscale_workflow(request: ConversationRequest) -> bool:
-    if request.text_upscale_workflow_disabled:
-        return False
-    if not config.image_text_upscale_workflow_enabled:
-        return False
-    if is_codex_image_model(request.model):
-        return False
-    if str(request.quality or "").strip().lower() not in {"high", "hd", "best"}:
-        return False
-    return bool(upstream_image_size(model=request.model, size=request.size, upscale=request.upscale) == "1024x1024")
+    # Backend 4K/text upscale workflow is disabled; Codex-capable premium
+    # accounts should handle high-resolution requests directly.
+    _ = request
+    return False
 
 
 def _result_items_to_encoded_images(items: list[dict[str, Any]]) -> list[str]:
@@ -1468,42 +1582,58 @@ def _generate_single_image(
     conn_timeout_retry_count = 0
     poll_timeout_retry_count = 0
     account_email = ""
+    route_attempts: list[dict[str, Any]] = []
 
     while True:
+        route_meta: dict[str, Any] = {}
         try:
             if request.progress_callback:
                 request.progress_callback("getting_account")
-            plan_type, _ = split_image_model(request.model)
-            codex_model = is_codex_image_model(request.model)
-            token = account_service.get_available_access_token(
-                plan_type=plan_type,
-                source_type="codex" if codex_model else None,
-                plan_types=("plus", "team", "pro") if codex_model and not plan_type else None,
-            )
+            token, routed_request, route_meta = _select_image_request_route(request)
         except RuntimeError as exc:
-            raise ImageGenerationError(str(exc) or "image generation failed", account_email=account_email) from exc
+            raise ImageGenerationError(
+                str(exc) or "image generation failed",
+                account_email=account_email,
+                image_route_attempts=route_attempts,
+            ) from exc
 
         emitted_for_token = False
         returned_message = False
         returned_result = False
         account = account_service.get_account(token) or {}
         account_email = str(account.get("email") or "").strip()
+        route_meta = _account_route_meta(route_meta, account)
+        route_attempts.append(dict(route_meta) | {
+            "index": index,
+            "total": total,
+            "attempt": len(route_attempts) + 1,
+        })
         logger.debug({
             "event": "image_account_lookup",
             "token_prefix": token[:12] + "..." if len(token) > 12 else token,
             "account_email": account_email,
+            "account_type": route_meta.get("account_type"),
+            "account_source_type": route_meta.get("account_source_type"),
+            "requested_model": route_meta.get("requested_model"),
+            "backend_model": route_meta.get("backend_model"),
+            "image_channel": route_meta.get("image_channel"),
+            "image_route": route_meta.get("image_route"),
             "account_found": bool(account),
             "index": index,
         })
         try:
             backend = OpenAIBackendAPI(access_token=token)
-            if request.progress_callback:
-                backend.progress_callback = request.progress_callback
-            stream_fn = stream_codex_image_outputs if is_codex_image_model(request.model) else stream_image_outputs
+            if routed_request.progress_callback:
+                backend.progress_callback = routed_request.progress_callback
+            stream_fn = stream_codex_image_outputs if is_codex_image_model(routed_request.model) else stream_image_outputs
             outputs: list[ImageOutput] = []
-            for output in stream_fn(backend, request, index, total):
+            for output in stream_fn(backend, routed_request, index, total):
                 if account_email and not output.account_email:
                     output.account_email = account_email
+                if route_meta and not output.route_meta:
+                    output.route_meta = dict(route_meta)
+                if route_attempts and not output.route_attempts:
+                    output.route_attempts = [dict(item) for item in route_attempts]
                 if output.kind == "message" and request.message_as_error:
                     raise ImageGenerationError(
                         output.text or "Image generation was rejected by upstream policy.",
@@ -1512,6 +1642,8 @@ def _generate_single_image(
                         code="content_policy_violation",
                         account_email=account_email,
                         conversation_id=output.conversation_id,
+                        image_route=route_meta,
+                        image_route_attempts=route_attempts,
                     )
                 emitted_for_token = True
                 returned_message = output.kind == "message"
@@ -1531,15 +1663,24 @@ def _generate_single_image(
                         code="no_image_generated",
                         account_email=account_email,
                         conversation_id=conv_id,
+                        image_route=route_meta,
+                        image_route_attempts=route_attempts,
                 )
                 return outputs
             account_service.mark_image_result(token, True)
-            outputs = _apply_text_upscale_workflow(request, outputs)
+            outputs = _apply_text_upscale_workflow(routed_request, outputs)
+            for output in outputs:
+                if route_meta and not output.route_meta:
+                    output.route_meta = dict(route_meta)
+                if route_attempts and not output.route_attempts:
+                    output.route_attempts = [dict(item) for item in route_attempts]
             return outputs
         except ImagePollTimeoutError as exc:
             account_service.mark_image_result(token, False)
             if account_email:
                 setattr(exc, "account_email", account_email)
+            _attach_image_route(exc, route_meta)
+            _attach_image_route_attempts(exc, route_attempts)
             # 轮询超时：换账号重试
             if not emitted_for_token:
                 poll_timeout_retry_count += 1
@@ -1578,11 +1719,15 @@ def _generate_single_image(
                 code="content_policy_violation",
                 account_email=account_email,
                 conversation_id=getattr(exc, "conversation_id", ""),
+                image_route=route_meta,
+                image_route_attempts=route_attempts,
             ) from exc
         except ImageGenerationError as exc:
             account_service.mark_image_result(token, False)
             if account_email and not getattr(exc, "account_email", ""):
                 exc.account_email = account_email
+            _attach_image_route(exc, route_meta)
+            _attach_image_route_attempts(exc, route_attempts)
             error_text = str(exc)
             # 如果是模型返回文本而非图片，尝试换账号重试
             if is_model_text_reply_instead_of_image(error_text) and not emitted_for_token:
@@ -1612,6 +1757,8 @@ def _generate_single_image(
                     code="upstream_text_reply",
                     account_email=account_email,
                     conversation_id=getattr(exc, "conversation_id", ""),
+                    image_route=route_meta,
+                    image_route_attempts=route_attempts,
                 ) from exc
             logger.warning({
                 "event": "image_stream_generation_error",
@@ -1623,6 +1770,8 @@ def _generate_single_image(
             raise
         except Exception as exc:
             account_service.mark_image_result(token, False)
+            _attach_image_route(exc, route_meta)
+            _attach_image_route_attempts(exc, route_attempts)
             last_error = str(exc)
             logger.warning({
                 "event": "image_stream_fail",
@@ -1668,7 +1817,13 @@ def _generate_single_image(
                     })
                     time.sleep(wait_secs)
                     continue
-            raise ImageGenerationError(image_stream_error_message(last_error), account_email=account_email, conversation_id="") from exc
+            raise ImageGenerationError(
+                image_stream_error_message(last_error),
+                account_email=account_email,
+                conversation_id="",
+                image_route=route_meta,
+                image_route_attempts=route_attempts,
+            ) from exc
 
 
 def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[ImageOutput]:
@@ -1754,7 +1909,17 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
     if not emitted:
         if not last_error:
             last_error = "no account in the pool could generate images — check account quota and rate-limit status"
-        raise ImageGenerationError(image_stream_error_message(last_error), conversation_id="")
+        route_attempts: list[dict[str, Any]] = []
+        route_meta: dict[str, Any] = {}
+        for exc in errors.values():
+            route_attempts.extend(_exception_image_route_attempts(exc))
+            route_meta = _exception_image_route(exc) or route_meta
+        raise ImageGenerationError(
+            image_stream_error_message(last_error),
+            conversation_id="",
+            image_route=route_meta,
+            image_route_attempts=route_attempts,
+        )
 
 
 def stream_image_chunks(outputs: Iterable[ImageOutput]) -> Iterator[dict[str, Any]]:
@@ -1768,10 +1933,16 @@ def collect_image_outputs(outputs: Iterable[ImageOutput]) -> dict[str, Any]:
     message = ""
     progress_parts: list[str] = []
     account_email = ""
+    route_meta: dict[str, Any] = {}
+    route_attempts: list[dict[str, Any]] = []
     for output in outputs:
         created = created or output.created
         if output.account_email and not account_email:
             account_email = output.account_email
+        if output.route_meta and not route_meta:
+            route_meta = dict(output.route_meta)
+        if output.route_attempts:
+            route_attempts.extend(dict(item) for item in output.route_attempts)
         if output.kind == "progress" and output.text:
             progress_parts.append(output.text)
         elif output.kind == "message":
@@ -1786,4 +1957,22 @@ def collect_image_outputs(outputs: Iterable[ImageOutput]) -> dict[str, Any]:
             result["message"] = text
     if account_email:
         result["_account_email"] = account_email
+    if route_meta:
+        result["_image_route"] = route_meta
+    if route_attempts:
+        deduped_attempts: list[dict[str, Any]] = []
+        seen: set[tuple[object, ...]] = set()
+        for item in route_attempts:
+            marker = (
+                item.get("attempt"),
+                item.get("index"),
+                item.get("account_email"),
+                item.get("backend_model"),
+                item.get("image_route"),
+            )
+            if marker in seen:
+                continue
+            seen.add(marker)
+            deduped_attempts.append(item)
+        result["_image_route_attempts"] = deduped_attempts
     return result

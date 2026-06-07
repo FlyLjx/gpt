@@ -69,6 +69,81 @@ def _collect_image_urls(data: list[Any]) -> list[str]:
     return urls
 
 
+IMAGE_ROUTE_DETAIL_KEYS = (
+    "account_type",
+    "account_source_type",
+    "account_default_model_slug",
+    "requested_model",
+    "backend_model",
+    "image_channel",
+    "image_channel_label",
+    "image_route",
+    "image_route_label",
+)
+
+
+def _image_route_from_result(result: object) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        return {}
+    route = result.get("_image_route")
+    return dict(route) if isinstance(route, dict) else {}
+
+
+def _image_route_attempts_from_result(result: object) -> list[dict[str, Any]]:
+    if not isinstance(result, dict):
+        return []
+    attempts = result.get("_image_route_attempts")
+    return _dedupe_image_route_attempts([dict(item) for item in attempts if isinstance(item, dict)]) if isinstance(attempts, list) else []
+
+
+def _image_route_from_exception(exc: Exception) -> dict[str, Any]:
+    route = getattr(exc, "image_route", None)
+    return dict(route) if isinstance(route, dict) else {}
+
+
+def _image_route_attempts_from_exception(exc: Exception) -> list[dict[str, Any]]:
+    attempts = getattr(exc, "image_route_attempts", None)
+    return _dedupe_image_route_attempts([dict(item) for item in attempts if isinstance(item, dict)]) if isinstance(attempts, list) else []
+
+
+def _dedupe_image_route_attempts(attempts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[object, ...]] = set()
+    for item in attempts:
+        marker = (
+            item.get("attempt"),
+            item.get("index"),
+            item.get("account_email"),
+            item.get("backend_model"),
+            item.get("image_route"),
+        )
+        if marker in seen:
+            continue
+        seen.add(marker)
+        deduped.append(item)
+    return deduped
+
+
+def _apply_image_route_detail(
+    detail: dict[str, Any],
+    image_route: dict[str, Any] | None = None,
+    image_route_attempts: list[dict[str, Any]] | None = None,
+) -> None:
+    attempts = _dedupe_image_route_attempts(image_route_attempts or [])
+    route_meta = dict(image_route or {})
+    if not route_meta and attempts:
+        route_meta = dict(attempts[-1])
+    for key in IMAGE_ROUTE_DETAIL_KEYS:
+        value = route_meta.get(key)
+        if value is not None and value != "":
+            detail[key] = value
+    if route_meta.get("account_email") and not detail.get("account_email"):
+        detail["account_email"] = route_meta["account_email"]
+    if attempts:
+        detail["image_route_attempts"] = attempts
+        detail["image_route_attempt_count"] = len(attempts)
+
+
 def _build_log_detail(
     identity: dict[str, object],
     *,
@@ -82,6 +157,8 @@ def _build_log_detail(
     account_email: str = "",
     conversation_id: str = "",
     request_params: dict[str, Any] | None = None,
+    image_route: dict[str, Any] | None = None,
+    image_route_attempts: list[dict[str, Any]] | None = None,
     finished: bool = True,
 ) -> dict[str, Any]:
     detail = {
@@ -110,6 +187,7 @@ def _build_log_detail(
         detail["conversation_id"] = conversation_id
     if urls:
         detail["urls"] = list(dict.fromkeys(urls))
+    _apply_image_route_detail(detail, image_route, image_route_attempts)
     return detail
 
 
@@ -370,6 +448,12 @@ class ImageTaskService:
                 error = RuntimeError(message)
                 if account_email:
                     setattr(error, "account_email", account_email)
+                route_meta = _image_route_from_result(result)
+                route_attempts = _image_route_attempts_from_result(result)
+                if route_meta:
+                    setattr(error, "image_route", route_meta)
+                if route_attempts:
+                    setattr(error, "image_route_attempts", route_attempts)
                 raise error
             usage = result.get("usage")
             duration_ms = int((time.time() - started) * 1000)
@@ -386,6 +470,8 @@ class ImageTaskService:
                 urls=_collect_image_urls(data),
                 account_email=account_email,
                 result_data=data,
+                image_route=_image_route_from_result(result),
+                image_route_attempts=_image_route_attempts_from_result(result),
             )
         except Exception as exc:
             error_message = str(exc) or "image task failed"
@@ -407,6 +493,8 @@ class ImageTaskService:
                 status="failed",
                 error=error_message,
                 account_email=account_email,
+                image_route=_image_route_from_exception(exc),
+                image_route_attempts=_image_route_attempts_from_exception(exc),
             )
 
     def _log_call(
@@ -425,6 +513,8 @@ class ImageTaskService:
         account_email: str = "",
         request_params: dict[str, Any] | None = None,
         result_data: object = None,
+        image_route: dict[str, Any] | None = None,
+        image_route_attempts: list[dict[str, Any]] | None = None,
     ) -> None:
         endpoint = "/v1/images/edits" if mode == "edit" else "/v1/images/generations"
         summary_prefix = "图生图" if mode == "edit" else "文生图"
@@ -439,6 +529,8 @@ class ImageTaskService:
             urls=urls,
             account_email=account_email,
             request_params=request_params,
+            image_route=image_route,
+            image_route_attempts=image_route_attempts,
         )
         detail.update(_image_result_meta(result_data))
         try:

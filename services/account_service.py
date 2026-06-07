@@ -132,6 +132,11 @@ class AccountService:
         except (TypeError, ValueError):
             return None
 
+    @classmethod
+    def _int_or_default(cls, value: object, default: int = 0) -> int:
+        parsed = cls._int_or_none(value)
+        return default if parsed is None else parsed
+
     @staticmethod
     def _header_value(headers: object, key: str) -> str:
         if not headers:
@@ -354,7 +359,7 @@ class AccountService:
             normalized.pop("type", None)
         normalized["type"] = normalized.get("type") or "free"
         normalized["status"] = normalized.get("status") or "正常"
-        normalized["quota"] = max(0, int(normalized.get("quota") if normalized.get("quota") is not None else 0))
+        normalized["quota"] = max(0, self._int_or_default(normalized.get("quota"), 0))
         normalized["usage"] = self._normalize_usage(normalized.get("usage"))
         normalized["image_quota_unknown"] = bool(normalized.get("image_quota_unknown"))
         normalized["email"] = normalized.get("email") or None
@@ -368,9 +373,9 @@ class AccountService:
         normalized["limits_progress"] = limits_progress if isinstance(limits_progress, list) else []
         normalized["default_model_slug"] = normalized.get("default_model_slug") or None
         normalized["restore_at"] = normalized.get("restore_at") or None
-        normalized["success"] = int(normalized.get("success") or 0)
-        normalized["fail"] = int(normalized.get("fail") or 0)
-        normalized["invalid_count"] = int(normalized.get("invalid_count") or 0)
+        normalized["success"] = max(0, self._int_or_default(normalized.get("success"), 0))
+        normalized["fail"] = max(0, self._int_or_default(normalized.get("fail"), 0))
+        normalized["invalid_count"] = max(0, self._int_or_default(normalized.get("invalid_count"), 0))
         normalized["last_used_at"] = normalized.get("last_used_at")
         normalized["last_invalid_at"] = normalized.get("last_invalid_at") or None
         normalized["last_refresh_error"] = normalized.get("last_refresh_error") or None

@@ -20,6 +20,14 @@ import {
   type ProxyTestResult,
 } from "@/lib/api";
 
+function formatProxyCheck(label: string, check?: ProxyTestResult["chatgpt"]) {
+  if (!check) return `${label}：未检测`;
+  const status = check.status ? `HTTP ${check.status}` : "无响应";
+  return check.ok
+    ? `${label}：可连接（${status}，${check.latency_ms} ms）`
+    : `${label}：失败（${check.error || status}，${check.latency_ms} ms）`;
+}
+
 export function ProxySettingsCard() {
   const didLoadRef = useRef(false);
   const [settings, setSettings] = useState<ProxySettings>({ enabled: false, url: "" });
@@ -90,9 +98,9 @@ export function ProxySettingsCard() {
       const data = await testProxy(candidate);
       setTestResult(data.result);
       if (data.result.ok) {
-        toast.success(`代理可用（${data.result.latency_ms} ms，HTTP ${data.result.status}）`);
+        toast.success(`代理可连接 chatgpt.com（${data.result.latency_ms} ms）`);
       } else {
-        toast.error(`代理不可用：${data.result.error ?? "未知错误"}`);
+        toast.error(`代理无法完整连接 chatgpt.com：${data.result.error ?? "未知错误"}`);
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "测试代理失败");
@@ -165,10 +173,16 @@ export function ProxySettingsCard() {
               >
                 {testResult.ok ? (
                   <>
-                    代理可用：HTTP {testResult.status}，用时 {testResult.latency_ms} ms
+                    <div className="font-medium">代理可连接 chatgpt.com，用时 {testResult.latency_ms} ms</div>
+                    <div>{formatProxyCheck("ChatGPT 连接", testResult.chatgpt)}</div>
+                    <div>{formatProxyCheck("Codex/urllib 路径", testResult.urllib_chatgpt)}</div>
                   </>
                 ) : (
-                  <>代理不可用：{testResult.error ?? "未知错误"}（用时 {testResult.latency_ms} ms）</>
+                  <>
+                    <div className="font-medium">代理无法完整连接 chatgpt.com：{testResult.error ?? "未知错误"}（用时 {testResult.latency_ms} ms）</div>
+                    <div>{formatProxyCheck("ChatGPT 连接", testResult.chatgpt)}</div>
+                    <div>{formatProxyCheck("Codex/urllib 路径", testResult.urllib_chatgpt)}</div>
+                  </>
                 )}
               </div>
             ) : null}

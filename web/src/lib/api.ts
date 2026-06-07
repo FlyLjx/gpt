@@ -423,11 +423,9 @@ export async function updateAccount(
 }
 
 function shouldAutoUpscaleImage(model?: string, size?: string) {
-  const normalizedModel = String(model || "").toLowerCase();
-  const normalizedSize = String(size || "").toLowerCase();
-  const dimensions = normalizedSize.match(/\d+/g)?.map((item) => Number(item)) || [];
-  const requested4k = normalizedSize.includes("4k") || dimensions.some((item) => item >= 2160);
-  return !normalizedModel.includes("codex") && requested4k;
+  void model;
+  void size;
+  return false;
 }
 
 export async function generateImage(prompt: string, model?: ImageModel, size?: string, quality = "auto") {
@@ -920,6 +918,20 @@ export type ProxyTestResult = {
     city?: string;
     org?: string;
     timezone?: string;
+  };
+  chatgpt?: {
+    ok: boolean;
+    status: number;
+    latency_ms: number;
+    url?: string;
+    error?: string | null;
+  };
+  urllib_chatgpt?: {
+    ok: boolean;
+    status: number;
+    latency_ms: number;
+    url?: string;
+    error?: string | null;
   };
   error: string | null;
 };

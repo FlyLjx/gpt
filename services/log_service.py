@@ -21,7 +21,7 @@ from utils.helper import anthropic_sse_stream, sse_json_stream
 
 LOG_TYPE_CALL = "call"
 LOG_TYPE_ACCOUNT = "account"
-INTERNAL_RESPONSE_KEYS = {"_account_email", "_conversation_id", "_b64_json"}
+INTERNAL_RESPONSE_KEYS = {"_account_email", "_conversation_id", "_b64_json", "_image_route", "_image_route_attempts"}
 IMAGE_REQUEST_PARAM_KEYS = ("n", "size", "quality", "upscale", "response_format", "stream")
 
 
@@ -194,6 +194,70 @@ def _collect_conversation_ids(value: object) -> list[str]:
     return ids
 
 
+def _collect_image_routes(value: object) -> list[dict[str, Any]]:
+    routes: list[dict[str, Any]] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key == "_image_route" and isinstance(item, dict):
+                route = {str(route_key): route_value for route_key, route_value in item.items()}
+                if route:
+                    routes.append(route)
+            else:
+                routes.extend(_collect_image_routes(item))
+    elif isinstance(value, list):
+        for item in value:
+            routes.extend(_collect_image_routes(item))
+    return routes
+
+
+def _collect_image_route_attempts(value: object) -> list[dict[str, Any]]:
+    attempts: list[dict[str, Any]] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key == "_image_route_attempts" and isinstance(item, list):
+                attempts.extend(
+                    {str(route_key): route_value for route_key, route_value in route.items()}
+                    for route in item
+                    if isinstance(route, dict) and route
+                )
+            else:
+                attempts.extend(_collect_image_route_attempts(item))
+    elif isinstance(value, list):
+        for item in value:
+            attempts.extend(_collect_image_route_attempts(item))
+    return attempts
+
+
+def _dedupe_image_route_attempts(attempts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[object, ...]] = set()
+    for item in attempts:
+        marker = (
+            item.get("attempt"),
+            item.get("index"),
+            item.get("account_email"),
+            item.get("backend_model"),
+            item.get("image_route"),
+        )
+        if marker in seen:
+            continue
+        seen.add(marker)
+        deduped.append(item)
+    return deduped
+
+
+def _image_route_from_exception(exc: Exception) -> dict[str, Any]:
+    route = getattr(exc, "image_route", None)
+    return dict(route) if isinstance(route, dict) else {}
+
+
+def _image_route_attempts_from_exception(exc: Exception) -> list[dict[str, Any]]:
+    attempts = getattr(exc, "image_route_attempts", None)
+    if not isinstance(attempts, list):
+        return []
+    return _dedupe_image_route_attempts([dict(item) for item in attempts if isinstance(item, dict)])
+
+
 def image_request_params(payload: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return {}
@@ -298,13 +362,16 @@ class LoggedCall:
             result = await run_in_threadpool(handler, *args)
         except ImageGenerationError as exc:
             self.log("调用失败", status="failed", error=str(exc), account_email=getattr(exc, "account_email", ""),
-                     conversation_id=getattr(exc, "conversation_id", ""))
+                     conversation_id=getattr(exc, "conversation_id", ""), image_route=_image_route_from_exception(exc),
+                     image_route_attempts=_image_route_attempts_from_exception(exc))
             return _image_error_response(exc)
         except HTTPException as exc:
             self.log("调用失败", status="failed", error=str(exc.detail))
             raise
         except Exception as exc:
-            self.log("调用失败", status="failed", error=str(exc), account_email=getattr(exc, "account_email", ""))
+            self.log("调用失败", status="failed", error=str(exc), account_email=getattr(exc, "account_email", ""),
+                     image_route=_image_route_from_exception(exc),
+                     image_route_attempts=_image_route_attempts_from_exception(exc))
             if self.endpoint.startswith("/v1/images"):
                 return _image_error_response(exc)
             return _protocol_error_response(exc, 502, sse)
@@ -318,13 +385,16 @@ class LoggedCall:
             has_first, first = await run_in_threadpool(_next_item, result)
         except ImageGenerationError as exc:
             self.log("调用失败", status="failed", error=str(exc), account_email=getattr(exc, "account_email", ""),
-                     conversation_id=getattr(exc, "conversation_id", ""))
+                     conversation_id=getattr(exc, "conversation_id", ""), image_route=_image_route_from_exception(exc),
+                     image_route_attempts=_image_route_attempts_from_exception(exc))
             return _image_error_response(exc)
         except HTTPException as exc:
             self.log("调用失败", status="failed", error=str(exc.detail))
             raise
         except Exception as exc:
-            self.log("调用失败", status="failed", error=str(exc), account_email=getattr(exc, "account_email", ""))
+            self.log("调用失败", status="failed", error=str(exc), account_email=getattr(exc, "account_email", ""),
+                     image_route=_image_route_from_exception(exc),
+                     image_route_attempts=_image_route_attempts_from_exception(exc))
             if self.endpoint.startswith("/v1/images"):
                 return _image_error_response(exc)
             return _protocol_error_response(exc, 502, sse)
@@ -337,12 +407,16 @@ class LoggedCall:
         urls: list[str] = []
         account_emails: list[str] = []
         conversation_ids: list[str] = []
+        image_routes: list[dict[str, Any]] = []
+        image_route_attempts: list[dict[str, Any]] = []
         failed = False
         try:
             for item in items:
                 urls.extend(_collect_urls(item))
                 account_emails.extend(_collect_account_emails(item))
                 conversation_ids.extend(_collect_conversation_ids(item))
+                image_routes.extend(_collect_image_routes(item))
+                image_route_attempts.extend(_collect_image_route_attempts(item))
                 yield _strip_internal_response_fields(item)
         except Exception as exc:
             failed = True
@@ -353,6 +427,10 @@ class LoggedCall:
                 urls=urls,
                 account_email=(account_emails[0] if account_emails else getattr(exc, "account_email", "")),
                 conversation_id=(conversation_ids[0] if conversation_ids else getattr(exc, "conversation_id", "")),
+                image_route=(image_routes[0] if image_routes else _image_route_from_exception(exc)),
+                image_route_attempts=(
+                    image_route_attempts if image_route_attempts else _image_route_attempts_from_exception(exc)
+                ),
             )
             if self.endpoint.startswith("/v1/images") and not hasattr(exc, "to_openai_error"):
                 from services.protocol.conversation import ImageGenerationError, public_image_error_message
@@ -362,10 +440,14 @@ class LoggedCall:
         finally:
             if not failed:
                 self.log("流式调用结束", urls=urls, account_email=account_emails[0] if account_emails else "",
-                         conversation_id=conversation_ids[0] if conversation_ids else "")
+                         conversation_id=conversation_ids[0] if conversation_ids else "",
+                         image_route=image_routes[0] if image_routes else None,
+                         image_route_attempts=image_route_attempts)
 
     def log(self, suffix: str, result: object = None, status: str = "success", error: str = "",
             urls: list[str] | None = None, account_email: str = "", conversation_id: str = "",
+            image_route: dict[str, Any] | None = None,
+            image_route_attempts: list[dict[str, Any]] | None = None,
             finished: bool = True) -> None:
         detail = {
             "key_id": self.identity.get("id"),
@@ -403,6 +485,35 @@ class LoggedCall:
             conv_id = conv_ids[0] if conv_ids else ""
         if conv_id:
             detail["conversation_id"] = conv_id
+        route_meta = dict(image_route or {})
+        if not route_meta:
+            routes = _collect_image_routes(result)
+            route_meta = routes[0] if routes else {}
+        attempts = _dedupe_image_route_attempts([
+            *(image_route_attempts or []),
+            *_collect_image_route_attempts(result),
+        ])
+        if not route_meta and attempts:
+            route_meta = dict(attempts[-1])
+        for key in (
+            "account_type",
+            "account_source_type",
+            "account_default_model_slug",
+            "requested_model",
+            "backend_model",
+            "image_channel",
+            "image_channel_label",
+            "image_route",
+            "image_route_label",
+        ):
+            value = route_meta.get(key)
+            if value is not None and value != "":
+                detail[key] = value
+        if route_meta.get("account_email") and not detail.get("account_email"):
+            detail["account_email"] = route_meta["account_email"]
+        if attempts:
+            detail["image_route_attempts"] = attempts
+            detail["image_route_attempt_count"] = len(attempts)
         collected_urls = [*(urls or []), *_collect_urls(result)]
         if collected_urls and not self.endpoint.startswith("/v1/search"):
             detail["urls"] = list(dict.fromkeys(collected_urls))

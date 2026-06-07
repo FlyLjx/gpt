@@ -20,23 +20,23 @@ def list_models() -> dict[str, Any]:
         for account in accounts
         if isinstance(account, dict)
     ]
-    codex_types = {
+    premium_types = {
         normalized
         for account in accounts
         if isinstance(account, dict)
-           and account_service._normalize_source_type(account.get("source_type")) == "codex"
            and (normalized := account_service._normalize_account_type(account.get("type")))
+           and normalized in {"Plus", "Team", "Pro"}
     }
 
     if web_image_accounts:
         dynamic_models.add("gpt-image-2")
-    if codex_types & {"Plus", "Team", "Pro"}:
+    if premium_types:
         dynamic_models.add(CODEX_IMAGE_MODEL)
-    if "Plus" in codex_types:
+    if "Plus" in premium_types:
         dynamic_models.add(f"plus-{CODEX_IMAGE_MODEL}")
-    if "Team" in codex_types:
+    if "Team" in premium_types:
         dynamic_models.add(f"team-{CODEX_IMAGE_MODEL}")
-    if "Pro" in codex_types:
+    if "Pro" in premium_types:
         dynamic_models.add(f"pro-{CODEX_IMAGE_MODEL}")
 
     for model in sorted(dynamic_models):
