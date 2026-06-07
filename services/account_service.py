@@ -380,6 +380,7 @@ class AccountService:
         normalized["last_invalid_at"] = normalized.get("last_invalid_at") or None
         normalized["last_refresh_error"] = normalized.get("last_refresh_error") or None
         normalized["last_refresh_error_at"] = normalized.get("last_refresh_error_at") or None
+        normalized["last_account_refresh_at"] = normalized.get("last_account_refresh_at") or None
         normalized["last_token_refresh_at"] = normalized.get("last_token_refresh_at") or None
         normalized["last_token_refresh_error"] = normalized.get("last_token_refresh_error") or None
         normalized["last_token_refresh_error_at"] = normalized.get("last_token_refresh_error_at") or None
@@ -999,6 +1000,26 @@ class AccountService:
         due_items.sort(key=lambda item: item[0])
         return [token for _, token in due_items[: self._REFRESH_TOKEN_KEEPALIVE_BATCH_SIZE]]
 
+    def list_account_healthcheck_tokens(self) -> list[str]:
+        now = datetime.now(timezone.utc)
+        interval_seconds = max(60, int(config.refresh_account_interval_minute or 1) * 60)
+        due_items: list[tuple[datetime, str]] = []
+        with self._lock:
+            for account in self._accounts.values():
+                if account.get("status") in {"禁用", "异常"}:
+                    continue
+                token = str(account.get("access_token") or "").strip()
+                if not token:
+                    continue
+                last_refresh = (
+                    self._parse_time(account.get("last_account_refresh_at"))
+                    or self._parse_time(account.get("created_at"))
+                )
+                if last_refresh is None or (now - last_refresh).total_seconds() >= interval_seconds:
+                    due_items.append((last_refresh or datetime.min.replace(tzinfo=timezone.utc), token))
+        due_items.sort(key=lambda item: item[0])
+        return [token for _, token in due_items]
+
     def keepalive_refresh_tokens(self, access_tokens: list[str]) -> dict[str, Any]:
         access_tokens = list(dict.fromkeys(token for token in access_tokens if token))
         if not access_tokens:
@@ -1373,14 +1394,14 @@ class AccountService:
             return True
         return False
 
-    def _record_invalid_token_seen(self, access_token: str, event: str, error: str) -> bool:
+    def _record_invalid_token_seen(self, access_token: str, event: str, error: str, *, defer: bool = True) -> bool:
         now = datetime.now(timezone.utc)
         with self._lock:
             access_token = self._resolve_access_token_locked(access_token)
             current = self._accounts.get(access_token)
             if current is None:
                 return True
-            should_defer = self._should_defer_invalid_token(current, now)
+            should_defer = defer and self._should_defer_invalid_token(current, now)
             next_item = dict(current)
             next_item["invalid_count"] = int(next_item.get("invalid_count") or 0) + 1
             next_item["last_invalid_at"] = now.isoformat()
@@ -1468,11 +1489,11 @@ class AccountService:
                     raise
                 active_token = refreshed_token
             else:
-                if self._record_invalid_token_seen(active_token, event, str(exc)):
+                if self._record_invalid_token_seen(active_token, event, str(exc), defer=False):
                     self.remove_invalid_token(active_token, event)
                 raise
         self._record_refresh_success(active_token)
-        account = self.update_account(active_token, result)
+        account = self.update_account(active_token, {**result, "last_account_refresh_at": datetime.now(timezone.utc).isoformat()})
         if account and self._should_probe_codex_usage(account):
             usage = self.probe_codex_usage(active_token)
             if usage:

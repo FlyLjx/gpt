@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -10,7 +11,7 @@ os.environ.setdefault("CHATGPT2API_AUTH_KEY", "test-auth")
 
 from services.account_service import AccountService
 from services.auth_service import AuthService
-from services.openai_backend_api import OpenAIBackendAPI
+from services.openai_backend_api import InvalidAccessTokenError, OpenAIBackendAPI
 from services.storage.json_storage import JSONStorageBackend
 from utils.helper import anonymize_token, split_image_model
 
@@ -27,6 +28,42 @@ class AccountCapabilityTests(unittest.TestCase):
                 {"status": "正常", "image_quota_unknown": True, "quota": 0}
             )
         )
+
+    def test_refresh_keeps_free_account_available_when_image_quota_is_missing(self) -> None:
+        with (
+            mock.patch.object(OpenAIBackendAPI, "_get_me", return_value={"email": "free@example.test", "id": "user-1"}),
+            mock.patch.object(
+                OpenAIBackendAPI,
+                "_get_conversation_init",
+                return_value={"default_model_slug": "auto", "limits_progress": []},
+            ),
+            mock.patch.object(OpenAIBackendAPI, "_get_default_account", return_value={"plan_type": "free"}),
+        ):
+            info = OpenAIBackendAPI("token-free").get_user_info()
+
+        self.assertEqual(info["type"], "free")
+        self.assertEqual(info["quota"], 0)
+        self.assertTrue(info["image_quota_unknown"])
+        self.assertEqual(info["status"], "正常")
+
+    def test_refresh_marks_known_zero_image_quota_as_limited(self) -> None:
+        with (
+            mock.patch.object(OpenAIBackendAPI, "_get_me", return_value={"email": "free@example.test", "id": "user-1"}),
+            mock.patch.object(
+                OpenAIBackendAPI,
+                "_get_conversation_init",
+                return_value={
+                    "default_model_slug": "auto",
+                    "limits_progress": [{"feature_name": "image_gen", "remaining": 0, "reset_after": "2026-06-08T00:00:00Z"}],
+                },
+            ),
+            mock.patch.object(OpenAIBackendAPI, "_get_default_account", return_value={"plan_type": "free"}),
+        ):
+            info = OpenAIBackendAPI("token-free").get_user_info()
+
+        self.assertFalse(info["image_quota_unknown"])
+        self.assertEqual(info["quota"], 0)
+        self.assertEqual(info["status"], "限流")
 
     def test_prolite_variants_are_normalized(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -67,6 +104,52 @@ class AccountCapabilityTests(unittest.TestCase):
             self.assertEqual(updated["quota"], 0)
             self.assertEqual(updated["status"], "正常")
             self.assertTrue(updated["image_quota_unknown"])
+
+    def test_invalid_access_token_with_failed_refresh_is_marked_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service.add_account_items([
+                {"access_token": "token-dead", "status": "正常", "quota": 25},
+            ])
+
+            def mark_invalid(access_token: str, event: str, quiet: bool = False) -> bool:
+                service.update_account(access_token, {"status": "异常", "quota": 0}, quiet=True)
+                return False
+
+            with (
+                mock.patch.object(service, "refresh_access_token", return_value="token-dead"),
+                mock.patch.object(service, "remove_invalid_token", side_effect=mark_invalid) as removed,
+                mock.patch.object(
+                    OpenAIBackendAPI,
+                    "get_user_info",
+                    side_effect=InvalidAccessTokenError("token invalidated (/backend-api/me)"),
+                ),
+            ):
+                with self.assertRaises(InvalidAccessTokenError):
+                    service.fetch_remote_info("token-dead", "refresh_accounts")
+
+            account = service.get_account("token-dead")
+            removed.assert_called_once_with("token-dead", "refresh_accounts")
+            self.assertEqual(account["status"], "异常")
+            self.assertEqual(account["quota"], 0)
+
+    def test_account_healthcheck_tokens_include_stale_available_accounts(self) -> None:
+        now = datetime.now(timezone.utc)
+        stale = (now - timedelta(hours=2)).isoformat()
+        recent = now.isoformat()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service.add_account_items([
+                {"access_token": "token-stale", "status": "正常", "created_at": stale},
+                {"access_token": "token-recent", "status": "正常", "last_account_refresh_at": recent},
+                {"access_token": "token-disabled", "status": "禁用", "created_at": stale},
+                {"access_token": "token-abnormal", "status": "异常", "created_at": stale},
+            ])
+
+            with mock.patch("services.account_service.config", mock.Mock(refresh_account_interval_minute=60)):
+                tokens = service.list_account_healthcheck_tokens()
+
+        self.assertEqual(tokens, ["token-stale"])
 
     def test_split_image_model_supports_plan_type_prefix(self) -> None:
         self.assertEqual(split_image_model("gpt-image-2"), (None, "gpt-image-2"))
