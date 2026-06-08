@@ -235,6 +235,29 @@ def _exception_image_route_attempts(exc: Exception) -> list[dict[str, Any]]:
     return [dict(item) for item in attempts if isinstance(item, dict)] if isinstance(attempts, list) else []
 
 
+def _mark_latest_route_attempt(attempts: list[dict[str, Any]], status: str, error: object = "") -> None:
+    if not attempts:
+        return
+    latest = attempts[-1]
+    latest["status"] = status
+    text = str(error or "").strip()
+    if text:
+        latest["error"] = text[:300]
+
+
+def _attach_route_attempts_to_outputs(
+        outputs: list["ImageOutput"],
+        route_meta: dict[str, Any],
+        route_attempts: list[dict[str, Any]],
+) -> list["ImageOutput"]:
+    for output in outputs:
+        if route_meta:
+            output.route_meta = dict(route_meta)
+        if route_attempts:
+            output.route_attempts = [dict(item) for item in route_attempts]
+    return outputs
+
+
 def _select_image_request_route(request: ConversationRequest) -> tuple[str, ConversationRequest, dict[str, Any]]:
     """Pick the token and effective backend model for one image attempt.
 
@@ -1670,9 +1693,11 @@ def _generate_single_image(
                 outputs.append(output)
             if returned_message:
                 account_service.mark_image_result(token, False)
-                return outputs
+                _mark_latest_route_attempt(route_attempts, "failed", outputs[-1].text if outputs else "message returned")
+                return _attach_route_attempts_to_outputs(outputs, route_meta, route_attempts)
             if not returned_result:
                 account_service.mark_image_result(token, False)
+                _mark_latest_route_attempt(route_attempts, "failed", "no image generated")
                 if emitted_for_token:
                     conv_id = outputs[-1].conversation_id if outputs else ""
                     raise ImageGenerationError(
@@ -1685,17 +1710,14 @@ def _generate_single_image(
                         image_route=route_meta,
                         image_route_attempts=route_attempts,
                 )
-                return outputs
+                return _attach_route_attempts_to_outputs(outputs, route_meta, route_attempts)
             account_service.mark_image_result(token, True)
+            _mark_latest_route_attempt(route_attempts, "success")
             outputs = _apply_text_upscale_workflow(routed_request, outputs)
-            for output in outputs:
-                if route_meta and not output.route_meta:
-                    output.route_meta = dict(route_meta)
-                if route_attempts and not output.route_attempts:
-                    output.route_attempts = [dict(item) for item in route_attempts]
-            return outputs
+            return _attach_route_attempts_to_outputs(outputs, route_meta, route_attempts)
         except ImagePollTimeoutError as exc:
             account_service.mark_image_result(token, False)
+            _mark_latest_route_attempt(route_attempts, "failed", exc)
             if account_email:
                 setattr(exc, "account_email", account_email)
             _attach_image_route(exc, route_meta)
@@ -1724,6 +1746,7 @@ def _generate_single_image(
             raise
         except ImageContentPolicyError as exc:
             account_service.mark_image_result(token, False)
+            _mark_latest_route_attempt(route_attempts, "failed", exc)
             logger.warning({
                 "event": "image_stream_content_policy_error",
                 "request_token": token,
@@ -1743,6 +1766,7 @@ def _generate_single_image(
             ) from exc
         except ImageGenerationError as exc:
             account_service.mark_image_result(token, False)
+            _mark_latest_route_attempt(route_attempts, "failed", exc)
             if account_email and not getattr(exc, "account_email", ""):
                 exc.account_email = account_email
             _attach_image_route(exc, route_meta)
@@ -1789,6 +1813,7 @@ def _generate_single_image(
             raise
         except Exception as exc:
             account_service.mark_image_result(token, False)
+            _mark_latest_route_attempt(route_attempts, "failed", exc)
             _attach_image_route(exc, route_meta)
             _attach_image_route_attempts(exc, route_attempts)
             last_error = str(exc)
@@ -1900,10 +1925,15 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
     # yield 结果：跳过索引顺序限制，不再让低索引失败阻塞高索引成功结果
     emitted = False
     last_error = ""
+    error_route_attempts: list[dict[str, Any]] = []
+    for exc in errors.values():
+        error_route_attempts.extend(_exception_image_route_attempts(exc))
     # 先 yield 所有成功的结果
     for index in range(1, request.n + 1):
         if index in results:
             for output in results[index]:
+                if error_route_attempts:
+                    output.route_attempts = [*output.route_attempts, *error_route_attempts]
                 emitted = True
                 yield output
         elif index in errors:
@@ -1980,7 +2010,7 @@ def collect_image_outputs(outputs: Iterable[ImageOutput]) -> dict[str, Any]:
         result["_image_route"] = route_meta
     if route_attempts:
         deduped_attempts: list[dict[str, Any]] = []
-        seen: set[tuple[object, ...]] = set()
+        seen: dict[tuple[object, ...], dict[str, Any]] = {}
         for item in route_attempts:
             marker = (
                 item.get("attempt"),
@@ -1989,9 +2019,11 @@ def collect_image_outputs(outputs: Iterable[ImageOutput]) -> dict[str, Any]:
                 item.get("backend_model"),
                 item.get("image_route"),
             )
-            if marker in seen:
+            existing = seen.get(marker)
+            if existing is not None:
+                existing.update({key: value for key, value in item.items() if value not in (None, "")})
                 continue
-            seen.add(marker)
+            seen[marker] = item
             deduped_attempts.append(item)
         result["_image_route_attempts"] = deduped_attempts
     return result

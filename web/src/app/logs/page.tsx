@@ -42,6 +42,23 @@ function getRecord(value: unknown) {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
+function getRecordList(value: unknown) {
+  return Array.isArray(value) ? value.map(getRecord).filter(Boolean) as Record<string, unknown>[] : [];
+}
+
+function getTextFromRecord(record: Record<string, unknown>, key: string) {
+  const value = record[key];
+  return typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : "";
+}
+
+function getStringList(value: unknown) {
+  return Array.isArray(value)
+    ? value
+        .map((item) => typeof item === "string" || typeof item === "number" || typeof item === "boolean" ? String(item) : "")
+        .filter(Boolean)
+    : [];
+}
+
 function formatDuration(item: SystemLog) {
   if (item.detail?.status === "running") {
     return "进行中";
@@ -115,6 +132,66 @@ function formatImageChannel(item: SystemLog) {
   if (channel === "-") return backendModel;
   if (backendModel === "-") return channel;
   return `${channel} / ${backendModel}`;
+}
+
+function formatImageRequest(item: SystemLog) {
+  const model = getDetailText(item, "model");
+  const resolution = getDetailText(item, "resolution");
+  if (model === "-" && resolution === "-") return "-";
+  if (resolution === "-") return model;
+  if (model === "-") return resolution;
+  return `${model} / ${resolution}`;
+}
+
+function formatRetrySummary(item: SystemLog) {
+  const retry = getDetailText(item, "retry_count");
+  const failed = getDetailText(item, "failed_account_count");
+  const attempts = getDetailText(item, "image_route_attempt_count");
+  if (retry === "-" && failed === "-" && attempts === "-") return "-";
+  return `重试 ${retry === "-" ? "0" : retry} / 失败 ${failed === "-" ? "0" : failed} / 尝试 ${attempts === "-" ? "0" : attempts}`;
+}
+
+function formatFinalResult(item: SystemLog) {
+  const label = getDetailText(item, "final_result_label");
+  return label !== "-" ? label : getStatus(item);
+}
+
+function formatFailedAccounts(item: SystemLog) {
+  const accounts = getStringList(item.detail?.failed_accounts);
+  if (!accounts.length) return "-";
+  return accounts.slice(0, 2).join(" / ") + (accounts.length > 2 ? ` 等 ${accounts.length} 个` : "");
+}
+
+function AccountAttemptList({ title, items }: { title: string; items: Record<string, unknown>[] }) {
+  if (!items.length) return null;
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-4">
+      <Typography.Text strong>{title}</Typography.Text>
+      <div className="mt-3 space-y-2">
+        {items.map((item, index) => {
+          const email = getTextFromRecord(item, "email") || "-";
+          const type = getTextFromRecord(item, "type");
+          const sourceType = getTextFromRecord(item, "source_type");
+          const route = getTextFromRecord(item, "route_label") || getTextFromRecord(item, "route");
+          const channel = getTextFromRecord(item, "channel_label") || getTextFromRecord(item, "channel");
+          const status = getTextFromRecord(item, "status");
+          const error = getTextFromRecord(item, "error");
+          return (
+            <div key={`${email}-${index}`} className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-sm">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="break-all font-medium text-slate-800">{email}</span>
+                {type ? <Tag>{type}</Tag> : null}
+                {sourceType ? <Tag color="blue">{sourceType}</Tag> : null}
+                {status ? <Tag color={status === "success" ? "green" : "red"}>{status}</Tag> : null}
+              </div>
+              <div className="mt-1 text-xs text-slate-500">{[channel, route].filter(Boolean).join(" / ") || "-"}</div>
+              {error ? <div className="mt-1 break-all text-xs text-red-500">{error}</div> : null}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 function LogsContent() {
@@ -209,14 +286,16 @@ function LogsContent() {
     ...(isCallLog
       ? [
           { title: "令牌名称", width: 160, render: (_: unknown, item: SystemLog) => getDetailText(item, "key_name") },
+          { title: "请求模型 / 分辨率", width: 230, render: (_: unknown, item: SystemLog) => <span className="text-slate-600">{formatImageRequest(item)}</span> },
           { title: "使用账户", width: 240, render: (_: unknown, item: SystemLog) => <span className="break-all">{formatImageAccount(item)}</span> },
           { title: "最终渠道", width: 220, render: (_: unknown, item: SystemLog) => <span className="text-slate-600">{formatImageChannel(item)}</span> },
+          { title: "重试 / 失败账号", width: 230, render: (_: unknown, item: SystemLog) => <span className="text-slate-600">{formatRetrySummary(item)}<br /><span className="break-all text-xs text-slate-400">{formatFailedAccounts(item)}</span></span> },
           { title: "调用耗时", width: 120, render: (_: unknown, item: SystemLog) => formatDuration(item) },
           {
             title: "状态",
             width: 90,
             render: (_: unknown, item: SystemLog) => (
-              <Tag color={getStatusColor(item)}>{getStatus(item)}</Tag>
+              <Tag color={getStatusColor(item)}>{formatFinalResult(item)}</Tag>
             ),
           },
         ] satisfies ColumnsType<SystemLog>
@@ -313,7 +392,7 @@ function LogsContent() {
           dataSource={currentRows}
           loading={isLoading}
           pagination={false}
-          scroll={{ x: 1420 }}
+          scroll={{ x: 1680 }}
           locale={{ emptyText: <Empty description="没有找到日志" /> }}
         />
         <div className="flex items-center justify-end border-t border-slate-100 px-4 py-3">
@@ -360,6 +439,10 @@ function LogsContent() {
               </div>
             </div>
           ) : null}
+          <div className="grid gap-3 md:grid-cols-2">
+            <AccountAttemptList title="最终使用账号" items={getRecordList(detailLog?.detail?.final_accounts)} />
+            <AccountAttemptList title="失败账号" items={getRecordList(detailLog?.detail?.failed_account_details)} />
+          </div>
           <pre className="max-h-[72vh] overflow-auto rounded-xl border border-slate-200 bg-slate-950 p-4 text-xs leading-6 text-slate-100">
             {JSON.stringify(detailLog?.detail || {}, null, 2)}
           </pre>

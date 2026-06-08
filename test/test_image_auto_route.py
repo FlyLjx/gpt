@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest import mock
 
-from services.log_service import _strip_internal_response_fields, _collect_image_routes
+from services.log_service import _strip_internal_response_fields, _collect_image_routes, apply_image_log_detail
 from services.protocol import conversation
 from services.protocol.conversation import ConversationRequest
 
@@ -141,6 +141,84 @@ class ImageAutoRouteTests(unittest.TestCase):
 
         self.assertEqual(routes[0]["account_type"], "Plus")
         self.assertNotIn("_image_route", stripped)
+
+    def test_image_log_detail_summarizes_attempts(self) -> None:
+        detail = {
+            "status": "success",
+            "model": "gpt-image-2",
+            "request_params": {"n": 1, "size": "3840x2160"},
+        }
+        attempts = [
+            {
+                "account_email": "bad@example.test",
+                "account_type": "team",
+                "backend_model": "codex-gpt-image-2",
+                "image_channel": "codex",
+                "image_channel_label": "Codex线路",
+                "image_route": "auto_premium_codex",
+                "image_route_label": "4K 自动 Codex 线路",
+                "index": 1,
+                "total": 1,
+                "attempt": 1,
+                "status": "failed",
+                "error": "upstream timeout",
+            },
+            {
+                "account_email": "good@example.test",
+                "account_type": "free",
+                "backend_model": "gpt-image-2",
+                "image_channel": "image-2",
+                "image_channel_label": "普通 Image-2 线路",
+                "image_route": "free_image2_fallback",
+                "image_route_label": "Free 账号普通 Image-2 线路",
+                "index": 1,
+                "total": 1,
+                "attempt": 2,
+                "status": "success",
+            },
+        ]
+
+        apply_image_log_detail(detail, image_route_attempts=attempts)
+
+        self.assertEqual(detail["resolution"], "3840x2160")
+        self.assertEqual(detail["account_email"], "good@example.test")
+        self.assertEqual(detail["account_type"], "free")
+        self.assertEqual(detail["image_channel"], "image-2")
+        self.assertEqual(detail["retry_count"], 1)
+        self.assertEqual(detail["failed_accounts"], ["bad@example.test"])
+        self.assertEqual(detail["final_account_emails"], ["good@example.test"])
+        self.assertEqual(detail["final_result"], "success")
+        self.assertEqual(detail["final_result_label"], "成功")
+
+    def test_collect_outputs_preserves_later_attempt_status(self) -> None:
+        failed_attempt = {
+            "account_email": "bad@example.test",
+            "backend_model": "gpt-image-2",
+            "image_route": "free_image2_fallback",
+            "index": 1,
+            "total": 1,
+            "attempt": 1,
+        }
+        successful_attempt = {
+            **failed_attempt,
+            "status": "failed",
+            "error": "timeout",
+        }
+        output = conversation.ImageOutput(
+            kind="result",
+            model="gpt-image-2",
+            index=1,
+            total=1,
+            data=[{"url": "https://example.test/image.png"}],
+            route_attempts=[failed_attempt, successful_attempt],
+        )
+
+        collected = conversation.collect_image_outputs([output])
+
+        attempts = collected["_image_route_attempts"]
+        self.assertEqual(len(attempts), 1)
+        self.assertEqual(attempts[0]["status"], "failed")
+        self.assertEqual(attempts[0]["error"], "timeout")
 
 
 if __name__ == "__main__":

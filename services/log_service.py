@@ -23,6 +23,22 @@ LOG_TYPE_CALL = "call"
 LOG_TYPE_ACCOUNT = "account"
 INTERNAL_RESPONSE_KEYS = {"_account_email", "_conversation_id", "_b64_json", "_image_route", "_image_route_attempts"}
 IMAGE_REQUEST_PARAM_KEYS = ("n", "size", "quality", "upscale", "response_format", "stream")
+IMAGE_ROUTE_DETAIL_KEYS = (
+    "account_type",
+    "account_source_type",
+    "account_default_model_slug",
+    "requested_model",
+    "backend_model",
+    "image_channel",
+    "image_channel_label",
+    "image_route",
+    "image_route_label",
+)
+IMAGE_FINAL_RESULT_LABELS = {
+    "success": "成功",
+    "failed": "失败",
+    "running": "处理中",
+}
 
 
 class LogService:
@@ -230,7 +246,7 @@ def _collect_image_route_attempts(value: object) -> list[dict[str, Any]]:
 
 def _dedupe_image_route_attempts(attempts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     deduped: list[dict[str, Any]] = []
-    seen: set[tuple[object, ...]] = set()
+    seen: dict[tuple[object, ...], dict[str, Any]] = {}
     for item in attempts:
         marker = (
             item.get("attempt"),
@@ -239,9 +255,11 @@ def _dedupe_image_route_attempts(attempts: list[dict[str, Any]]) -> list[dict[st
             item.get("backend_model"),
             item.get("image_route"),
         )
-        if marker in seen:
+        existing = seen.get(marker)
+        if existing is not None:
+            existing.update({key: value for key, value in item.items() if value not in (None, "")})
             continue
-        seen.add(marker)
+        seen[marker] = item
         deduped.append(item)
     return deduped
 
@@ -256,6 +274,145 @@ def _image_route_attempts_from_exception(exc: Exception) -> list[dict[str, Any]]
     if not isinstance(attempts, list):
         return []
     return _dedupe_image_route_attempts([dict(item) for item in attempts if isinstance(item, dict)])
+
+
+def _clean_detail_text(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _safe_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _request_count_from_detail(detail: dict[str, Any], attempts: list[dict[str, Any]]) -> int:
+    request_params = detail.get("request_params")
+    n = _safe_int(request_params.get("n") if isinstance(request_params, dict) else None)
+    if n > 0:
+        return n
+    totals = [_safe_int(item.get("total")) for item in attempts]
+    return max([item for item in totals if item > 0], default=1)
+
+
+def _attempt_status(item: dict[str, Any]) -> str:
+    return _clean_detail_text(item.get("status")).lower()
+
+
+def _attempt_is_success(item: dict[str, Any]) -> bool:
+    return _attempt_status(item) == "success"
+
+
+def _attempt_is_failed(item: dict[str, Any]) -> bool:
+    status = _attempt_status(item)
+    return status in {"failed", "error"} or bool(_clean_detail_text(item.get("error")))
+
+
+def _account_summary(item: dict[str, Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    mapping = {
+        "email": "account_email",
+        "type": "account_type",
+        "source_type": "account_source_type",
+        "backend_model": "backend_model",
+        "channel": "image_channel",
+        "channel_label": "image_channel_label",
+        "route": "image_route",
+        "route_label": "image_route_label",
+        "index": "index",
+        "attempt": "attempt",
+        "status": "status",
+    }
+    for out_key, in_key in mapping.items():
+        value = item.get(in_key)
+        if value is not None and value != "":
+            summary[out_key] = value
+    error = _clean_detail_text(item.get("error"))
+    if error:
+        summary["error"] = error[:300]
+    return summary
+
+
+def _unique_texts(values: list[object]) -> list[str]:
+    return list(dict.fromkeys(_clean_detail_text(value) for value in values if _clean_detail_text(value)))
+
+
+def _detail_request_size(detail: dict[str, Any]) -> str:
+    request_params = detail.get("request_params")
+    if isinstance(request_params, dict):
+        return _clean_detail_text(request_params.get("size"))
+    return ""
+
+
+def _has_image_log_detail(
+    endpoint: str,
+    image_route: dict[str, Any] | None = None,
+    image_route_attempts: list[dict[str, Any]] | None = None,
+    result: object = None,
+) -> bool:
+    if endpoint.startswith(("/v1/images", "/api/image-tasks")):
+        return True
+    if image_route or image_route_attempts:
+        return True
+    return bool(_collect_image_routes(result) or _collect_image_route_attempts(result))
+
+
+def apply_image_log_detail(
+    detail: dict[str, Any],
+    image_route: dict[str, Any] | None = None,
+    image_route_attempts: list[dict[str, Any]] | None = None,
+    result: object = None,
+) -> None:
+    route_meta = dict(image_route or {})
+    if not route_meta:
+        routes = _collect_image_routes(result)
+        route_meta = routes[0] if routes else {}
+    attempts = _dedupe_image_route_attempts([
+        *(image_route_attempts or []),
+        *_collect_image_route_attempts(result),
+    ])
+    successful_attempts = [item for item in attempts if _attempt_is_success(item)]
+    failed_attempts = [item for item in attempts if _attempt_is_failed(item)]
+    if successful_attempts:
+        route_meta = dict(successful_attempts[-1])
+    elif not route_meta and attempts:
+        route_meta = dict(attempts[-1])
+
+    for key in IMAGE_ROUTE_DETAIL_KEYS:
+        value = route_meta.get(key)
+        if value is not None and value != "":
+            detail[key] = value
+    if route_meta.get("account_email") and not detail.get("account_email"):
+        detail["account_email"] = route_meta["account_email"]
+
+    resolution = _detail_request_size(detail)
+    if resolution:
+        detail["resolution"] = resolution
+    if attempts:
+        request_count = _request_count_from_detail(detail, attempts)
+        retry_count = max(0, len(attempts) - request_count)
+        final_accounts = [_account_summary(item) for item in successful_attempts]
+        failed_account_details = [_account_summary(item) for item in failed_attempts]
+        failed_accounts = _unique_texts([item.get("account_email") for item in failed_attempts])
+        used_accounts = _unique_texts([item.get("account_email") for item in attempts])
+        detail["image_route_attempts"] = attempts
+        detail["image_route_attempt_count"] = len(attempts)
+        detail["retry_count"] = retry_count
+        detail["used_accounts"] = used_accounts
+        detail["used_account_count"] = len(used_accounts)
+        if final_accounts:
+            detail["final_accounts"] = final_accounts
+            detail["final_account_count"] = len(final_accounts)
+            detail["final_account_emails"] = _unique_texts([item.get("account_email") for item in successful_attempts])
+        if failed_account_details:
+            detail["failed_account_details"] = failed_account_details
+        if failed_accounts:
+            detail["failed_accounts"] = failed_accounts
+            detail["failed_account_count"] = len(failed_accounts)
+    final_result = _clean_detail_text(detail.get("status")) or "success"
+    detail["final_result"] = final_result
+    detail["final_result_label"] = IMAGE_FINAL_RESULT_LABELS.get(final_result, final_result)
 
 
 def image_request_params(payload: dict[str, Any] | None) -> dict[str, Any]:
@@ -485,39 +642,11 @@ class LoggedCall:
             conv_id = conv_ids[0] if conv_ids else ""
         if conv_id:
             detail["conversation_id"] = conv_id
-        route_meta = dict(image_route or {})
-        if not route_meta:
-            routes = _collect_image_routes(result)
-            route_meta = routes[0] if routes else {}
-        attempts = _dedupe_image_route_attempts([
-            *(image_route_attempts or []),
-            *_collect_image_route_attempts(result),
-        ])
-        if not route_meta and attempts:
-            route_meta = dict(attempts[-1])
-        for key in (
-            "account_type",
-            "account_source_type",
-            "account_default_model_slug",
-            "requested_model",
-            "backend_model",
-            "image_channel",
-            "image_channel_label",
-            "image_route",
-            "image_route_label",
-        ):
-            value = route_meta.get(key)
-            if value is not None and value != "":
-                detail[key] = value
-        if route_meta.get("account_email") and not detail.get("account_email"):
-            detail["account_email"] = route_meta["account_email"]
-        if attempts:
-            detail["image_route_attempts"] = attempts
-            detail["image_route_attempt_count"] = len(attempts)
         collected_urls = [*(urls or []), *_collect_urls(result)]
         if collected_urls and not self.endpoint.startswith("/v1/search"):
             detail["urls"] = list(dict.fromkeys(collected_urls))
-        if self.endpoint.startswith(("/v1/images", "/api/image-tasks")):
+        if _has_image_log_detail(self.endpoint, image_route, image_route_attempts, result):
+            apply_image_log_detail(detail, image_route, image_route_attempts, result)
             detail.update(_collect_image_result_meta(result))
         summary = f"{self.summary}{suffix}"
         if self.log_id:

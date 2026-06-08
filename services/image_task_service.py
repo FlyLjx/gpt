@@ -10,7 +10,7 @@ from typing import Any
 
 from services.config import DATA_DIR, config
 from services.content_filter import request_text
-from services.log_service import LOG_TYPE_CALL, log_service
+from services.log_service import LOG_TYPE_CALL, apply_image_log_detail, log_service
 from services.protocol import openai_v1_image_edit, openai_v1_image_generations
 
 TASK_STATUS_QUEUED = "queued"
@@ -69,19 +69,6 @@ def _collect_image_urls(data: list[Any]) -> list[str]:
     return urls
 
 
-IMAGE_ROUTE_DETAIL_KEYS = (
-    "account_type",
-    "account_source_type",
-    "account_default_model_slug",
-    "requested_model",
-    "backend_model",
-    "image_channel",
-    "image_channel_label",
-    "image_route",
-    "image_route_label",
-)
-
-
 def _image_route_from_result(result: object) -> dict[str, Any]:
     if not isinstance(result, dict):
         return {}
@@ -108,7 +95,7 @@ def _image_route_attempts_from_exception(exc: Exception) -> list[dict[str, Any]]
 
 def _dedupe_image_route_attempts(attempts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     deduped: list[dict[str, Any]] = []
-    seen: set[tuple[object, ...]] = set()
+    seen: dict[tuple[object, ...], dict[str, Any]] = {}
     for item in attempts:
         marker = (
             item.get("attempt"),
@@ -117,9 +104,11 @@ def _dedupe_image_route_attempts(attempts: list[dict[str, Any]]) -> list[dict[st
             item.get("backend_model"),
             item.get("image_route"),
         )
-        if marker in seen:
+        existing = seen.get(marker)
+        if existing is not None:
+            existing.update({key: value for key, value in item.items() if value not in (None, "")})
             continue
-        seen.add(marker)
+        seen[marker] = item
         deduped.append(item)
     return deduped
 
@@ -129,19 +118,7 @@ def _apply_image_route_detail(
     image_route: dict[str, Any] | None = None,
     image_route_attempts: list[dict[str, Any]] | None = None,
 ) -> None:
-    attempts = _dedupe_image_route_attempts(image_route_attempts or [])
-    route_meta = dict(image_route or {})
-    if not route_meta and attempts:
-        route_meta = dict(attempts[-1])
-    for key in IMAGE_ROUTE_DETAIL_KEYS:
-        value = route_meta.get(key)
-        if value is not None and value != "":
-            detail[key] = value
-    if route_meta.get("account_email") and not detail.get("account_email"):
-        detail["account_email"] = route_meta["account_email"]
-    if attempts:
-        detail["image_route_attempts"] = attempts
-        detail["image_route_attempt_count"] = len(attempts)
+    apply_image_log_detail(detail, image_route, image_route_attempts)
 
 
 def _build_log_detail(
