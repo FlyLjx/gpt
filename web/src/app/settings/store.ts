@@ -19,10 +19,12 @@ import {
   startCPAImport,
   stopRegister,
   testBackupConnection,
+  testBarkNotification,
   testImageStorageConnection,
   updateCPAPool,
   updateRegisterConfig,
   updateSettingsConfig,
+  type BarkNotificationSettings,
   type BackupItem,
   type BackupSettings,
   type BackupState,
@@ -81,6 +83,22 @@ function normalizeConfig(config: SettingsConfig): SettingsConfig {
         images: false,
       },
     };
+  const bark = typeof config.notifications?.bark === "object" && config.notifications.bark
+    ? config.notifications.bark as BarkNotificationSettings
+    : {
+      enabled: false,
+      server_url: "https://api.day.app",
+      device_key: "",
+      title_prefix: "chatgpt2api",
+      group: "chatgpt2api",
+      level: "active",
+      timeout_secs: 10,
+      min_interval_seconds: 60,
+      notify_failed_calls: true,
+      notify_register: true,
+      notify_register_errors_only: false,
+      notify_auto_refill: true,
+    };
   return {
     ...config,
     refresh_account_interval_minute: Number(config.refresh_account_interval_minute || 5),
@@ -122,6 +140,22 @@ function normalizeConfig(config: SettingsConfig): SettingsConfig {
     auto_refill_target_available: Number(config.auto_refill_target_available || 10),
     auto_refill_interval_minutes: Number(config.auto_refill_interval_minutes || 5),
     log_levels: Array.isArray(config.log_levels) ? config.log_levels : [],
+    notifications: {
+      bark: {
+        enabled: Boolean(bark.enabled),
+        server_url: String(bark.server_url || "https://api.day.app"),
+        device_key: String(bark.device_key || ""),
+        title_prefix: String(bark.title_prefix || "chatgpt2api"),
+        group: String(bark.group || "chatgpt2api"),
+        level: String(bark.level || "active"),
+        timeout_secs: Number(bark.timeout_secs || 10),
+        min_interval_seconds: Number(bark.min_interval_seconds ?? 60),
+        notify_failed_calls: Boolean(bark.notify_failed_calls !== false),
+        notify_register: Boolean(bark.notify_register !== false),
+        notify_register_errors_only: Boolean(bark.notify_register_errors_only),
+        notify_auto_refill: Boolean(bark.notify_auto_refill !== false),
+      },
+    },
     proxy: typeof config.proxy === "string" ? config.proxy : "",
     base_url: typeof config.base_url === "string" ? config.base_url : "",
     global_system_prompt: String(config.global_system_prompt || ""),
@@ -196,6 +230,7 @@ type SettingsStore = {
   isRunningBackup: boolean;
   deletingBackupKey: string | null;
   isTestingBackup: boolean;
+  isTestingBarkNotification: boolean;
   isTestingImageStorage: boolean;
   isSyncingImageStorage: boolean;
 
@@ -255,6 +290,8 @@ type SettingsStore = {
   setGlobalSystemPrompt: (value: string) => void;
   setSensitiveWordsText: (value: string) => void;
   setAIReviewField: (key: "enabled" | "base_url" | "api_key" | "model" | "prompt", value: string | boolean) => void;
+  setBarkNotificationField: (key: keyof BarkNotificationSettings, value: string | boolean) => void;
+  testBark: () => Promise<void>;
   setImageStorageField: (key: keyof ImageStorageSettings, value: string | boolean) => void;
   testImageStorage: () => Promise<void>;
   syncImagesToWebDAV: () => Promise<void>;
@@ -309,6 +346,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   isRunningBackup: false,
   deletingBackupKey: null,
   isTestingBackup: false,
+  isTestingBarkNotification: false,
   isTestingImageStorage: false,
   isSyncingImageStorage: false,
 
@@ -377,6 +415,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
     set({ isSavingConfig: true });
     try {
+      const barkTimeout = Number(config.notifications?.bark?.timeout_secs);
+      const barkMinInterval = Number(config.notifications?.bark?.min_interval_seconds);
       const data = await updateSettingsConfig({
         ...config,
         refresh_account_interval_minute: Math.max(1, Number(config.refresh_account_interval_minute) || 1),
@@ -417,6 +457,24 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         auto_refill_threshold_percent: Math.min(100, Math.max(0, Number(config.auto_refill_threshold_percent) || 30)),
         auto_refill_target_available: Math.max(1, Number(config.auto_refill_target_available) || 10),
         auto_refill_interval_minutes: Math.max(1, Number(config.auto_refill_interval_minutes) || 5),
+        notifications: {
+          bark: {
+            enabled: Boolean(config.notifications?.bark?.enabled),
+            server_url: String(config.notifications?.bark?.server_url || "https://api.day.app").trim(),
+            device_key: String(config.notifications?.bark?.device_key || "").trim(),
+            title_prefix: String(config.notifications?.bark?.title_prefix || "chatgpt2api").trim(),
+            group: String(config.notifications?.bark?.group || "chatgpt2api").trim(),
+            level: ["active", "timeSensitive", "passive", "critical"].includes(String(config.notifications?.bark?.level))
+              ? String(config.notifications?.bark?.level)
+              : "active",
+            timeout_secs: Math.min(60, Math.max(1, Number.isFinite(barkTimeout) ? barkTimeout : 10)),
+            min_interval_seconds: Math.min(3600, Math.max(0, Number.isFinite(barkMinInterval) ? barkMinInterval : 60)),
+            notify_failed_calls: Boolean(config.notifications?.bark?.notify_failed_calls !== false),
+            notify_register: Boolean(config.notifications?.bark?.notify_register !== false),
+            notify_register_errors_only: Boolean(config.notifications?.bark?.notify_register_errors_only),
+            notify_auto_refill: Boolean(config.notifications?.bark?.notify_auto_refill !== false),
+          },
+        },
         proxy: config.proxy.trim(),
         base_url: String(config.base_url || "").trim(),
         global_system_prompt: String(config.global_system_prompt || "").trim(),
@@ -588,6 +646,46 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   setAIReviewField: (key, value) => {
     set((state) => state.config ? { config: { ...state.config, ai_review: { ...(state.config.ai_review || {}), [key]: value } } } : {});
+  },
+
+  setBarkNotificationField: (key, value) => {
+    set((state) => {
+      if (!state.config?.notifications?.bark) {
+        return {};
+      }
+      return {
+        config: {
+          ...state.config,
+          notifications: {
+            ...state.config.notifications,
+            bark: {
+              ...state.config.notifications.bark,
+              [key]: value,
+            },
+          },
+        },
+      };
+    });
+  },
+
+  testBark: async () => {
+    set({ isTestingBarkNotification: true });
+    try {
+      const saved = await get().saveConfig();
+      if (!saved) {
+        return;
+      }
+      const data = await testBarkNotification();
+      if (data.result.ok) {
+        toast.success(`Bark 推送成功（HTTP ${data.result.status}）`);
+      } else {
+        toast.error(`Bark 推送失败：${data.result.error ?? `HTTP ${data.result.status}`}`);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "测试 Bark 推送失败");
+    } finally {
+      set({ isTestingBarkNotification: false });
+    }
   },
 
   setImageStorageField: (key, value) => {

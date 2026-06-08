@@ -24,6 +24,7 @@ from services.image_service import (
 from services.image_storage_service import ImageStorageError, image_storage_service
 from services.image_tags_service import delete_tag, get_all_tags, set_tags
 from services.log_service import log_service
+from services.notification_service import notification_service
 from services.proxy_service import test_proxy
 
 
@@ -135,6 +136,11 @@ def create_router(app_version: str) -> APIRouter:
         if not candidate:
             raise HTTPException(status_code=400, detail={"error": "proxy url is required"})
         return {"result": await run_in_threadpool(test_proxy, candidate)}
+
+    @router.post("/api/notifications/bark/test")
+    async def test_bark_notification_endpoint(authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        return {"result": await run_in_threadpool(notification_service.test_bark)}
 
     @router.get("/api/storage/info")
     async def get_storage_info(authorization: str | None = Header(default=None)):

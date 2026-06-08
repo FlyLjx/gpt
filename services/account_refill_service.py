@@ -87,6 +87,12 @@ class AccountRefillService:
 
     def _log(self, summary: str, detail: dict[str, object]) -> None:
         log_service.add(LOG_TYPE_ACCOUNT, summary, detail)
+        try:
+            from services.notification_service import notification_service
+
+            notification_service.notify_auto_refill(summary, detail)
+        except Exception:
+            pass
 
     def run_once(self, source: str = "auto") -> dict[str, object]:
         if not self._lock.acquire(blocking=False):

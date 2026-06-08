@@ -130,6 +130,12 @@ class RegisterService:
         with self._lock:
             self._logs.append({"time": _now(), "text": str(text), "level": str(color or "info")})
             self._logs = self._logs[-300:]
+        try:
+            from services.notification_service import notification_service
+
+            notification_service.notify_register_log(str(text), str(color or "info"))
+        except Exception:
+            pass
 
     def _pool_metrics(self) -> dict:
         items = account_service.list_accounts()

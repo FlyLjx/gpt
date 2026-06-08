@@ -16,6 +16,25 @@ export type ImageStorageSettings = {
   public_base_url: string;
 };
 
+export type BarkNotificationSettings = {
+  enabled: boolean;
+  server_url: string;
+  device_key: string;
+  title_prefix: string;
+  group: string;
+  level: "active" | "timeSensitive" | "passive" | "critical" | string;
+  timeout_secs: number | string;
+  min_interval_seconds: number | string;
+  notify_failed_calls: boolean;
+  notify_register: boolean;
+  notify_register_errors_only: boolean;
+  notify_auto_refill: boolean;
+};
+
+export type NotificationSettings = {
+  bark: BarkNotificationSettings;
+};
+
 export type Account = {
   access_token: string;
   type: AccountType;
@@ -152,6 +171,7 @@ export type SettingsConfig = {
   auto_refill_target_available?: number | string;
   auto_refill_interval_minutes?: number | string;
   log_levels?: string[];
+  notifications?: NotificationSettings;
   image_storage?: ImageStorageSettings;
   backup?: BackupSettings;
   backup_state?: BackupState;
@@ -555,6 +575,13 @@ export async function testBackupConnection() {
 
 export async function testImageStorageConnection() {
   return httpRequest<{ result: { ok: boolean; status: number; error?: string } }>("/api/image-storage/test", {
+    method: "POST",
+    body: {},
+  });
+}
+
+export async function testBarkNotification() {
+  return httpRequest<{ result: { ok: boolean; status: number; latency_ms?: number; error?: string } }>("/api/notifications/bark/test", {
     method: "POST",
     body: {},
   });

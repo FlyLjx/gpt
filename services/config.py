@@ -65,6 +65,25 @@ DEFAULT_COMFYUI_TEXT_UPSCALE = {
     "fallback_to_openai": True,
 }
 
+DEFAULT_BARK_NOTIFICATION = {
+    "enabled": False,
+    "server_url": "https://api.day.app",
+    "device_key": "",
+    "title_prefix": "chatgpt2api",
+    "group": "chatgpt2api",
+    "level": "active",
+    "timeout_secs": 10,
+    "min_interval_seconds": 60,
+    "notify_failed_calls": True,
+    "notify_register": True,
+    "notify_register_errors_only": False,
+    "notify_auto_refill": True,
+}
+
+DEFAULT_NOTIFICATION_SETTINGS = {
+    "bark": DEFAULT_BARK_NOTIFICATION,
+}
+
 
 def _normalize_bool(value: object, default: bool = False) -> bool:
     if isinstance(value, str):
@@ -201,6 +220,57 @@ def _normalize_comfyui_text_upscale_settings(value: object) -> dict[str, object]
     }
 
 
+def _normalize_bark_notification_settings(value: object) -> dict[str, object]:
+    source = value if isinstance(value, dict) else {}
+    server_url = str(source.get("server_url") or DEFAULT_BARK_NOTIFICATION["server_url"]).strip().rstrip("/")
+    level = str(source.get("level") or DEFAULT_BARK_NOTIFICATION["level"]).strip()
+    if level not in {"active", "timeSensitive", "passive", "critical"}:
+        level = str(DEFAULT_BARK_NOTIFICATION["level"])
+    return {
+        "enabled": _normalize_bool(source.get("enabled"), bool(DEFAULT_BARK_NOTIFICATION["enabled"])),
+        "server_url": server_url or str(DEFAULT_BARK_NOTIFICATION["server_url"]),
+        "device_key": str(source.get("device_key") or "").strip(),
+        "title_prefix": str(source.get("title_prefix") or DEFAULT_BARK_NOTIFICATION["title_prefix"]).strip(),
+        "group": str(source.get("group") or DEFAULT_BARK_NOTIFICATION["group"]).strip(),
+        "level": level,
+        "timeout_secs": min(
+            60,
+            _normalize_positive_int(source.get("timeout_secs"), int(DEFAULT_BARK_NOTIFICATION["timeout_secs"]), 1),
+        ),
+        "min_interval_seconds": min(
+            3600,
+            _normalize_positive_int(
+                source.get("min_interval_seconds"),
+                int(DEFAULT_BARK_NOTIFICATION["min_interval_seconds"]),
+                0,
+            ),
+        ),
+        "notify_failed_calls": _normalize_bool(
+            source.get("notify_failed_calls"),
+            bool(DEFAULT_BARK_NOTIFICATION["notify_failed_calls"]),
+        ),
+        "notify_register": _normalize_bool(
+            source.get("notify_register"),
+            bool(DEFAULT_BARK_NOTIFICATION["notify_register"]),
+        ),
+        "notify_register_errors_only": _normalize_bool(
+            source.get("notify_register_errors_only"),
+            bool(DEFAULT_BARK_NOTIFICATION["notify_register_errors_only"]),
+        ),
+        "notify_auto_refill": _normalize_bool(
+            source.get("notify_auto_refill"),
+            bool(DEFAULT_BARK_NOTIFICATION["notify_auto_refill"]),
+        ),
+    }
+
+
+def _normalize_notification_settings(value: object) -> dict[str, object]:
+    source = value if isinstance(value, dict) else {}
+    return {
+        "bark": _normalize_bark_notification_settings(source.get("bark")),
+    }
+
+
 def _validate_image_storage_settings(settings: dict[str, object]) -> None:
     if not _normalize_bool(settings.get("enabled"), False):
         return
@@ -222,6 +292,16 @@ def _validate_comfyui_text_upscale_settings(settings: dict[str, object]) -> None
     for key, label in required.items():
         if not str(settings.get(key) or "").strip():
             raise ValueError(f"启用 ComfyUI 文字增强后必须填写{label}")
+
+
+def _validate_notification_settings(settings: dict[str, object]) -> None:
+    bark = _normalize_bark_notification_settings(settings.get("bark") if isinstance(settings, dict) else {})
+    if not _normalize_bool(bark.get("enabled"), False):
+        return
+    if not str(bark.get("server_url") or "").strip():
+        raise ValueError("启用 Bark 推送后必须填写 Bark Server URL")
+    if not str(bark.get("device_key") or "").strip():
+        raise ValueError("启用 Bark 推送后必须填写 Device Key")
 
 
 @dataclass(frozen=True)
@@ -580,6 +660,7 @@ class ConfigStore:
         data["image_storage"] = self.get_image_storage_settings()
         data["chat_completion_cache"] = self.get_chat_completion_cache_settings()
         data["comfyui_text_upscale"] = self.get_comfyui_text_upscale_settings()
+        data["notifications"] = self.get_notification_settings()
         data.pop("auth-key", None)
         return data
 
@@ -603,6 +684,9 @@ class ConfigStore:
                 next_data.get("comfyui_text_upscale")
             )
             _validate_comfyui_text_upscale_settings(next_data["comfyui_text_upscale"])
+        if "notifications" in next_data:
+            next_data["notifications"] = _normalize_notification_settings(next_data.get("notifications"))
+            _validate_notification_settings(next_data["notifications"])
         next_data.pop("backup_state", None)
         self.data = next_data
         self._save()
@@ -619,6 +703,9 @@ class ConfigStore:
 
     def get_comfyui_text_upscale_settings(self) -> dict[str, object]:
         return _normalize_comfyui_text_upscale_settings(self.data.get("comfyui_text_upscale"))
+
+    def get_notification_settings(self) -> dict[str, object]:
+        return _normalize_notification_settings(self.data.get("notifications"))
 
     def get_storage_backend(self) -> StorageBackend:
         """获取存储后端实例（单例）"""

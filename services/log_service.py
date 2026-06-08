@@ -81,22 +81,25 @@ class LogService:
 
     def add(self, type: str, summary: str = "", detail: dict[str, Any] | None = None, **data: Any) -> str:
         item_id = uuid4().hex
+        item_detail = detail or data
         item = {
             "id": item_id,
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "type": type,
             "summary": summary,
-            "detail": detail or data,
+            "detail": item_detail,
         }
         with self._lock:
             with self.path.open("a", encoding="utf-8") as file:
                 file.write(self._serialize_item(item) + "\n")
+        self._notify_if_needed(item)
         return item_id
 
     def update(self, item_id: str, summary: str = "", detail: dict[str, Any] | None = None, **data: Any) -> bool:
         target_id = str(item_id or "").strip()
         if not target_id or not self.path.exists():
             return False
+        updated_item: dict[str, Any] | None = None
         with self._lock:
             lines = self.path.read_text(encoding="utf-8").splitlines()
             changed = False
@@ -112,6 +115,7 @@ class LogService:
                     "summary": summary or str(item.get("summary") or ""),
                     "detail": detail or data,
                 }
+                updated_item = updated
                 next_lines.append(self._serialize_item(updated))
                 changed = True
             if not changed:
@@ -120,7 +124,27 @@ class LogService:
             if content:
                 content += "\n"
             self.path.write_text(content, encoding="utf-8")
-            return True
+        if updated_item is not None:
+            self._notify_if_needed(updated_item)
+        return True
+
+    @staticmethod
+    def _notify_if_needed(item: dict[str, Any]) -> None:
+        try:
+            if item.get("type") != LOG_TYPE_CALL:
+                return
+            detail = item.get("detail")
+            if not isinstance(detail, dict) or str(detail.get("status") or "") != "failed":
+                return
+            from services.notification_service import notification_service
+
+            notification_service.notify_failed_log(
+                str(item.get("id") or ""),
+                str(item.get("summary") or ""),
+                detail,
+            )
+        except Exception:
+            return
 
     def list(self, type: str = "", start_date: str = "", end_date: str = "", limit: int = 200) -> list[dict[str, Any]]:
         if not self.path.exists():

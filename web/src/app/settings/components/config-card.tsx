@@ -17,7 +17,7 @@ import {
   Tag,
   Typography,
 } from "antd";
-import { Cloud, LoaderCircle, PlugZap, RefreshCw, Save, ShieldCheck } from "lucide-react";
+import { BellRing, Cloud, LoaderCircle, PlugZap, RefreshCw, Save, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 
 import type { ImageStorageMode } from "@/lib/api";
@@ -123,6 +123,9 @@ export function ConfigCard() {
   const setGlobalSystemPrompt = useSettingsStore((state) => state.setGlobalSystemPrompt);
   const setSensitiveWordsText = useSettingsStore((state) => state.setSensitiveWordsText);
   const setAIReviewField = useSettingsStore((state) => state.setAIReviewField);
+  const setBarkNotificationField = useSettingsStore((state) => state.setBarkNotificationField);
+  const testBark = useSettingsStore((state) => state.testBark);
+  const isTestingBarkNotification = useSettingsStore((state) => state.isTestingBarkNotification);
   const setImageStorageField = useSettingsStore((state) => state.setImageStorageField);
   const testImageStorage = useSettingsStore((state) => state.testImageStorage);
   const syncImagesToWebDAV = useSettingsStore((state) => state.syncImagesToWebDAV);
@@ -169,6 +172,7 @@ export function ConfigCard() {
 
   const imageStorageEnabled = Boolean(config.image_storage?.enabled);
   const aiReviewEnabled = Boolean(config.ai_review?.enabled);
+  const barkEnabled = Boolean(config.notifications?.bark?.enabled);
 
   return (
     <Card
@@ -357,6 +361,111 @@ export function ConfigCard() {
             </Form.Item>
           </Col>
         </Row>
+
+        <Divider />
+        <SectionTitle title="Bark 推送通知" description="把异常调用日志、注册机事件和自动补池关键事件推送到手机，方便第一时间排障。" />
+        <Card size="small">
+          <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <Space>
+              <Switch checked={barkEnabled} onChange={(checked) => setBarkNotificationField("enabled", checked)} />
+              <Typography.Text strong>启用 Bark 推送</Typography.Text>
+              <Tag color={barkEnabled ? "green" : "default"}>{barkEnabled ? "已启用" : "未启用"}</Tag>
+            </Space>
+            <Button
+              icon={isTestingBarkNotification ? <LoaderCircle className="size-4 animate-spin" /> : <BellRing className="size-4" />}
+              onClick={() => void testBark()}
+              disabled={isTestingBarkNotification || !barkEnabled}
+            >
+              发送测试
+            </Button>
+          </div>
+          <Row gutter={[16, 16]}>
+            <Col xs={24} md={12}>
+              <Form.Item label="Bark Server URL" extra="官方 Bark 可用 https://api.day.app，自建服务填写自己的地址。">
+                <Input
+                  value={String(config.notifications?.bark?.server_url || "")}
+                  onChange={(event) => setBarkNotificationField("server_url", event.target.value)}
+                  placeholder="https://api.day.app"
+                  disabled={!barkEnabled}
+                />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item label="Device Key">
+                <Input.Password
+                  value={String(config.notifications?.bark?.device_key || "")}
+                  onChange={(event) => setBarkNotificationField("device_key", event.target.value)}
+                  placeholder="从 Bark App 里复制的 key"
+                  disabled={!barkEnabled}
+                />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={8}>
+              <Form.Item label="标题前缀">
+                <Input
+                  value={String(config.notifications?.bark?.title_prefix || "")}
+                  onChange={(event) => setBarkNotificationField("title_prefix", event.target.value)}
+                  placeholder="chatgpt2api"
+                  disabled={!barkEnabled}
+                />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={8}>
+              <Form.Item label="分组">
+                <Input
+                  value={String(config.notifications?.bark?.group || "")}
+                  onChange={(event) => setBarkNotificationField("group", event.target.value)}
+                  placeholder="chatgpt2api"
+                  disabled={!barkEnabled}
+                />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={8}>
+              <NumberInput
+                label="重复推送冷却"
+                value={String(config.notifications?.bark?.min_interval_seconds ?? "")}
+                onChange={(value) => setBarkNotificationField("min_interval_seconds", value)}
+                placeholder="60"
+                help="单位秒。同一类错误短时间内只推一次，0 表示不去重。"
+                disabled={!barkEnabled}
+              />
+            </Col>
+            <Col xs={24}>
+              <Form.Item label="推送范围">
+                <Space wrap>
+                  <Checkbox
+                    checked={Boolean(config.notifications?.bark?.notify_failed_calls !== false)}
+                    onChange={(event) => setBarkNotificationField("notify_failed_calls", event.target.checked)}
+                    disabled={!barkEnabled}
+                  >
+                    异常调用日志
+                  </Checkbox>
+                  <Checkbox
+                    checked={Boolean(config.notifications?.bark?.notify_register !== false)}
+                    onChange={(event) => setBarkNotificationField("notify_register", event.target.checked)}
+                    disabled={!barkEnabled}
+                  >
+                    注册机日志
+                  </Checkbox>
+                  <Checkbox
+                    checked={Boolean(config.notifications?.bark?.notify_register_errors_only)}
+                    onChange={(event) => setBarkNotificationField("notify_register_errors_only", event.target.checked)}
+                    disabled={!barkEnabled || !config.notifications?.bark?.notify_register}
+                  >
+                    注册机仅推失败/异常
+                  </Checkbox>
+                  <Checkbox
+                    checked={Boolean(config.notifications?.bark?.notify_auto_refill !== false)}
+                    onChange={(event) => setBarkNotificationField("notify_auto_refill", event.target.checked)}
+                    disabled={!barkEnabled}
+                  >
+                    自动补池关键事件
+                  </Checkbox>
+                </Space>
+              </Form.Item>
+            </Col>
+          </Row>
+        </Card>
 
         <Divider />
         <SectionTitle title="WebDAV 图片存储" description="可选择只保存在本机、只保存到 WebDAV，或两边都保留。" />
