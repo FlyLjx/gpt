@@ -9,7 +9,27 @@ from services.protocol.conversation import ConversationRequest
 
 
 class ImageAutoRouteTests(unittest.TestCase):
-    def test_default_image_model_prefers_codex_plus_team_pro_accounts(self) -> None:
+    def test_default_image_model_non_4k_uses_free_route(self) -> None:
+        calls = []
+
+        def get_available_access_token(**kwargs):
+            calls.append(kwargs)
+            return "token-free"
+
+        request = ConversationRequest(model="gpt-image-2", size="1024x1024")
+
+        with mock.patch.object(conversation.account_service, "get_available_access_token", get_available_access_token):
+            token, routed, route = conversation._select_image_request_route(request)
+
+        self.assertEqual(token, "token-free")
+        self.assertIs(routed, request)
+        self.assertEqual(route["requested_model"], "gpt-image-2")
+        self.assertEqual(route["backend_model"], "gpt-image-2")
+        self.assertEqual(route["image_channel"], "image-2")
+        self.assertEqual(route["image_route"], "free_image2_fallback")
+        self.assertEqual(calls, [{"plan_type": "free"}])
+
+    def test_default_image_model_4k_prefers_codex_plus_team_pro_accounts(self) -> None:
         calls = []
 
         def get_available_access_token(**kwargs):
@@ -17,7 +37,9 @@ class ImageAutoRouteTests(unittest.TestCase):
             return "token-codex-team"
 
         with mock.patch.object(conversation.account_service, "get_available_access_token", get_available_access_token):
-            token, routed, route = conversation._select_image_request_route(ConversationRequest(model="gpt-image-2"))
+            token, routed, route = conversation._select_image_request_route(
+                ConversationRequest(model="gpt-image-2", size="3840x2160")
+            )
 
         self.assertEqual(token, "token-codex-team")
         self.assertEqual(routed.model, "codex-gpt-image-2")
@@ -27,7 +49,7 @@ class ImageAutoRouteTests(unittest.TestCase):
         self.assertEqual(route["image_route"], "auto_premium_codex")
         self.assertEqual(calls, [{"plan_types": ("plus", "team", "pro")}])
 
-    def test_default_image_model_falls_back_to_free_when_codex_unavailable(self) -> None:
+    def test_default_image_model_4k_falls_back_to_free_when_codex_unavailable(self) -> None:
         calls = []
 
         def get_available_access_token(**kwargs):
@@ -36,7 +58,7 @@ class ImageAutoRouteTests(unittest.TestCase):
                 raise RuntimeError("no available codex image quota")
             return "token-free"
 
-        request = ConversationRequest(model="gpt-image-2")
+        request = ConversationRequest(model="gpt-image-2", size="4096x4096")
 
         with mock.patch.object(conversation.account_service, "get_available_access_token", get_available_access_token):
             token, routed, route = conversation._select_image_request_route(request)
@@ -50,6 +72,14 @@ class ImageAutoRouteTests(unittest.TestCase):
             {"plan_types": ("plus", "team", "pro")},
             {"plan_type": "free"},
         ])
+
+    def test_4k_route_detection_accepts_common_4k_sizes(self) -> None:
+        self.assertTrue(conversation._requests_4k_image("3840x2160"))
+        self.assertTrue(conversation._requests_4k_image("2160x3840"))
+        self.assertTrue(conversation._requests_4k_image("4096x4096"))
+        self.assertTrue(conversation._requests_4k_image("4k"))
+        self.assertFalse(conversation._requests_4k_image("1536x1024"))
+        self.assertFalse(conversation._requests_4k_image("1024x1024"))
 
     def test_explicit_codex_model_keeps_codex_route(self) -> None:
         calls = []

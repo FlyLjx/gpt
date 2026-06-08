@@ -138,10 +138,11 @@ IMAGE_CHANNEL_LABELS = {
 }
 IMAGE_ROUTE_LABELS = {
     "explicit_codex": "指定 Codex 线路",
-    "auto_premium_codex": "高级账号自动 Codex 线路",
+    "auto_premium_codex": "4K 自动 Codex 线路",
     "free_image2_fallback": "Free 账号普通 Image-2 线路",
     "requested_image2": "指定普通 Image-2 线路",
 }
+FOUR_K_ROUTE_PATTERN = re.compile(r"\b4k\b", re.IGNORECASE)
 
 
 def is_model_text_reply_instead_of_image(message: str) -> bool:
@@ -168,6 +169,20 @@ def is_model_text_reply_instead_of_image(message: str) -> bool:
 def _uses_default_image_route(model: object) -> bool:
     plan_type, base_model = split_image_model(model)
     return plan_type is None and base_model == DEFAULT_IMAGE_MODEL
+
+
+def _requests_4k_image(size: object) -> bool:
+    text = str(size or "").strip().lower()
+    if not text:
+        return False
+    if FOUR_K_ROUTE_PATTERN.search(text):
+        return True
+    numbers = [int(item) for item in re.findall(r"\d+", text)]
+    if not numbers:
+        return False
+    if len(numbers) == 1:
+        return numbers[0] >= 3840
+    return max(numbers) >= 3840 or min(numbers) >= 2160
 
 
 def _image_route_meta(request: ConversationRequest, routed_request: ConversationRequest, route: str) -> dict[str, Any]:
@@ -223,9 +238,9 @@ def _exception_image_route_attempts(exc: Exception) -> list[dict[str, Any]]:
 def _select_image_request_route(request: ConversationRequest) -> tuple[str, ConversationRequest, dict[str, Any]]:
     """Pick the token and effective backend model for one image attempt.
 
-    The public default model stays `gpt-image-2`, but when a ready Codex-source
-    Plus/Team/Pro account exists we transparently use the Codex image endpoint.
-    Free accounts remain on the regular image endpoint.
+    The public default model stays `gpt-image-2`. Only 4K default requests
+    transparently try the Codex image endpoint first; non-4K defaults and 4K
+    requests without a ready premium account use the regular Free image route.
     """
     plan_type, _ = split_image_model(request.model)
     codex_model = is_codex_image_model(request.model)
@@ -238,6 +253,10 @@ def _select_image_request_route(request: ConversationRequest) -> tuple[str, Conv
         return token, request, _image_route_meta(request, request, "explicit_codex")
 
     if _uses_default_image_route(request.model):
+        if not _requests_4k_image(request.size):
+            token = account_service.get_available_access_token(plan_type="free")
+            return token, request, _image_route_meta(request, request, "free_image2_fallback")
+
         try:
             token = account_service.get_available_access_token(
                 plan_types=AUTO_CODEX_PLAN_TYPES,
