@@ -12,8 +12,6 @@ from services.config import config
 from utils.log import logger
 
 
-REGISTER_ERROR_KEYWORDS = ("失败", "异常", "错误", "error", "failed", "invalid", "timeout", "超时")
-REGISTER_INFO_KEYWORDS = ("注册任务启动", "注册任务结束", "已请求停止注册任务")
 AUTO_REFILL_NOTIFY_REASONS = {"refill_started", "error", "register_running"}
 REGISTER_END_RE = re.compile(r"注册任务结束，成功(?P<success>\d+)，失败(?P<fail>\d+)")
 
@@ -33,13 +31,11 @@ def _status_code_from_response(response: object) -> int:
     return int(getattr(response, "status", 0) or getattr(response, "code", 0) or 0)
 
 
-def _is_register_error(content: str, level: str) -> bool:
-    if level == "red":
-        return True
+def _register_summary_failure_count(content: str) -> int | None:
     end_match = REGISTER_END_RE.search(content)
-    if end_match:
-        return int(end_match.group("fail") or 0) > 0
-    return any(keyword.lower() in content.lower() for keyword in REGISTER_ERROR_KEYWORDS)
+    if not end_match:
+        return None
+    return int(end_match.group("fail") or 0)
 
 
 class NotificationService:
@@ -186,14 +182,15 @@ class NotificationService:
             return
         content = _clean(text)
         normalized_level = _clean(level).lower()
-        is_error = _is_register_error(content, normalized_level)
-        is_key_info = any(keyword in content for keyword in REGISTER_INFO_KEYWORDS)
-        if bool(settings.get("notify_register_errors_only")) and not is_error:
+        failure_count = _register_summary_failure_count(content)
+        is_summary = failure_count is not None
+        has_failed_summary = is_summary and failure_count > 0
+        if bool(settings.get("notify_register_errors_only")) and not has_failed_summary:
             return
-        if not is_error and not is_key_info:
+        if not is_summary:
             return
-        title = "注册机异常" if is_error else "注册机通知"
-        push_level = "timeSensitive" if is_error else "active"
+        title = "注册机统计异常" if has_failed_summary else "注册机统计"
+        push_level = "timeSensitive" if has_failed_summary else "active"
         self._send_async(title, content, key=f"register:{normalized_level}:{content}", group="chatgpt2api-register", level=push_level)
 
     def notify_auto_refill(self, summary: str, detail: dict[str, object]) -> None:

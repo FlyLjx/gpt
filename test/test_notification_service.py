@@ -82,12 +82,42 @@ class NotificationServiceTests(unittest.TestCase):
             with patch.object(notification_module, "config", store), patch.object(service, "_send_async", fake_send):
                 service.notify_register_log("[任务1] 开始提交注册密码", "info")
                 service.notify_register_log("任务1 注册失败，本次耗时0.4s，原因: error", "red")
+                service.notify_register_log("注册任务启动，模式=total，线程数=1", "yellow")
+                service.notify_register_log("已请求停止注册任务，正在等待当前运行任务结束", "yellow")
                 service.notify_register_log("注册任务结束，成功0，失败1", "yellow")
                 service.notify_register_log("注册任务结束，成功1，失败0", "yellow")
         finally:
             tmp_dir.cleanup()
 
-        self.assertEqual([title for title, _body in sent], ["注册机异常", "注册机异常", "注册机通知"])
+        self.assertEqual([title for title, _body in sent], ["注册机统计异常", "注册机统计"])
+
+    def test_register_errors_only_pushes_failed_summary_only(self) -> None:
+        from services import notification_service as notification_module
+
+        tmp_dir, store = self._store()
+        store.update({
+            "notifications": {
+                "bark": {
+                    **store.get_notification_settings()["bark"],
+                    "notify_register_errors_only": True,
+                }
+            }
+        })
+        service = notification_module.NotificationService()
+        sent: list[tuple[str, str]] = []
+
+        def fake_send(title: str, body: str, **_kwargs):
+            sent.append((title, body))
+
+        try:
+            with patch.object(notification_module, "config", store), patch.object(service, "_send_async", fake_send):
+                service.notify_register_log("任务1 注册失败，本次耗时0.4s，原因: error", "red")
+                service.notify_register_log("注册任务结束，成功1，失败0", "yellow")
+                service.notify_register_log("注册任务结束，成功1，失败1", "yellow")
+        finally:
+            tmp_dir.cleanup()
+
+        self.assertEqual([title for title, _body in sent], ["注册机统计异常"])
 
     def test_failed_log_triggers_notification(self) -> None:
         from services.log_service import LOG_TYPE_CALL, LogService

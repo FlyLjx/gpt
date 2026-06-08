@@ -363,7 +363,7 @@ export function ConfigCard() {
         </Row>
 
         <Divider />
-        <SectionTitle title="Bark 推送通知" description="把异常调用日志、注册机事件和自动补池关键事件推送到手机，方便第一时间排障。" />
+        <SectionTitle title="Bark 推送通知" description="把异常调用日志、注册机最终统计和自动补池关键事件推送到手机，方便第一时间排障。" />
         <Card size="small">
           <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <Space>
@@ -445,14 +445,14 @@ export function ConfigCard() {
                     onChange={(event) => setBarkNotificationField("notify_register", event.target.checked)}
                     disabled={!barkEnabled}
                   >
-                    注册机日志
+                    注册机最终统计
                   </Checkbox>
                   <Checkbox
                     checked={Boolean(config.notifications?.bark?.notify_register_errors_only)}
                     onChange={(event) => setBarkNotificationField("notify_register_errors_only", event.target.checked)}
                     disabled={!barkEnabled || !config.notifications?.bark?.notify_register}
                   >
-                    注册机仅推失败/异常
+                    注册机仅推失败统计
                   </Checkbox>
                   <Checkbox
                     checked={Boolean(config.notifications?.bark?.notify_auto_refill !== false)}
