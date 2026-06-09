@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 
+from services.protocol import conversation
+
 from utils.image_tokens import (
     count_image_input_tokens,
     count_image_output_tokens,
@@ -23,6 +25,13 @@ class ImageTokenTests(unittest.TestCase):
         single = count_image_output_tokens("1024x1024", "auto", 1)
         self.assertGreater(single, 0)
         self.assertEqual(count_image_output_tokens("1024x1024", "auto", 2), single * 2)
+
+    def test_text_token_count_is_disabled(self):
+        self.assertEqual(conversation.count_text_tokens("hello", "gpt-image-2"), 0)
+        self.assertEqual(
+            conversation.count_message_text_tokens([{"role": "user", "content": "hello"}], "gpt-image-2"),
+            0,
+        )
 
 
 if __name__ == "__main__":

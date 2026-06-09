@@ -8,8 +8,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Iterator
 
-import tiktoken
-
 from services.account_service import account_service
 from services.comfyui_service import comfyui_text_upscale_service
 from services.config import config
@@ -402,35 +400,12 @@ def _write_image_workflow_log(summary: str, detail: dict[str, object]) -> None:
         pass
 
 
-def encoding_for_model(model: str):
-    try:
-        return tiktoken.encoding_for_model(model)
-    except KeyError:
-        try:
-            return tiktoken.get_encoding("o200k_base")
-        except KeyError:
-            return tiktoken.get_encoding("cl100k_base")
-
-
 def count_message_image_tokens(messages: list[dict[str, Any]], model: str) -> int:
     return sum(count_image_content_tokens(message.get("content"), model) for message in messages)
 
 
 def count_message_text_tokens(messages: list[dict[str, Any]], model: str) -> int:
-    encoding = encoding_for_model(model)
-    total = 0
-    for message in messages:
-        total += 3
-        for key, value in message.items():
-            if key == "content" and isinstance(value, list):
-                total += len(encoding.encode(message_text(value)))
-            elif isinstance(value, str):
-                total += len(encoding.encode(value))
-            else:
-                continue
-            if key == "name":
-                total += 1
-    return total + 3
+    return 0
 
 
 def count_message_tokens(messages: list[dict[str, Any]], model: str) -> int:
@@ -438,7 +413,7 @@ def count_message_tokens(messages: list[dict[str, Any]], model: str) -> int:
 
 
 def count_text_tokens(text: str, model: str) -> int:
-    return len(encoding_for_model(model).encode(text))
+    return 0
 
 
 def format_image_result(
