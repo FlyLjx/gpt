@@ -6,7 +6,6 @@ import json
 import re
 import uuid
 import zipfile
-from datetime import datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Header, HTTPException
@@ -24,6 +23,7 @@ from api.support import (
     sanitize_sub2api_servers,
 )
 from services.account_service import account_service
+from services.config import local_time_text
 from services.cpa_service import cpa_config, cpa_import_service, list_remote_files
 from services.oauth_login_service import OAuthLoginError, oauth_login_service
 from services.sub2api_service import (
@@ -129,7 +129,7 @@ def _unique_tokens(tokens: list[str]) -> list[str]:
 
 
 def _download_timestamp() -> str:
-    return datetime.now().strftime("%Y%m%d-%H%M%S")
+    return local_time_text(fmt="%Y%m%d-%H%M%S")
 
 
 def _safe_export_name(value: str, fallback: str) -> str:

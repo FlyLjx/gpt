@@ -5,7 +5,6 @@ import json
 import itertools
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -15,7 +14,7 @@ from fastapi import HTTPException
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from services.config import DATA_DIR
+from services.config import DATA_DIR, local_time_text
 from services.protocol.error_response import anthropic_error_response, openai_error_response
 from utils.helper import anthropic_sse_stream, sse_json_stream
 
@@ -84,7 +83,7 @@ class LogService:
         item_detail = detail or data
         item = {
             "id": item_id,
-            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "time": local_time_text(),
             "type": type,
             "summary": summary,
             "detail": item_detail,
@@ -636,14 +635,14 @@ class LoggedCall:
             "role": self.identity.get("role"),
             "endpoint": self.endpoint,
             "model": self.model,
-            "started_at": datetime.fromtimestamp(self.started).strftime("%Y-%m-%d %H:%M:%S"),
+            "started_at": local_time_text(self.started),
             "status": status,
         }
         if finished:
-            detail["ended_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            detail["ended_at"] = local_time_text()
             detail["duration_ms"] = int((time.time() - self.started) * 1000)
         else:
-            detail["submitted_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            detail["submitted_at"] = local_time_text()
             detail["duration_ms"] = 0
         request_excerpt = _request_excerpt(self.request_text)
         if request_excerpt:

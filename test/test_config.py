@@ -88,6 +88,79 @@ class ConfigLoadingTests(unittest.TestCase):
             self.assertEqual(settings["min_interval_seconds"], 0)
             self.assertTrue(settings["notify_register_errors_only"])
 
+    def test_timezone_defaults_to_shanghai(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            module = self.config_module
+            config_file = Path(tmp_dir) / "config.json"
+            config_file.write_text(json.dumps({"auth-key": "test-auth"}), encoding="utf-8")
+            old_env_timezone = module.os.environ.pop("CHATGPT2API_TIMEZONE", None)
+            old_tz = module.os.environ.pop("TZ", None)
+            try:
+                store = module.ConfigStore(config_file)
+                self.assertEqual(store.timezone, "Asia/Shanghai")
+                self.assertEqual(store.get()["timezone"], "Asia/Shanghai")
+            finally:
+                if old_env_timezone is not None:
+                    module.os.environ["CHATGPT2API_TIMEZONE"] = old_env_timezone
+                if old_tz is not None:
+                    module.os.environ["TZ"] = old_tz
+
+    def test_timezone_env_overrides_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            module = self.config_module
+            config_file = Path(tmp_dir) / "config.json"
+            config_file.write_text(json.dumps({"auth-key": "test-auth", "timezone": "UTC"}), encoding="utf-8")
+            old_env_timezone = module.os.environ.get("CHATGPT2API_TIMEZONE")
+            try:
+                module.os.environ["CHATGPT2API_TIMEZONE"] = "Asia/Tokyo"
+                store = module.ConfigStore(config_file)
+                self.assertEqual(store.timezone, "Asia/Tokyo")
+                self.assertEqual(store.get()["timezone"], "Asia/Tokyo")
+            finally:
+                if old_env_timezone is None:
+                    module.os.environ.pop("CHATGPT2API_TIMEZONE", None)
+                else:
+                    module.os.environ["CHATGPT2API_TIMEZONE"] = old_env_timezone
+
+    def test_update_timezone_applies_process_timezone(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            module = self.config_module
+            config_file = Path(tmp_dir) / "config.json"
+            config_file.write_text(json.dumps({"auth-key": "test-auth"}), encoding="utf-8")
+            old_env_timezone = module.os.environ.pop("CHATGPT2API_TIMEZONE", None)
+            old_tz = module.os.environ.get("TZ")
+            try:
+                store = module.ConfigStore(config_file)
+                updated = store.update({"timezone": "UTC"})
+                self.assertEqual(updated["timezone"], "UTC")
+                self.assertEqual(module.os.environ.get("TZ"), "UTC")
+            finally:
+                if old_env_timezone is not None:
+                    module.os.environ["CHATGPT2API_TIMEZONE"] = old_env_timezone
+                if old_tz is None:
+                    module.os.environ.pop("TZ", None)
+                else:
+                    module.os.environ["TZ"] = old_tz
+                    module._apply_process_timezone(old_tz)
+
+    def test_local_time_text_uses_configured_timezone(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            module = self.config_module
+            config_file = Path(tmp_dir) / "config.json"
+            config_file.write_text(json.dumps({"auth-key": "test-auth", "timezone": "Asia/Shanghai"}), encoding="utf-8")
+            old_config = module.config
+            old_env_timezone = module.os.environ.pop("CHATGPT2API_TIMEZONE", None)
+            try:
+                module.config = module.ConfigStore(config_file)
+                self.assertEqual(module.local_time_text(0), "1970-01-01 08:00:00")
+                self.assertEqual(module.local_date_parts(0), ("1970", "01", "01"))
+                module.config.update({"timezone": "UTC"})
+                self.assertEqual(module.local_time_text(0), "1970-01-01 00:00:00")
+            finally:
+                module.config = old_config
+                if old_env_timezone is not None:
+                    module.os.environ["CHATGPT2API_TIMEZONE"] = old_env_timezone
+
     def test_enabled_bark_requires_device_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             module = self.config_module

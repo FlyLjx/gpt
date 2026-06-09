@@ -4,11 +4,10 @@ import json
 import threading
 import time
 from collections.abc import Callable
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from services.config import DATA_DIR, config
+from services.config import DATA_DIR, config, local_time_text
 from services.content_filter import request_text
 from services.log_service import LOG_TYPE_CALL, apply_image_log_detail, log_service
 from services.protocol import openai_v1_image_edit, openai_v1_image_generations
@@ -22,7 +21,7 @@ UNFINISHED_STATUSES = {TASK_STATUS_QUEUED, TASK_STATUS_RUNNING}
 
 
 def _now_iso() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return local_time_text()
 
 
 def _timestamp(value: object) -> float:
@@ -144,7 +143,7 @@ def _build_log_detail(
         "role": identity.get("role"),
         "endpoint": endpoint,
         "model": model,
-        "started_at": datetime.fromtimestamp(started).strftime("%Y-%m-%d %H:%M:%S"),
+        "started_at": local_time_text(started),
         "duration_ms": int((time.time() - started) * 1000) if finished else 0,
         "status": status,
     }

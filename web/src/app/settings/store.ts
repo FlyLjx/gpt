@@ -158,6 +158,7 @@ function normalizeConfig(config: SettingsConfig): SettingsConfig {
     },
     proxy: typeof config.proxy === "string" ? config.proxy : "",
     base_url: typeof config.base_url === "string" ? config.base_url : "",
+    timezone: String(config.timezone || "Asia/Shanghai"),
     global_system_prompt: String(config.global_system_prompt || ""),
     sensitive_words: Array.isArray(config.sensitive_words) ? config.sensitive_words : [],
     ai_review: {
@@ -287,6 +288,7 @@ type SettingsStore = {
   setLogLevel: (level: string, enabled: boolean) => void;
   setProxy: (value: string) => void;
   setBaseUrl: (value: string) => void;
+  setTimezone: (value: string) => void;
   setGlobalSystemPrompt: (value: string) => void;
   setSensitiveWordsText: (value: string) => void;
   setAIReviewField: (key: "enabled" | "base_url" | "api_key" | "model" | "prompt", value: string | boolean) => void;
@@ -477,6 +479,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         },
         proxy: config.proxy.trim(),
         base_url: String(config.base_url || "").trim(),
+        timezone: String(config.timezone || "Asia/Shanghai").trim() || "Asia/Shanghai",
         global_system_prompt: String(config.global_system_prompt || "").trim(),
         sensitive_words: (config.sensitive_words || []).map((item) => String(item).trim()).filter(Boolean),
         ai_review: {
@@ -631,6 +634,20 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         config: {
           ...state.config,
           base_url: value,
+        },
+      };
+    });
+  },
+
+  setTimezone: (value) => {
+    set((state) => {
+      if (!state.config) {
+        return {};
+      }
+      return {
+        config: {
+          ...state.config,
+          timezone: value,
         },
       };
     });

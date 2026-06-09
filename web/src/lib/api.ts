@@ -122,6 +122,7 @@ type AccountUpdateResponse = {
 export type SettingsConfig = {
   proxy: string;
   base_url?: string;
+  timezone?: string;
   global_system_prompt?: string;
   sensitive_words?: string[];
   ai_review?: {

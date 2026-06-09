@@ -120,6 +120,7 @@ export function ConfigCard() {
   const setLogLevel = useSettingsStore((state) => state.setLogLevel);
   const setProxy = useSettingsStore((state) => state.setProxy);
   const setBaseUrl = useSettingsStore((state) => state.setBaseUrl);
+  const setTimezone = useSettingsStore((state) => state.setTimezone);
   const setGlobalSystemPrompt = useSettingsStore((state) => state.setGlobalSystemPrompt);
   const setSensitiveWordsText = useSettingsStore((state) => state.setSensitiveWordsText);
   const setAIReviewField = useSettingsStore((state) => state.setAIReviewField);
@@ -244,6 +245,11 @@ export function ConfigCard() {
           <Col xs={24} lg={12}>
             <Form.Item label="图片访问地址" extra="用于生成图片结果的访问前缀地址。">
               <Input value={String(config.base_url || "")} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://example.com" />
+            </Form.Item>
+          </Col>
+          <Col xs={24} md={12} xl={6}>
+            <Form.Item label="运行时区" extra="影响后台日志、任务时间和本地文件日期。保存后立即生效，Docker 重启后建议也保留环境变量。">
+              <Input value={String(config.timezone || "Asia/Shanghai")} onChange={(event) => setTimezone(event.target.value)} placeholder="Asia/Shanghai" />
             </Form.Item>
           </Col>
         </Row>

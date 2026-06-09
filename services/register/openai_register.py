@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 from curl_cffi import requests
 
 from services.account_service import account_service
+from services.config import local_time_text
 from services.register import mail_provider
 
 base_dir = Path(__file__).resolve().parent
@@ -117,7 +118,7 @@ def log(text: str, color: str = "") -> None:
     with print_lock:
         prefix = colors.get(color, "")
         suffix = "\033[0m" if prefix else ""
-        print(f"{prefix}{datetime.now().strftime('%H:%M:%S')} {text}{suffix}")
+        print(f"{prefix}{local_time_text(fmt='%H:%M:%S')} {text}{suffix}")
 
 
 def step(index: int, text: str, color: str = "") -> None:

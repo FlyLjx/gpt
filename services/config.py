@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 import json
 import os
 import sys
@@ -14,6 +15,8 @@ DATA_DIR = BASE_DIR / "data"
 CONFIG_FILE = BASE_DIR / "config.json"
 VERSION_FILE = BASE_DIR / "VERSION"
 BACKUP_STATE_FILE = DATA_DIR / "backup_state.json"
+DEFAULT_TIMEZONE = "Asia/Shanghai"
+LOCAL_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 DEFAULT_BACKUP_INCLUDE = {
     "config": True,
@@ -83,6 +86,69 @@ DEFAULT_BARK_NOTIFICATION = {
 DEFAULT_NOTIFICATION_SETTINGS = {
     "bark": DEFAULT_BARK_NOTIFICATION,
 }
+
+
+def _normalize_timezone(value: object) -> str:
+    normalized = str(value or "").strip()
+    if normalized == "CST-8":
+        return DEFAULT_TIMEZONE
+    return normalized or DEFAULT_TIMEZONE
+
+
+def _default_timezone_is_applied() -> bool:
+    try:
+        epoch = time.localtime(0)
+    except Exception:
+        return True
+    return epoch.tm_hour == 8 and epoch.tm_min == 0
+
+
+def _timezone_info(value: object) -> timezone:
+    timezone_name = _normalize_timezone(value)
+    if timezone_name == "UTC":
+        return timezone.utc
+    if timezone_name == DEFAULT_TIMEZONE:
+        return timezone(timedelta(hours=8))
+    return datetime.now().astimezone().tzinfo or timezone.utc
+
+
+def local_datetime(timestamp: float | None = None) -> datetime:
+    tz = _timezone_info(config.timezone if "config" in globals() else DEFAULT_TIMEZONE)
+    if timestamp is None:
+        return datetime.now(timezone.utc).astimezone(tz)
+    return datetime.fromtimestamp(float(timestamp), tz=timezone.utc).astimezone(tz)
+
+
+def local_time_text(timestamp: float | None = None, fmt: str = LOCAL_TIME_FORMAT) -> str:
+    return local_datetime(timestamp).strftime(fmt)
+
+
+def local_date_parts(timestamp: float | None = None) -> tuple[str, str, str]:
+    value = local_datetime(timestamp)
+    return value.strftime("%Y"), value.strftime("%m"), value.strftime("%d")
+
+
+def _apply_process_timezone(value: object) -> str:
+    timezone_name = _normalize_timezone(value)
+    os.environ["TZ"] = timezone_name
+    tzset = getattr(time, "tzset", None)
+    if callable(tzset):
+        try:
+            tzset()
+        except Exception:
+            if timezone_name == DEFAULT_TIMEZONE:
+                os.environ["TZ"] = "CST-8"
+                try:
+                    tzset()
+                except Exception:
+                    os.environ["TZ"] = timezone_name
+        if timezone_name == DEFAULT_TIMEZONE and not _default_timezone_is_applied():
+            os.environ["TZ"] = "CST-8"
+            try:
+                tzset()
+            except Exception:
+                os.environ["TZ"] = timezone_name
+    return timezone_name
 
 
 def _normalize_bool(value: object, default: bool = False) -> bool:
@@ -393,6 +459,10 @@ class ConfigStore:
             return 5
 
     @property
+    def timezone(self) -> str:
+        return _normalize_timezone(os.getenv("CHATGPT2API_TIMEZONE") or self.data.get("timezone") or os.getenv("TZ"))
+
+    @property
     def refresh_account_concurrency(self) -> int:
         try:
             return min(100, max(1, int(self.data.get("refresh_account_concurrency", 20))))
@@ -631,6 +701,7 @@ class ConfigStore:
     def get(self) -> dict[str, object]:
         data = dict(self.data)
         data["refresh_account_interval_minute"] = self.refresh_account_interval_minute
+        data["timezone"] = self.timezone
         data["refresh_account_concurrency"] = self.refresh_account_concurrency
         data["image_retention_days"] = self.image_retention_days
         data["image_poll_timeout_secs"] = self.image_poll_timeout_secs
@@ -670,6 +741,8 @@ class ConfigStore:
     def update(self, data: dict[str, object]) -> dict[str, object]:
         next_data = dict(self.data)
         next_data.update(dict(data or {}))
+        if "timezone" in next_data:
+            next_data["timezone"] = _normalize_timezone(next_data.get("timezone"))
         if "backup" in next_data:
             next_data["backup"] = _normalize_backup_settings(next_data.get("backup"))
         if "image_storage" in next_data:
@@ -689,6 +762,7 @@ class ConfigStore:
             _validate_notification_settings(next_data["notifications"])
         next_data.pop("backup_state", None)
         self.data = next_data
+        _apply_process_timezone(self.timezone)
         self._save()
         return self.get()
 
@@ -726,3 +800,4 @@ def save_backup_state(state: dict[str, object]) -> dict[str, object]:
 
 
 config = ConfigStore(CONFIG_FILE)
+_apply_process_timezone(config.timezone)

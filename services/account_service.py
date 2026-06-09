@@ -12,7 +12,7 @@ from threading import Condition, Lock, Thread
 from typing import Any
 from urllib.parse import urlencode
 
-from services.config import config
+from services.config import config, local_time_text
 from services.log_service import (
     LOG_TYPE_ACCOUNT,
     log_service,
@@ -1200,7 +1200,7 @@ class AccountService:
             if current is None:
                 return
             next_item = dict(current)
-            next_item["last_used_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            next_item["last_used_at"] = local_time_text()
             account = self._normalize_account(next_item)
             if account is None:
                 return
@@ -1443,7 +1443,7 @@ class AccountService:
             if current is None:
                 return None
             next_item = dict(current)
-            next_item["last_used_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            next_item["last_used_at"] = local_time_text()
             image_quota_unknown = bool(next_item.get("image_quota_unknown"))
             if success:
                 next_item["success"] = int(next_item.get("success") or 0) + 1

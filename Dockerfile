@@ -25,6 +25,7 @@ ARG INSTALL_SYSTEM_DEPS=1
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     GIT_PYTHON_REFRESH=quiet \
+    TZ=Asia/Shanghai \
     UV_LINK_MODE=copy
 
 WORKDIR /app
@@ -43,6 +44,7 @@ RUN if [ "$INSTALL_SYSTEM_DEPS" = "1" ]; then \
         libpq-dev \
         gcc \
         openssl \
+        tzdata \
       && rm -rf /var/lib/apt/lists/*; \
     fi
 
