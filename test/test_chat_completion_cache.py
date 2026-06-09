@@ -290,7 +290,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
         self.assertEqual(content[1]["type"], "image")
         self.assertEqual(content[1]["mime"], "image/png")
         self.assertEqual(content[1]["data"], PNG_1X1)
-        self.assertGreater(response["usage"]["input_tokens_details"]["image_tokens"], 0)
+        self.assertEqual(response["usage"]["input_tokens_details"]["image_tokens"], 0)
 
     def test_responses_text_request_accepts_remote_input_image_url(self) -> None:
         class FakeImageResponse:

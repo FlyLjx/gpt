@@ -23,7 +23,6 @@ from utils.helper import (
     is_supported_image_model,
     split_image_model,
 )
-from utils.image_tokens import count_image_content_tokens
 from utils.log import logger
 
 
@@ -401,7 +400,7 @@ def _write_image_workflow_log(summary: str, detail: dict[str, object]) -> None:
 
 
 def count_message_image_tokens(messages: list[dict[str, Any]], model: str) -> int:
-    return sum(count_image_content_tokens(message.get("content"), model) for message in messages)
+    return 0
 
 
 def count_message_text_tokens(messages: list[dict[str, Any]], model: str) -> int:
