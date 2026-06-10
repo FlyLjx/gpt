@@ -42,14 +42,6 @@ def _clean(value: object, default: str = "") -> str:
     return str(value or default).strip()
 
 
-def _optional_bool(value: object) -> bool | None:
-    if isinstance(value, bool):
-        return value
-    if value is None or value == "":
-        return None
-    return str(value).strip().lower() in {"true", "1", "yes", "y", "on"}
-
-
 def _owner_id(identity: dict[str, object]) -> str:
     return _clean(identity.get("id")) or "anonymous"
 
@@ -172,22 +164,14 @@ def _request_params_from_payload(payload: dict[str, Any] | None) -> dict[str, An
         return {}
     return {
         key: payload.get(key)
-        for key in ("n", "size", "quality", "upscale", "response_format", "stream")
+        for key in ("n", "size", "quality", "response_format", "stream")
         if key in payload
     }
 
 
 def _image_result_meta(data: object) -> dict[str, Any]:
-    items = [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
-    meta: dict[str, Any] = {}
-    if any(bool(item.get("upscaled")) for item in items):
-        meta["upscaled"] = True
-    for key in ("original_width", "original_height", "width", "height"):
-        for item in items:
-            if item.get(key) is not None:
-                meta[key] = item.get(key)
-                break
-    return meta
+    _ = data
+    return {}
 
 
 def _public_image_data(data: object) -> list[Any]:
@@ -269,7 +253,6 @@ class ImageTaskService:
         model: str,
         size: str | None,
         quality: str = "auto",
-        upscale: bool | None = None,
         base_url: str = "",
     ) -> dict[str, Any]:
         payload = {
@@ -278,7 +261,6 @@ class ImageTaskService:
             "n": 1,
             "size": size,
             "quality": quality,
-            "upscale": upscale,
             "response_format": "url",
             "base_url": base_url,
         }
@@ -293,7 +275,6 @@ class ImageTaskService:
         model: str,
         size: str | None,
         quality: str = "auto",
-        upscale: bool | None = None,
         base_url: str = "",
         images: list[tuple[bytes, str, str]] | None = None,
     ) -> dict[str, Any]:
@@ -304,7 +285,6 @@ class ImageTaskService:
             "n": 1,
             "size": size,
             "quality": quality,
-            "upscale": upscale,
             "response_format": "url",
             "base_url": base_url,
         }
@@ -364,7 +344,6 @@ class ImageTaskService:
                 "model": _clean(payload.get("model"), "gpt-image-2"),
                 "size": _clean(payload.get("size")),
                 "quality": _clean(payload.get("quality"), "auto"),
-                "upscale": payload.get("upscale"),
                 "created_at": now,
                 "updated_at": now,
                 "created_ts": time.time(),
@@ -584,7 +563,6 @@ class ImageTaskService:
                 "model": _clean(item.get("model"), "gpt-image-2"),
                 "size": _clean(item.get("size")),
                 "quality": _clean(item.get("quality"), "auto"),
-                "upscale": _optional_bool(item.get("upscale")),
                 "created_at": _clean(item.get("created_at"), _now_iso()),
                 "updated_at": _clean(item.get("updated_at"), _clean(item.get("created_at"), _now_iso())),
                 "created_ts": item.get("created_ts"),
@@ -710,19 +688,12 @@ class ImageTaskService:
             # 获取 task 的原始 prompt（从 _public_task 的 mode 判断）
             with self._lock:
                 task = self._tasks.get(key)
-                quality = _clean(task.get("quality"), "auto") if task else "auto"
-                size = _clean(task.get("size")) if task else None
-                upscale = _optional_bool(task.get("upscale")) if task else None
             data = format_image_result(
                 image_items,
                 "",  # prompt 已不重要，结果已经拿到了
                 "b64_json",
                 "",
                 int(time.time()),
-                model=model,
-                size=size,
-                quality=quality,
-                upscale=upscale,
             )["data"]
             self._update_task(key, status=TASK_STATUS_SUCCESS, data=data, error="", duration_ms=int((time.time() - started) * 1000))
             self._log_call(

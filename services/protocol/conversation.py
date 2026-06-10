@@ -9,11 +9,8 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Iterator
 
 from services.account_service import account_service
-from services.comfyui_service import comfyui_text_upscale_service
 from services.config import config
 from services.image_storage_service import image_storage_service
-from services.log_service import LOG_TYPE_CALL, log_service
-from services.image_upscale_service import upstream_image_size, upscale_image_bytes
 from services.openai_backend_api import ImageContentPolicyError, ImagePollTimeoutError, OpenAIBackendAPI
 from utils.helper import (
     CODEX_IMAGE_MODEL,
@@ -377,28 +374,6 @@ def build_image_prompt(prompt: str, size: str | None, quality: str = "auto") -> 
     return f"{prompt.strip()}\n\n{''.join(hints)}" if hints else prompt
 
 
-def build_text_upscale_prompt(original_prompt: str, size: str | None) -> str:
-    hints = [
-        "对参考图片做高清重绘和文字清晰化。",
-        "保持原图整体构图、版式、颜色、图片内容、文案含义和层级关系不变。",
-        "重点重绘所有中文、英文、数字、价格、日期、按钮和小标题，让文字边缘清晰、可读、无重影、无乱码。",
-        "不要新增无关文字，不要改写价格、日期和地名。",
-    ]
-    if size:
-        hints.append(f"输出图片尺寸为 {size}。")
-    prompt = original_prompt.strip()
-    if prompt:
-        hints.append(f"原始需求：{prompt}")
-    return "\n".join(hints)
-
-
-def _write_image_workflow_log(summary: str, detail: dict[str, object]) -> None:
-    try:
-        log_service.add(LOG_TYPE_CALL, summary, detail)
-    except Exception:
-        pass
-
-
 def count_message_image_tokens(messages: list[dict[str, Any]], model: str) -> int:
     return 0
 
@@ -422,10 +397,6 @@ def format_image_result(
     base_url: str | None = None,
     created: int | None = None,
     message: str = "",
-    model: str = "",
-    size: str | None = None,
-    quality: str = "auto",
-    upscale: bool | None = None,
 ) -> dict[str, Any]:
     data: list[dict[str, Any]] = []
     for item in items:
@@ -434,27 +405,19 @@ def format_image_result(
             continue
         revised_prompt = str(item.get("revised_prompt") or prompt).strip() or prompt
         image_bytes = base64.b64decode(b64_json)
-        upscale_result = upscale_image_bytes(image_bytes, model=model, size=size, quality=quality, upscale=upscale)
-        output_b64 = base64.b64encode(upscale_result.payload).decode("ascii") if upscale_result.applied else b64_json
-        url = save_image_bytes(upscale_result.payload, base_url)
+        url = save_image_bytes(image_bytes, base_url)
         if response_format == "b64_json":
             data.append({
-                "b64_json": output_b64,
+                "b64_json": b64_json,
                 "url": url,
                 "revised_prompt": revised_prompt,
             })
         else:
             data.append({
                 "url": url,
-                "_b64_json": output_b64,
+                "_b64_json": b64_json,
                 "revised_prompt": revised_prompt,
             })
-        if upscale_result.applied:
-            data[-1]["upscaled"] = True
-            if upscale_result.original_size:
-                data[-1]["original_width"], data[-1]["original_height"] = upscale_result.original_size
-            if upscale_result.target_size:
-                data[-1]["width"], data[-1]["height"] = upscale_result.target_size
     result: dict[str, Any] = {"created": created or int(time.time()), "data": data}
     if message and not data:
         result["message"] = message
@@ -470,12 +433,10 @@ class ConversationRequest:
     n: int = 1
     size: str | None = None
     quality: str = "auto"
-    upscale: bool | None = None
     response_format: str = "b64_json"
     base_url: str | None = None
     message_as_error: bool = False
     progress_callback: Any = None  # Callable[[str], None] | None
-    text_upscale_workflow_disabled: bool = False
 
 
 @dataclass
@@ -832,13 +793,12 @@ def conversation_events(
     images: list[str] | None = None,
     size: str | None = None,
     quality: str = "auto",
-    upscale: bool | None = None,
 ) -> Iterator[dict[str, Any]]:
     normalized = normalize_messages(messages or ([{"role": "user", "content": prompt}] if prompt else []))
     image_model = is_supported_image_model(model)
     history_text = "" if image_model else assistant_history_text(normalized)
     history_messages = [] if image_model else assistant_history_messages(normalized)
-    request_size = upstream_image_size(model=model, size=size, upscale=upscale)
+    request_size = str(size or "").strip() or None
     final_prompt = prompt_with_global_system(build_image_prompt(prompt, request_size, quality)) if image_model else prompt
     payloads = backend.stream_conversation(
         messages=normalized,
@@ -955,7 +915,6 @@ def stream_image_outputs(
             images=request.images or [],
             size=request.size,
             quality=request.quality,
-            upscale=request.upscale,
     ):
         last = event
         if event.get("type") == "conversation.delta":
@@ -1116,10 +1075,6 @@ def stream_image_outputs(
             request.response_format,
             request.base_url,
             int(time.time()),
-            model=request.model,
-            size=request.size,
-            quality=request.quality,
-            upscale=request.upscale,
         )["data"]
         if data:
             yield ImageOutput(kind="result", model=request.model, index=index, total=total, data=data, conversation_id=conversation_id)
@@ -1217,10 +1172,6 @@ def stream_image_outputs(
                         request.response_format,
                         request.base_url,
                         int(time.time()),
-                        model=request.model,
-                        size=request.size,
-                        quality=request.quality,
-                        upscale=request.upscale,
                     )["data"]
                     if data:
                         yield ImageOutput(kind="result", model=request.model, index=index, total=total, data=data, conversation_id=conversation_id)
@@ -1333,10 +1284,6 @@ def stream_image_outputs(
                     request.response_format,
                     request.base_url,
                     int(time.time()),
-                    model=request.model,
-                    size=request.size,
-                    quality=request.quality,
-                    upscale=request.upscale,
                 )["data"]
                 if data:
                     yield ImageOutput(kind="result", model=request.model, index=index, total=total, data=data, conversation_id=conversation_id)
@@ -1397,181 +1344,11 @@ def stream_codex_image_outputs(
         request.response_format,
         request.base_url,
         int(time.time()),
-        model=request.model,
-        size=request.size,
-        quality=request.quality,
-        upscale=request.upscale,
     )["data"]
     if data:
         yield ImageOutput(kind="result", model=request.model, index=index, total=total, data=data)
         return
     raise ImageGenerationError("No image result found in response")
-
-
-def _should_run_text_upscale_workflow(request: ConversationRequest) -> bool:
-    # Backend 4K/text upscale workflow is disabled; Codex-capable premium
-    # accounts should handle high-resolution requests directly.
-    _ = request
-    return False
-
-
-def _result_items_to_encoded_images(items: list[dict[str, Any]]) -> list[str]:
-    images: list[str] = []
-    for item in items:
-        b64_json = str(item.get("b64_json") or item.get("_b64_json") or "").strip()
-        if b64_json:
-            images.append(b64_json)
-    return images
-
-
-def _apply_text_upscale_workflow(request: ConversationRequest, outputs: list[ImageOutput]) -> list[ImageOutput]:
-    if not _should_run_text_upscale_workflow(request):
-        return outputs
-    updated: list[ImageOutput] = []
-    for output in outputs:
-        if output.kind != "result" or not output.data:
-            updated.append(output)
-            continue
-        reference_images = _result_items_to_encoded_images(output.data)
-        if not reference_images:
-            updated.append(output)
-            continue
-        prompt = build_text_upscale_prompt(request.prompt, request.size)
-        if comfyui_text_upscale_service.enabled():
-            try:
-                start_detail = {
-                    "event": "comfyui_text_upscale_workflow_start",
-                    "model": request.model,
-                    "requested_size": request.size,
-                    "quality": request.quality,
-                    "index": output.index,
-                }
-                logger.info(start_detail)
-                _write_image_workflow_log("ComfyUI文字增强开始", start_detail)
-                source_image = base64.b64decode(reference_images[0])
-                enhanced = comfyui_text_upscale_service.enhance_text_image(source_image, prompt=prompt, size=request.size)
-                final = format_image_result(
-                    [{"b64_json": base64.b64encode(enhanced).decode("ascii"), "revised_prompt": request.prompt}],
-                    request.prompt,
-                    request.response_format,
-                    request.base_url,
-                    int(time.time()),
-                    model=request.model,
-                    size=request.size,
-                    quality=request.quality,
-                    upscale=request.upscale,
-                )["data"]
-                if not final:
-                    raise RuntimeError("ComfyUI text upscale finalization returned no image")
-                applied_detail = {
-                    "event": "comfyui_text_upscale_workflow_applied",
-                    "model": request.model,
-                    "requested_size": request.size,
-                    "quality": request.quality,
-                    "index": output.index,
-                }
-                logger.info(applied_detail)
-                _write_image_workflow_log("ComfyUI文字增强完成", applied_detail)
-                updated.append(ImageOutput(
-                    kind="result",
-                    model=output.model,
-                    index=output.index,
-                    total=output.total,
-                    created=int(time.time()),
-                    data=final,
-                    account_email=output.account_email,
-                    conversation_id=output.conversation_id,
-                ))
-                continue
-            except Exception as exc:
-                failed_detail = {
-                    "event": "comfyui_text_upscale_workflow_failed",
-                    "model": request.model,
-                    "requested_size": request.size,
-                    "quality": request.quality,
-                    "index": output.index,
-                    "error": str(exc)[:300],
-                }
-                logger.warning(failed_detail)
-                _write_image_workflow_log("ComfyUI文字增强失败", failed_detail)
-                if not config.get_comfyui_text_upscale_settings().get("fallback_to_openai"):
-                    updated.append(output)
-                    continue
-        try:
-            start_detail = {
-                "event": "image_text_upscale_workflow_start",
-                "model": request.model,
-                "requested_size": request.size,
-                "quality": request.quality,
-                "index": output.index,
-            }
-            logger.info(start_detail)
-            _write_image_workflow_log("图片文字增强开始", start_detail)
-            refine_request = ConversationRequest(
-                model=request.model,
-                prompt=prompt,
-                images=reference_images,
-                n=1,
-                size="1024x1024",
-                quality=request.quality,
-                upscale=False,
-                response_format="b64_json",
-                base_url=None,
-                message_as_error=True,
-                text_upscale_workflow_disabled=True,
-            )
-            refine_outputs = _generate_single_image(refine_request, output.index, output.total)
-            refine_data: list[dict[str, Any]] = []
-            for refine_output in refine_outputs:
-                if refine_output.kind == "result":
-                    refine_data.extend(refine_output.data)
-            if not refine_data:
-                raise RuntimeError("text upscale workflow returned no image")
-            final = format_image_result(
-                refine_data,
-                request.prompt,
-                request.response_format,
-                request.base_url,
-                int(time.time()),
-                model=request.model,
-                size=request.size,
-                quality=request.quality,
-                upscale=request.upscale,
-            )["data"]
-            if not final:
-                raise RuntimeError("text upscale workflow finalization returned no image")
-            applied_detail = {
-                "event": "image_text_upscale_workflow_applied",
-                "model": request.model,
-                "requested_size": request.size,
-                "quality": request.quality,
-                "index": output.index,
-            }
-            logger.info(applied_detail)
-            _write_image_workflow_log("图片文字增强完成", applied_detail)
-            updated.append(ImageOutput(
-                kind="result",
-                model=output.model,
-                index=output.index,
-                total=output.total,
-                created=int(time.time()),
-                data=final,
-                account_email=output.account_email,
-                conversation_id=output.conversation_id,
-            ))
-        except Exception as exc:
-            failed_detail = {
-                "event": "image_text_upscale_workflow_failed",
-                "model": request.model,
-                "requested_size": request.size,
-                "quality": request.quality,
-                "index": output.index,
-                "error": str(exc)[:300],
-            }
-            logger.warning(failed_detail)
-            _write_image_workflow_log("图片文字增强失败", failed_detail)
-            updated.append(output)
-    return updated
 
 
 def _generate_single_image(
@@ -1687,7 +1464,6 @@ def _generate_single_image(
                 return _attach_route_attempts_to_outputs(outputs, route_meta, route_attempts)
             account_service.mark_image_result(token, True)
             _mark_latest_route_attempt(route_attempts, "success")
-            outputs = _apply_text_upscale_workflow(routed_request, outputs)
             return _attach_route_attempts_to_outputs(outputs, route_meta, route_attempts)
         except ImagePollTimeoutError as exc:
             account_service.mark_image_result(token, False)

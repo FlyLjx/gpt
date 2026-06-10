@@ -51,23 +51,6 @@ DEFAULT_CHAT_COMPLETION_CACHE = {
     "drop_assistant_history": False,
 }
 
-DEFAULT_COMFYUI_TEXT_UPSCALE = {
-    "enabled": False,
-    "base_url": "",
-    "workflow_path": "",
-    "input_image_node": "",
-    "input_image_field": "image",
-    "positive_prompt_node": "",
-    "positive_prompt_field": "text",
-    "size_node": "",
-    "width_field": "width",
-    "height_field": "height",
-    "output_node": "",
-    "timeout_secs": 300,
-    "poll_interval_secs": 2,
-    "fallback_to_openai": True,
-}
-
 DEFAULT_BARK_NOTIFICATION = {
     "enabled": False,
     "server_url": "https://api.day.app",
@@ -86,6 +69,15 @@ DEFAULT_BARK_NOTIFICATION = {
 DEFAULT_NOTIFICATION_SETTINGS = {
     "bark": DEFAULT_BARK_NOTIFICATION,
 }
+
+LEGACY_UPSCALE_CONFIG_KEYS = (
+    "image_upscale_enabled",
+    "image_upscale_target_long_edge",
+    "image_upscale_format",
+    "image_upscale_quality",
+    "image_text_upscale_workflow_enabled",
+    "comfyui_text_upscale",
+)
 
 
 def _normalize_timezone(value: object) -> str:
@@ -265,27 +257,6 @@ def _normalize_chat_completion_cache_settings(value: object) -> dict[str, object
     }
 
 
-def _normalize_comfyui_text_upscale_settings(value: object) -> dict[str, object]:
-    source = value if isinstance(value, dict) else {}
-    base_url = str(source.get("base_url") or "").strip().rstrip("/")
-    return {
-        "enabled": _normalize_bool(source.get("enabled"), bool(DEFAULT_COMFYUI_TEXT_UPSCALE["enabled"])),
-        "base_url": base_url,
-        "workflow_path": str(source.get("workflow_path") or "").strip(),
-        "input_image_node": str(source.get("input_image_node") or "").strip(),
-        "input_image_field": str(source.get("input_image_field") or DEFAULT_COMFYUI_TEXT_UPSCALE["input_image_field"]).strip() or "image",
-        "positive_prompt_node": str(source.get("positive_prompt_node") or "").strip(),
-        "positive_prompt_field": str(source.get("positive_prompt_field") or DEFAULT_COMFYUI_TEXT_UPSCALE["positive_prompt_field"]).strip() or "text",
-        "size_node": str(source.get("size_node") or "").strip(),
-        "width_field": str(source.get("width_field") or DEFAULT_COMFYUI_TEXT_UPSCALE["width_field"]).strip() or "width",
-        "height_field": str(source.get("height_field") or DEFAULT_COMFYUI_TEXT_UPSCALE["height_field"]).strip() or "height",
-        "output_node": str(source.get("output_node") or "").strip(),
-        "timeout_secs": _normalize_positive_int(source.get("timeout_secs"), int(DEFAULT_COMFYUI_TEXT_UPSCALE["timeout_secs"]), 10),
-        "poll_interval_secs": _normalize_positive_int(source.get("poll_interval_secs"), int(DEFAULT_COMFYUI_TEXT_UPSCALE["poll_interval_secs"]), 1),
-        "fallback_to_openai": _normalize_bool(source.get("fallback_to_openai"), bool(DEFAULT_COMFYUI_TEXT_UPSCALE["fallback_to_openai"])),
-    }
-
-
 def _normalize_bark_notification_settings(value: object) -> dict[str, object]:
     source = value if isinstance(value, dict) else {}
     server_url = str(source.get("server_url") or DEFAULT_BARK_NOTIFICATION["server_url"]).strip().rstrip("/")
@@ -344,20 +315,6 @@ def _validate_image_storage_settings(settings: dict[str, object]) -> None:
         raise ValueError("启用 WebDAV 图片存储后必须填写 WebDAV URL")
     if not str(settings.get("webdav_password") or "").strip():
         raise ValueError("启用 WebDAV 图片存储后必须填写 WebDAV 密码")
-
-
-def _validate_comfyui_text_upscale_settings(settings: dict[str, object]) -> None:
-    if not _normalize_bool(settings.get("enabled"), False):
-        return
-    required = {
-        "base_url": "ComfyUI 地址",
-        "workflow_path": "ComfyUI workflow JSON 路径",
-        "input_image_node": "输入图片节点 ID",
-        "positive_prompt_node": "正向提示词节点 ID",
-    }
-    for key, label in required.items():
-        if not str(settings.get(key) or "").strip():
-            raise ValueError(f"启用 ComfyUI 文字增强后必须填写{label}")
 
 
 def _validate_notification_settings(settings: dict[str, object]) -> None:
@@ -522,39 +479,6 @@ class ConfigStore:
         return bool(value)
 
     @property
-    def image_upscale_enabled(self) -> bool:
-        value = self.data.get("image_upscale_enabled", False)
-        if isinstance(value, str):
-            return value.strip().lower() in {"1", "true", "yes", "on"}
-        return bool(value)
-
-    @property
-    def image_upscale_target_long_edge(self) -> int:
-        try:
-            return min(4096, max(1024, int(self.data.get("image_upscale_target_long_edge", 4096))))
-        except (TypeError, ValueError):
-            return 4096
-
-    @property
-    def image_upscale_format(self) -> str:
-        value = str(self.data.get("image_upscale_format", "jpeg") or "jpeg").strip().lower()
-        return value if value in {"jpeg", "png", "webp"} else "jpeg"
-
-    @property
-    def image_upscale_quality(self) -> int:
-        try:
-            return min(95, max(50, int(self.data.get("image_upscale_quality", 95))))
-        except (TypeError, ValueError):
-            return 95
-
-    @property
-    def image_text_upscale_workflow_enabled(self) -> bool:
-        value = self.data.get("image_text_upscale_workflow_enabled", False)
-        if isinstance(value, str):
-            return value.strip().lower() in {"1", "true", "yes", "on"}
-        return bool(value)
-
-    @property
     def image_settle_enabled(self) -> bool:
         """图片二次确认机制：找到 file_ids 后等待一段时间再次确认。"""
         value = self.data.get("image_settle_enabled", True)
@@ -700,6 +624,8 @@ class ConfigStore:
 
     def get(self) -> dict[str, object]:
         data = dict(self.data)
+        for key in LEGACY_UPSCALE_CONFIG_KEYS:
+            data.pop(key, None)
         data["refresh_account_interval_minute"] = self.refresh_account_interval_minute
         data["timezone"] = self.timezone
         data["refresh_account_concurrency"] = self.refresh_account_concurrency
@@ -710,11 +636,6 @@ class ConfigStore:
         data["image_account_concurrency"] = self.image_account_concurrency
         data["image_account_precheck_interval_minutes"] = self.image_account_precheck_interval_minutes
         data["image_parallel_generation"] = self.image_parallel_generation
-        data["image_upscale_enabled"] = self.image_upscale_enabled
-        data["image_upscale_target_long_edge"] = self.image_upscale_target_long_edge
-        data["image_upscale_format"] = self.image_upscale_format
-        data["image_upscale_quality"] = self.image_upscale_quality
-        data["image_text_upscale_workflow_enabled"] = self.image_text_upscale_workflow_enabled
         data["auto_remove_invalid_accounts"] = self.auto_remove_invalid_accounts
         data["auto_remove_rate_limited_accounts"] = self.auto_remove_rate_limited_accounts
         data["auto_relogin_after_refresh"] = self.auto_relogin_after_refresh
@@ -730,7 +651,6 @@ class ConfigStore:
         data["backup"] = self.get_backup_settings()
         data["image_storage"] = self.get_image_storage_settings()
         data["chat_completion_cache"] = self.get_chat_completion_cache_settings()
-        data["comfyui_text_upscale"] = self.get_comfyui_text_upscale_settings()
         data["notifications"] = self.get_notification_settings()
         data.pop("auth-key", None)
         return data
@@ -741,6 +661,8 @@ class ConfigStore:
     def update(self, data: dict[str, object]) -> dict[str, object]:
         next_data = dict(self.data)
         next_data.update(dict(data or {}))
+        for key in LEGACY_UPSCALE_CONFIG_KEYS:
+            next_data.pop(key, None)
         if "timezone" in next_data:
             next_data["timezone"] = _normalize_timezone(next_data.get("timezone"))
         if "backup" in next_data:
@@ -752,11 +674,6 @@ class ConfigStore:
             next_data["chat_completion_cache"] = _normalize_chat_completion_cache_settings(
                 next_data.get("chat_completion_cache")
             )
-        if "comfyui_text_upscale" in next_data:
-            next_data["comfyui_text_upscale"] = _normalize_comfyui_text_upscale_settings(
-                next_data.get("comfyui_text_upscale")
-            )
-            _validate_comfyui_text_upscale_settings(next_data["comfyui_text_upscale"])
         if "notifications" in next_data:
             next_data["notifications"] = _normalize_notification_settings(next_data.get("notifications"))
             _validate_notification_settings(next_data["notifications"])
@@ -774,9 +691,6 @@ class ConfigStore:
 
     def get_chat_completion_cache_settings(self) -> dict[str, object]:
         return _normalize_chat_completion_cache_settings(self.data.get("chat_completion_cache"))
-
-    def get_comfyui_text_upscale_settings(self) -> dict[str, object]:
-        return _normalize_comfyui_text_upscale_settings(self.data.get("comfyui_text_upscale"))
 
     def get_notification_settings(self) -> dict[str, object]:
         return _normalize_notification_settings(self.data.get("notifications"))

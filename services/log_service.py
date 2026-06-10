@@ -21,7 +21,7 @@ from utils.helper import anthropic_sse_stream, sse_json_stream
 LOG_TYPE_CALL = "call"
 LOG_TYPE_ACCOUNT = "account"
 INTERNAL_RESPONSE_KEYS = {"_account_email", "_conversation_id", "_b64_json", "_image_route", "_image_route_attempts"}
-IMAGE_REQUEST_PARAM_KEYS = ("n", "size", "quality", "upscale", "response_format", "stream")
+IMAGE_REQUEST_PARAM_KEYS = ("n", "size", "quality", "response_format", "stream")
 IMAGE_ROUTE_DETAIL_KEYS = (
     "account_type",
     "account_source_type",
@@ -455,13 +455,6 @@ def _collect_image_result_meta(value: object) -> dict[str, Any]:
         items = [item for item in value if isinstance(item, dict)]
     if not items:
         return meta
-    if any(bool(item.get("upscaled")) for item in items):
-        meta["upscaled"] = True
-    for key in ("original_width", "original_height", "width", "height"):
-        for item in items:
-            if item.get(key) is not None:
-                meta[key] = item.get(key)
-                break
     return meta
 
 

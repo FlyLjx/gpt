@@ -139,27 +139,6 @@ export type SettingsConfig = {
   image_account_concurrency?: number | string;
   image_account_precheck_interval_minutes?: number | string;
   image_parallel_generation?: boolean;
-  image_upscale_enabled?: boolean;
-  image_upscale_target_long_edge?: number | string;
-  image_upscale_format?: string;
-  image_upscale_quality?: number | string;
-  image_text_upscale_workflow_enabled?: boolean;
-  comfyui_text_upscale?: {
-    enabled?: boolean;
-    base_url?: string;
-    workflow_path?: string;
-    input_image_node?: string;
-    input_image_field?: string;
-    positive_prompt_node?: string;
-    positive_prompt_field?: string;
-    size_node?: string;
-    width_field?: string;
-    height_field?: string;
-    output_node?: string;
-    timeout_secs?: number | string;
-    poll_interval_secs?: number | string;
-    fallback_to_openai?: boolean;
-  };
   image_settle_enabled?: boolean;
   image_check_before_hit_enabled?: boolean;
   image_settle_secs?: number | string;
@@ -444,12 +423,6 @@ export async function updateAccount(
   });
 }
 
-function shouldAutoUpscaleImage(model?: string, size?: string) {
-  void model;
-  void size;
-  return false;
-}
-
 export async function generateImage(prompt: string, model?: ImageModel, size?: string, quality = "auto") {
   return httpRequest<ImageResponse>(
     "/v1/images/generations",
@@ -460,7 +433,6 @@ export async function generateImage(prompt: string, model?: ImageModel, size?: s
         ...(model ? { model } : {}),
         ...(size ? { size } : {}),
         quality,
-        upscale: shouldAutoUpscaleImage(model, size),
         n: 1,
         response_format: "b64_json",
       },
@@ -483,7 +455,6 @@ export async function editImage(files: File | File[], prompt: string, model?: Im
     formData.append("size", size);
   }
   formData.append("quality", quality);
-  formData.append("upscale", shouldAutoUpscaleImage(model, size) ? "true" : "false");
   formData.append("n", "1");
 
   return httpRequest<ImageResponse>(
@@ -504,7 +475,6 @@ export async function createImageGenerationTask(clientTaskId: string, prompt: st
       ...(model ? { model } : {}),
       ...(size ? { size } : {}),
       quality,
-      upscale: shouldAutoUpscaleImage(model, size),
     },
   });
 }
@@ -532,7 +502,6 @@ export async function createImageEditTask(
     formData.append("size", size);
   }
   formData.append("quality", quality);
-  formData.append("upscale", shouldAutoUpscaleImage(model, size) ? "true" : "false");
 
   return httpRequest<ImageTask>("/api/image-tasks/edits", {
     method: "POST",
