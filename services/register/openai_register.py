@@ -3,7 +3,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import random
+import re
 import secrets
 import string
 import threading
@@ -12,7 +14,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from curl_cffi import requests
 
@@ -29,13 +31,19 @@ config = {
         "providers": [],
     },
     "proxy": "",
+    "flaresolverr": {
+        "enabled": False,
+        "url": "",
+        "max_timeout_ms": 60000,
+        "preload": True,
+    },
     "total": 10,
     "threads": 3,
 }
 register_config_file = base_dir.parents[1] / "data" / "register.json"
 try:
     saved_config = json.loads(register_config_file.read_text(encoding="utf-8"))
-    config.update({key: saved_config[key] for key in ("mail", "proxy", "total", "threads") if key in saved_config})
+    config.update({key: saved_config[key] for key in ("mail", "proxy", "flaresolverr", "total", "threads") if key in saved_config})
 except Exception:
     pass
 
@@ -204,6 +212,143 @@ def _is_cloudflare_challenge(resp) -> bool:
     )
 
 
+def _truthy(value: Any, default: bool = False) -> bool:
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    if value is None:
+        return default
+    return bool(value)
+
+
+def _normalize_flaresolverr_config(value: Any) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    api_url = str(source.get("url") or "").strip().rstrip("/")
+    try:
+        max_timeout_ms = max(1000, int(source.get("max_timeout_ms") or 60000))
+    except (TypeError, ValueError):
+        max_timeout_ms = 60000
+    return {
+        "enabled": _truthy(source.get("enabled"), False) and bool(api_url),
+        "url": api_url,
+        "max_timeout_ms": max_timeout_ms,
+        "preload": _truthy(source.get("preload"), True),
+    }
+
+
+def _env_flaresolverr_config() -> dict[str, Any]:
+    enabled = os.getenv("CHATGPT2API_FLARESOLVERR_ENABLED")
+    url = os.getenv("CHATGPT2API_FLARESOLVERR_URL") or os.getenv("FLARESOLVERR_URL")
+    max_timeout_ms = os.getenv("CHATGPT2API_FLARESOLVERR_MAX_TIMEOUT_MS")
+    preload = os.getenv("CHATGPT2API_FLARESOLVERR_PRELOAD")
+    if enabled is None and url is None and max_timeout_ms is None and preload is None:
+        return {}
+    return {
+        key: value
+        for key, value in {
+            "enabled": enabled,
+            "url": url,
+            "max_timeout_ms": max_timeout_ms,
+            "preload": preload,
+        }.items()
+        if value is not None
+    }
+
+
+def _current_flaresolverr_config() -> dict[str, Any]:
+    raw = config.get("flaresolverr")
+    try:
+        saved = json.loads(register_config_file.read_text(encoding="utf-8"))
+        if isinstance(saved, dict) and "flaresolverr" in saved:
+            raw = saved.get("flaresolverr")
+    except Exception:
+        pass
+    merged = dict(raw) if isinstance(raw, dict) else {}
+    merged.update(_env_flaresolverr_config())
+    return _normalize_flaresolverr_config(merged)
+
+
+def _flaresolverr_endpoint(api_url: str) -> str:
+    return api_url if api_url.endswith("/v1") else f"{api_url}/v1"
+
+
+def _split_proxy_for_flaresolverr(proxy: str) -> dict[str, str] | None:
+    candidate = str(proxy or "").strip()
+    if not candidate:
+        return None
+    parsed = urlparse(candidate)
+    if not parsed.scheme or not parsed.netloc:
+        return {"url": candidate}
+    result: dict[str, str] = {"url": candidate}
+    if parsed.username or parsed.password:
+        host = parsed.hostname or ""
+        if parsed.port:
+            host = f"{host}:{parsed.port}"
+        result["url"] = urlunparse((parsed.scheme, host, parsed.path or "", "", parsed.query or "", ""))
+        result["username"] = parsed.username or ""
+        result["password"] = parsed.password or ""
+    return result
+
+
+def _sec_ch_ua_from_user_agent(value: str) -> str:
+    match = re.search(r"(?:Chrome|Chromium)/(\d+)", value or "")
+    major = match.group(1) if match else "145"
+    return f'"Google Chrome";v="{major}", "Not?A_Brand";v="8", "Chromium";v="{major}"'
+
+
+def _apply_flaresolverr_solution(session: requests.Session, solution: dict[str, Any]) -> tuple[int, str]:
+    cookies = solution.get("cookies") if isinstance(solution, dict) else []
+    applied = 0
+    if isinstance(cookies, list):
+        for item in cookies:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            value = str(item.get("value") or "")
+            if not name:
+                continue
+            kwargs: dict[str, str] = {}
+            domain = str(item.get("domain") or "").strip()
+            path = str(item.get("path") or "").strip() or "/"
+            if domain:
+                kwargs["domain"] = domain
+            if path:
+                kwargs["path"] = path
+            session.cookies.set(name, value, **kwargs)
+            applied += 1
+    user_agent_value = str(solution.get("userAgent") or "").strip() if isinstance(solution, dict) else ""
+    if user_agent_value:
+        session.headers.update({"User-Agent": user_agent_value})
+    return applied, user_agent_value
+
+
+def solve_with_flaresolverr(session: requests.Session, target_url: str, proxy: str = "") -> tuple[int, str]:
+    settings = _current_flaresolverr_config()
+    if not settings["enabled"]:
+        return 0, ""
+    payload: dict[str, Any] = {
+        "cmd": "request.get",
+        "url": target_url,
+        "maxTimeout": settings["max_timeout_ms"],
+    }
+    proxy_payload = _split_proxy_for_flaresolverr(proxy)
+    if proxy_payload:
+        payload["proxy"] = proxy_payload
+    timeout = max(10.0, float(settings["max_timeout_ms"]) / 1000.0 + 10.0)
+    resp = requests.post(_flaresolverr_endpoint(settings["url"]), json=payload, timeout=timeout, verify=False)
+    data = _response_json(resp)
+    if resp.status_code != 200:
+        raise RuntimeError(f"flaresolverr_http_{resp.status_code}: {_response_debug_detail(resp)}")
+    if str(data.get("status") or "").lower() != "ok":
+        message = str(data.get("message") or data.get("error") or "unknown flaresolverr error")
+        raise RuntimeError(f"flaresolverr_failed: {message}")
+    solution = data.get("solution") if isinstance(data.get("solution"), dict) else {}
+    return _apply_flaresolverr_solution(session, solution)
+
+
 def create_mailbox(username: str | None = None) -> dict:
     return mail_provider.create_mailbox(config["mail"], username)
 
@@ -215,9 +360,10 @@ def wait_for_code(mailbox: dict) -> str | None:
 from utils.sentinel import SentinelTokenGenerator, build_sentinel_token as _build_sentinel_token_tuple  # noqa: F401
 
 
-def build_sentinel_token(session: requests.Session, device_id: str, flow: str) -> str:
+def build_sentinel_token(session: requests.Session, device_id: str, flow: str, user_agent_override: str = "") -> str:
     """请求 sentinel token，返回 sentinel header 字符串（兼容旧接口）。"""
-    sentinel_val, _oai_sc_val = _build_sentinel_token_tuple(session, device_id, flow, user_agent=user_agent, sec_ch_ua=sec_ch_ua)
+    ua = str(user_agent_override or user_agent)
+    sentinel_val, _oai_sc_val = _build_sentinel_token_tuple(session, device_id, flow, user_agent=ua, sec_ch_ua=_sec_ch_ua_from_user_agent(ua))
     return sentinel_val
 
 
@@ -239,15 +385,18 @@ def request_with_local_retry(session: requests.Session, method: str, url: str, r
     return None, last_error
 
 
-def validate_otp(session: requests.Session, device_id: str, code: str):
+def validate_otp(session: requests.Session, device_id: str, code: str, user_agent_override: str = ""):
     headers = dict(common_headers)
+    ua = str(user_agent_override or user_agent)
+    headers["user-agent"] = ua
+    headers["sec-ch-ua"] = _sec_ch_ua_from_user_agent(ua)
     headers["referer"] = f"{auth_base}/email-verification"
     headers["oai-device-id"] = device_id
     headers.update(_make_trace_headers())
     resp, error = request_with_local_retry(session, "post", f"{auth_base}/api/accounts/email-otp/validate", json={"code": code}, headers=headers, verify=False)
     if resp is not None and resp.status_code == 200:
         return resp, ""
-    headers["openai-sentinel-token"] = build_sentinel_token(session, device_id, "authorize_continue")
+    headers["openai-sentinel-token"] = build_sentinel_token(session, device_id, "authorize_continue", ua)
     resp, error = request_with_local_retry(session, "post", f"{auth_base}/api/accounts/email-otp/validate", json={"code": code}, headers=headers, verify=False)
     return resp, error
 
@@ -265,7 +414,8 @@ def extract_oauth_callback_params_from_url(url: str) -> dict[str, str] | None:
     return {"code": code, "state": str((params.get("state") or [""])[0]).strip(), "scope": str((params.get("scope") or [""])[0]).strip()}
 
 
-def request_platform_oauth_token(session: requests.Session, code: str, code_verifier: str) -> dict | None:
+def request_platform_oauth_token(session: requests.Session, code: str, code_verifier: str, user_agent_override: str = "") -> dict | None:
+    ua = str(user_agent_override or user_agent)
     headers = {
         "accept": "*/*",
         "accept-language": "zh-CN,zh;q=0.9",
@@ -276,13 +426,13 @@ def request_platform_oauth_token(session: requests.Session, code: str, code_veri
         "pragma": "no-cache",
         "priority": "u=1, i",
         "referer": f"{platform_base}/",
-        "sec-ch-ua": sec_ch_ua,
+        "sec-ch-ua": _sec_ch_ua_from_user_agent(ua),
         "sec-ch-ua-mobile": "?0",
         "sec-ch-ua-platform": '"Windows"',
         "sec-fetch-dest": "empty",
         "sec-fetch-mode": "cors",
         "sec-fetch-site": "same-site",
-        "user-agent": user_agent,
+        "user-agent": ua,
     }
     resp = session.post(
         f"{auth_base}/api/accounts/oauth/token",
@@ -305,26 +455,45 @@ def request_platform_oauth_token(session: requests.Session, code: str, code_veri
 
 class PlatformRegistrar:
     def __init__(self, proxy: str = "") -> None:
+        self.proxy = str(proxy or "").strip()
         self.session = create_session(proxy)
         self.device_id = str(uuid.uuid4())
         self.code_verifier = ""
         self.platform_auth_code = ""
+        self.user_agent = user_agent
+        self.sec_ch_ua = sec_ch_ua
 
     def close(self) -> None:
         self.session.close()
 
     def _navigate_headers(self, referer: str = "") -> dict[str, str]:
         headers = dict(navigate_headers)
+        headers["user-agent"] = self.user_agent
+        headers["sec-ch-ua"] = self.sec_ch_ua
         if referer:
             headers["referer"] = referer
         return headers
 
     def _json_headers(self, referer: str) -> dict[str, str]:
         headers = dict(common_headers)
+        headers["user-agent"] = self.user_agent
+        headers["sec-ch-ua"] = self.sec_ch_ua
         headers["referer"] = referer
         headers["oai-device-id"] = self.device_id
         headers.update(_make_trace_headers())
         return headers
+
+    def _solve_with_flaresolverr(self, target_url: str, index: int) -> bool:
+        settings = _current_flaresolverr_config()
+        if not settings["enabled"]:
+            return False
+        step(index, "开始 FlareSolverr 预热 Cloudflare")
+        cookie_count, solved_user_agent = solve_with_flaresolverr(self.session, target_url, self.proxy)
+        if solved_user_agent:
+            self.user_agent = solved_user_agent
+            self.sec_ch_ua = _sec_ch_ua_from_user_agent(solved_user_agent)
+        step(index, f"FlareSolverr 完成，导入 {cookie_count} 个 cookie")
+        return True
 
     def _platform_authorize(self, email: str, index: int) -> None:
         step(index, "开始 platform authorize")
@@ -349,12 +518,20 @@ class PlatformRegistrar:
             "code_challenge_method": "S256",
             "auth0Client": platform_auth0_client,
         }
-        resp, error = request_with_local_retry(self.session, "get", f"{auth_base}/api/accounts/authorize?{urlencode(params)}", headers=self._navigate_headers(f"{platform_base}/"), allow_redirects=True, verify=False)
+        authorize_url = f"{auth_base}/api/accounts/authorize?{urlencode(params)}"
+        flaresolverr_settings = _current_flaresolverr_config()
+        solved_with_flaresolverr = False
+        if flaresolverr_settings["enabled"] and flaresolverr_settings["preload"]:
+            solved_with_flaresolverr = self._solve_with_flaresolverr(authorize_url, index)
+        resp, error = request_with_local_retry(self.session, "get", authorize_url, headers=self._navigate_headers(f"{platform_base}/"), allow_redirects=True, verify=False)
+        if _is_cloudflare_challenge(resp) and flaresolverr_settings["enabled"] and not solved_with_flaresolverr:
+            self._solve_with_flaresolverr(authorize_url, index)
+            resp, error = request_with_local_retry(self.session, "get", authorize_url, headers=self._navigate_headers(f"{platform_base}/"), allow_redirects=True, verify=False)
         if resp is None or resp.status_code != 200:
             err = _response_json(resp).get("error", {}) if resp is not None else {}
             detail = f": {err.get('code', '')} - {err.get('message', '')}".strip(" -") if err else ""
             if _is_cloudflare_challenge(resp):
-                raise RuntimeError("被 Cloudflare 拦截，请更换 IP 重试")
+                raise RuntimeError("被 Cloudflare 拦截，请配置/检查 FlareSolverr 或更换 IP 重试")
             debug = _response_debug_detail(resp)
             status = getattr(resp, "status_code", "unknown")
             raise RuntimeError(error or f"platform_authorize_http_{status}{detail}, {debug}")
@@ -363,7 +540,7 @@ class PlatformRegistrar:
     def _register_user(self, email: str, password: str, index: int) -> None:
         step(index, "开始提交注册密码")
         headers = self._json_headers(f"{auth_base}/create-account/password")
-        headers["openai-sentinel-token"] = build_sentinel_token(self.session, self.device_id, "username_password_create")
+        headers["openai-sentinel-token"] = build_sentinel_token(self.session, self.device_id, "username_password_create", self.user_agent)
         resp, error = request_with_local_retry(self.session, "post", f"{auth_base}/api/accounts/user/register", json={"username": email, "password": password}, headers=headers, verify=False)
         if resp is None or resp.status_code != 200:
             data = _response_json(resp) if resp is not None else {}
@@ -382,7 +559,7 @@ class PlatformRegistrar:
 
     def _validate_otp(self, code: str, index: int) -> None:
         step(index, f"开始校验验证码 {code}")
-        resp, error = validate_otp(self.session, self.device_id, code)
+        resp, error = validate_otp(self.session, self.device_id, code, self.user_agent)
         if resp is None or resp.status_code != 200:
             body = ""
             try:
@@ -395,7 +572,7 @@ class PlatformRegistrar:
     def _create_account(self, name: str, birthdate: str, index: int) -> None:
         step(index, "开始创建账号资料")
         headers = self._json_headers(f"{auth_base}/about-you")
-        headers["openai-sentinel-token"] = build_sentinel_token(self.session, self.device_id, "oauth_create_account")
+        headers["openai-sentinel-token"] = build_sentinel_token(self.session, self.device_id, "oauth_create_account", self.user_agent)
         resp, error = request_with_local_retry(self.session, "post", f"{auth_base}/api/accounts/create_account", json={"name": name, "birthdate": birthdate}, headers=headers, verify=False)
         if resp is None or resp.status_code not in (200, 302):
             data = _response_json(resp) if resp is not None else {}
@@ -410,7 +587,7 @@ class PlatformRegistrar:
 
     def _exchange_registered_tokens(self, index: int) -> dict:
         step(index, "开始换 token")
-        tokens = request_platform_oauth_token(self.session, self.platform_auth_code, self.code_verifier)
+        tokens = request_platform_oauth_token(self.session, self.platform_auth_code, self.code_verifier, self.user_agent)
         if not tokens:
             raise RuntimeError("token换取失败")
         step(index, "token 换取完成")

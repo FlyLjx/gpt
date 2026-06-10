@@ -1,4 +1,15 @@
 services:
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: chatgpt2api-flaresolverr-local
+    restart: unless-stopped
+    environment:
+      LOG_LEVEL: info
+      LOG_HTML: "false"
+      CAPTCHA_SOLVER: none
+      TZ: Asia/Shanghai
+    shm_size: 2gb
+
   app:
     build:
       context: .
@@ -7,6 +18,9 @@ services:
         INSTALL_SYSTEM_DEPS: "0"
     image: chatgpt2api:local
     container_name: chatgpt2api-local
+    depends_on:
+      flaresolverr:
+        condition: service_started
     ports:
       - "8000:80"
     volumes:
@@ -16,6 +30,10 @@ services:
       TZ: Asia/Shanghai
       STORAGE_BACKEND: sqlite
       DATABASE_URL: sqlite:////app/data/accounts.db
+      CHATGPT2API_FLARESOLVERR_ENABLED: "true"
+      CHATGPT2API_FLARESOLVERR_URL: http://flaresolverr:8191
+      CHATGPT2API_FLARESOLVERR_MAX_TIMEOUT_MS: "60000"
+      CHATGPT2API_FLARESOLVERR_PRELOAD: "true"
     # 存储后端配置 (可选值: json, sqlite, postgres, git)
     # environment:
     #   STORAGE_BACKEND: json
