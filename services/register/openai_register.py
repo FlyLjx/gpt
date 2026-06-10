@@ -299,6 +299,33 @@ def _sec_ch_ua_from_user_agent(value: str) -> str:
     return f'"Google Chrome";v="{major}", "Not?A_Brand";v="8", "Chromium";v="{major}"'
 
 
+def _solution_cookie_names(solution: dict[str, Any]) -> list[str]:
+    cookies = solution.get("cookies") if isinstance(solution, dict) else []
+    if not isinstance(cookies, list):
+        return []
+    names = []
+    for item in cookies:
+        if isinstance(item, dict):
+            name = str(item.get("name") or "").strip()
+            if name and name not in names:
+                names.append(name)
+    return names
+
+
+def _set_cookie_variants(session: requests.Session, name: str, value: str, domain: str, path: str) -> None:
+    domains = [domain] if domain else []
+    if domain.startswith("."):
+        domains.append(domain.lstrip("."))
+    if domain in {".openai.com", "openai.com", ".auth.openai.com", "auth.openai.com"}:
+        domains.extend([".openai.com", "openai.com", "auth.openai.com"])
+    domains = [item for idx, item in enumerate(domains) if item and item not in domains[:idx]]
+    if not domains:
+        session.cookies.set(name, value, path=path)
+        return
+    for candidate in domains:
+        session.cookies.set(name, value, domain=candidate, path=path)
+
+
 def _apply_flaresolverr_solution(session: requests.Session, solution: dict[str, Any]) -> tuple[int, str]:
     cookies = solution.get("cookies") if isinstance(solution, dict) else []
     applied = 0
@@ -310,14 +337,9 @@ def _apply_flaresolverr_solution(session: requests.Session, solution: dict[str, 
             value = str(item.get("value") or "")
             if not name:
                 continue
-            kwargs: dict[str, str] = {}
             domain = str(item.get("domain") or "").strip()
             path = str(item.get("path") or "").strip() or "/"
-            if domain:
-                kwargs["domain"] = domain
-            if path:
-                kwargs["path"] = path
-            session.cookies.set(name, value, **kwargs)
+            _set_cookie_variants(session, name, value, domain, path)
             applied += 1
     user_agent_value = str(solution.get("userAgent") or "").strip() if isinstance(solution, dict) else ""
     if user_agent_value:
@@ -346,6 +368,11 @@ def solve_with_flaresolverr(session: requests.Session, target_url: str, proxy: s
         message = str(data.get("message") or data.get("error") or "unknown flaresolverr error")
         raise RuntimeError(f"flaresolverr_failed: {message}")
     solution = data.get("solution") if isinstance(data.get("solution"), dict) else {}
+    solution_status = int(solution.get("status") or 0) if isinstance(solution, dict) else 0
+    if solution_status >= 400:
+        solution_url = str(solution.get("url") or "")[:300]
+        cookie_names = ",".join(_solution_cookie_names(solution))
+        raise RuntimeError(f"flaresolverr_solution_http_{solution_status}: url={solution_url}, cookies={cookie_names}")
     return _apply_flaresolverr_solution(session, solution)
 
 
@@ -524,8 +551,10 @@ class PlatformRegistrar:
         if flaresolverr_settings["enabled"] and flaresolverr_settings["preload"]:
             solved_with_flaresolverr = self._solve_with_flaresolverr(authorize_url, index)
         resp, error = request_with_local_retry(self.session, "get", authorize_url, headers=self._navigate_headers(f"{platform_base}/"), allow_redirects=True, verify=False)
-        if _is_cloudflare_challenge(resp) and flaresolverr_settings["enabled"] and not solved_with_flaresolverr:
-            self._solve_with_flaresolverr(authorize_url, index)
+        if _is_cloudflare_challenge(resp) and flaresolverr_settings["enabled"]:
+            retry_url = str(getattr(resp, "url", "") or authorize_url)
+            step(index, "FlareSolverr 预热后仍被 Cloudflare 拦截，重新求解并重试", "yellow")
+            self._solve_with_flaresolverr(retry_url, index)
             resp, error = request_with_local_retry(self.session, "get", authorize_url, headers=self._navigate_headers(f"{platform_base}/"), allow_redirects=True, verify=False)
         if resp is None or resp.status_code != 200:
             err = _response_json(resp).get("error", {}) if resp is not None else {}
