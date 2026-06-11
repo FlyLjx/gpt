@@ -32,6 +32,17 @@ class AccountService:
     _REFRESH_TOKEN_KEEPALIVE_BATCH_SIZE = 3
     _TOKEN_REFRESH_ERROR_BACKOFF_SECONDS = 5 * 60
     _CODEX_USAGE_PROBE_TTL_SECONDS = 10 * 60
+    _ACCOUNT_FAILURE_COOLDOWNS = {
+        "content_policy": 0,
+        "token_invalid": 0,
+        "rate_limited": 60 * 60,
+        "network": 90,
+        "timeout": 120,
+        "poll_timeout": 180,
+        "upstream": 180,
+        "no_image": 120,
+        "generic": 180,
+    }
     _OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
     _OAUTH_CLIENT_ID = "app_2SKx67EdpoN0G6j64rFvigXD"
     _OAUTH_USER_AGENT = (
@@ -376,6 +387,11 @@ class AccountService:
         normalized["success"] = max(0, self._int_or_default(normalized.get("success"), 0))
         normalized["fail"] = max(0, self._int_or_default(normalized.get("fail"), 0))
         normalized["invalid_count"] = max(0, self._int_or_default(normalized.get("invalid_count"), 0))
+        normalized["consecutive_failures"] = max(0, self._int_or_default(normalized.get("consecutive_failures"), 0))
+        normalized["last_error_type"] = str(normalized.get("last_error_type") or "").strip() or None
+        normalized["cooldown_until"] = normalized.get("cooldown_until") or None
+        normalized["last_success_at"] = normalized.get("last_success_at") or None
+        normalized["last_failure_at"] = normalized.get("last_failure_at") or None
         normalized["last_used_at"] = normalized.get("last_used_at")
         normalized["last_invalid_at"] = normalized.get("last_invalid_at") or None
         normalized["last_refresh_error"] = normalized.get("last_refresh_error") or None
@@ -556,6 +572,9 @@ class AccountService:
             next_item["last_invalid_at"] = None
             next_item["last_refresh_error"] = None
             next_item["last_refresh_error_at"] = None
+            next_item["consecutive_failures"] = 0
+            next_item["last_error_type"] = None
+            next_item["cooldown_until"] = None
 
             account = self._normalize_account(next_item)
             if account is None:
@@ -1062,6 +1081,62 @@ class AccountService:
         with self._lock:
             return list(self._accounts)
 
+    def _account_cooldown_active(self, account: dict, now: datetime | None = None) -> bool:
+        cooldown_until = self._parse_time(account.get("cooldown_until"))
+        if cooldown_until is None:
+            return False
+        return (now or datetime.now(timezone.utc)) < cooldown_until
+
+    def _account_dispatch_score(self, account: dict, *, now: datetime | None = None, image: bool = False) -> float:
+        now = now or datetime.now(timezone.utc)
+        success = int(account.get("success") or 0)
+        fail = int(account.get("fail") or 0)
+        total = success + fail
+        score = 100.0
+        if total:
+            score += 80.0 * (success / total)
+            score -= 45.0 * (fail / total)
+        else:
+            score += 20.0
+        consecutive_failures = int(account.get("consecutive_failures") or 0)
+        score -= min(80.0, consecutive_failures * 18.0)
+        if image:
+            if bool(account.get("image_quota_unknown")):
+                score += 10.0
+            else:
+                score += min(35.0, float(max(0, int(account.get("quota") or 0))) * 2.0)
+            token = str(account.get("access_token") or "")
+            score -= min(30.0, float(int(self._image_inflight.get(token, 0))) * 10.0)
+        last_failure_at = self._parse_time(account.get("last_failure_at"))
+        if last_failure_at is not None:
+            age = max(0.0, (now - last_failure_at).total_seconds())
+            if age < 15 * 60:
+                score -= 20.0 * (1.0 - age / (15 * 60))
+        last_success_at = self._parse_time(account.get("last_success_at"))
+        if last_success_at is not None:
+            age = max(0.0, (now - last_success_at).total_seconds())
+            if age < 60 * 60:
+                score += 10.0 * (1.0 - age / (60 * 60))
+        last_used_at = self._parse_time(account.get("last_used_at"))
+        if last_used_at is not None:
+            age = max(0.0, (now - last_used_at).total_seconds())
+            if age < 5 * 60:
+                score -= 12.0 * (1.0 - age / (5 * 60))
+        if str(account.get("status") or "") == "正常":
+            score += 8.0
+        return score
+
+    def _sort_candidate_tokens(self, tokens: list[str], *, image: bool = False) -> list[str]:
+        now = datetime.now(timezone.utc)
+
+        def sort_key(token: str) -> tuple[float, float, str]:
+            account = self._accounts.get(token) or {}
+            last_used_at = self._parse_time(account.get("last_used_at"))
+            last_used_ts = last_used_at.timestamp() if last_used_at is not None else 0.0
+            return (-self._account_dispatch_score(account, now=now, image=image), last_used_ts, token)
+
+        return sorted(tokens, key=sort_key)
+
     def _list_ready_candidate_tokens(
             self,
             excluded_tokens: set[str] | None = None,
@@ -1070,10 +1145,12 @@ class AccountService:
             plan_types: set[str] | tuple[str, ...] | None = None,
     ) -> list[str]:
         excluded = set(excluded_tokens or set())
+        now = datetime.now(timezone.utc)
         return [
             token
             for item in self._accounts.values()
             if self._is_image_account_available(item)
+               and not self._account_cooldown_active(item, now)
                and self._account_matches_plan_type(item, plan_type)
                and self._account_matches_any_plan_type(item, plan_types)
                and self._account_matches_source_type(item, source_type)
@@ -1111,7 +1188,7 @@ class AccountService:
                     )
                 tokens = self._list_available_candidate_tokens(excluded_tokens, plan_type, source_type, plan_types)
                 if tokens:
-                    access_token = tokens[self._index % len(tokens)]
+                    access_token = self._sort_candidate_tokens(tokens, image=True)[0]
                     self._index += 1
                     self._image_inflight[access_token] = int(self._image_inflight.get(access_token, 0)) + 1
                     return access_token
@@ -1178,16 +1255,18 @@ class AccountService:
     def get_text_access_token(self, excluded_tokens: set[str] | None = None) -> str:
         excluded = set(excluded_tokens or set())
         with self._lock:
+            now = datetime.now(timezone.utc)
             candidates = [
                 token
                 for account in self._accounts.values()
                 if account.get("status") not in {"禁用", "异常"}
+                   and not self._account_cooldown_active(account, now)
                    and (token := account.get("access_token") or "")
                    and token not in excluded
             ]
             if not candidates:
                 return ""
-            access_token = candidates[self._index % len(candidates)]
+            access_token = self._sort_candidate_tokens(candidates)[0]
             self._index += 1
         return self.refresh_access_token(access_token, event="get_text_access_token") or access_token
 
@@ -1201,11 +1280,113 @@ class AccountService:
                 return
             next_item = dict(current)
             next_item["last_used_at"] = local_time_text()
+            next_item["consecutive_failures"] = 0
+            next_item["last_error_type"] = None
+            next_item["cooldown_until"] = None
+            next_item["last_success_at"] = datetime.now(timezone.utc).isoformat()
             account = self._normalize_account(next_item)
             if account is None:
                 return
             self._accounts[access_token] = account
             self._save_accounts()
+
+    def mark_text_failure(self, access_token: str, error: object = "") -> dict | None:
+        return self.mark_account_failure(access_token, error)
+
+    @classmethod
+    def classify_account_error(cls, error: object = "") -> str:
+        text = str(error or "").lower()
+        if not text:
+            return "generic"
+        if any(item in text for item in ("content_policy", "policy", "moderation", "内容政策", "防护限制")):
+            return "content_policy"
+        if any(item in text for item in ("token invalid", "invalid access token", "invalidated", "unauthorized", "401")):
+            return "token_invalid"
+        if any(item in text for item in ("rate limit", "rate_limit", "429", "限流", "too many requests")):
+            return "rate_limited"
+        if any(item in text for item in ("curl: (28)", "timed out", "timeout", "超时")):
+            return "timeout"
+        if any(item in text for item in ("poll", "still processing", "result could not be retrieved")):
+            return "poll_timeout"
+        if any(item in text for item in ("tls", "ssl", "connection", "proxy", "curl: (35)", "curl: (56)", "network")):
+            return "network"
+        if any(item in text for item in ("no image", "text description", "upstream_text_reply")):
+            return "no_image"
+        if any(item in text for item in ("upstream", "502", "503", "504", "500")):
+            return "upstream"
+        return "generic"
+
+    @classmethod
+    def _cooldown_seconds_for_error(cls, error_type: str, consecutive_failures: int = 1) -> int:
+        base = int(cls._ACCOUNT_FAILURE_COOLDOWNS.get(error_type or "generic", cls._ACCOUNT_FAILURE_COOLDOWNS["generic"]))
+        if base <= 0:
+            return 0
+        multiplier = min(4, max(1, int(consecutive_failures or 1)))
+        return min(30 * 60, base * multiplier)
+
+    def mark_account_failure(self, access_token: str, error: object = "") -> dict | None:
+        if not access_token:
+            return None
+        error_type = self.classify_account_error(error)
+        now = datetime.now(timezone.utc)
+        with self._lock:
+            access_token = self._resolve_access_token_locked(access_token)
+            current = self._accounts.get(access_token)
+            if current is None:
+                return None
+            next_item = dict(current)
+            if error_type == "content_policy":
+                next_item["last_error_type"] = error_type
+                next_item["last_used_at"] = local_time_text()
+                account = self._normalize_account(next_item)
+                if account is None:
+                    return None
+                self._accounts[access_token] = account
+                self._save_accounts()
+                return dict(account)
+            consecutive = int(next_item.get("consecutive_failures") or 0) + 1
+            cooldown_seconds = self._cooldown_seconds_for_error(error_type, consecutive)
+            next_item["fail"] = int(next_item.get("fail") or 0) + 1
+            next_item["consecutive_failures"] = consecutive
+            next_item["last_error_type"] = error_type
+            next_item["last_failure_at"] = now.isoformat()
+            next_item["last_used_at"] = local_time_text()
+            if cooldown_seconds > 0:
+                next_item["cooldown_until"] = (now + timedelta(seconds=cooldown_seconds)).isoformat()
+            if error_type == "rate_limited":
+                next_item["status"] = "限流"
+                next_item["restore_at"] = next_item.get("restore_at") or next_item.get("cooldown_until")
+            account = self._normalize_account(next_item)
+            if account is None:
+                return None
+            self._accounts[access_token] = account
+            self._save_accounts()
+            self._image_slot_condition.notify_all()
+            return dict(account)
+
+    def mark_account_success(self, access_token: str, *, image: bool = False) -> dict | None:
+        if not access_token:
+            return None
+        now = datetime.now(timezone.utc)
+        with self._lock:
+            access_token = self._resolve_access_token_locked(access_token)
+            current = self._accounts.get(access_token)
+            if current is None:
+                return None
+            next_item = dict(current)
+            next_item["success"] = int(next_item.get("success") or 0) + 1
+            next_item["consecutive_failures"] = 0
+            next_item["last_error_type"] = None
+            next_item["cooldown_until"] = None
+            next_item["last_success_at"] = now.isoformat()
+            next_item["last_used_at"] = local_time_text()
+            account = self._normalize_account(next_item)
+            if account is None:
+                return None
+            self._accounts[access_token] = account
+            self._save_accounts()
+            self._image_slot_condition.notify_all()
+            return dict(account)
 
     def remove_invalid_token(self, access_token: str, event: str, quiet: bool = False) -> bool:
         if not config.auto_remove_invalid_accounts:
@@ -1389,6 +1570,9 @@ class AccountService:
             next_item["last_invalid_at"] = None
             next_item["last_refresh_error"] = None
             next_item["last_refresh_error_at"] = None
+            next_item["consecutive_failures"] = 0
+            next_item["last_error_type"] = None
+            next_item["cooldown_until"] = None
             account = self._normalize_account(next_item)
             if account is not None:
                 self._accounts[access_token] = account
@@ -1433,7 +1617,7 @@ class AccountService:
                 return False
         return True
 
-    def mark_image_result(self, access_token: str, success: bool) -> dict | None:
+    def mark_image_result(self, access_token: str, success: bool, error: object = "") -> dict | None:
         if not access_token:
             return None
         self.release_image_slot(access_token)
@@ -1447,6 +1631,10 @@ class AccountService:
             image_quota_unknown = bool(next_item.get("image_quota_unknown"))
             if success:
                 next_item["success"] = int(next_item.get("success") or 0) + 1
+                next_item["consecutive_failures"] = 0
+                next_item["last_error_type"] = None
+                next_item["cooldown_until"] = None
+                next_item["last_success_at"] = datetime.now(timezone.utc).isoformat()
                 if next_item.get("usage") is None:
                     next_item["usage"] = {
                         "source": "local_image_counter",
@@ -1469,7 +1657,28 @@ class AccountService:
                 elif next_item.get("status") == "限流":
                     next_item["status"] = "正常"
             else:
+                error_type = self.classify_account_error(error)
+                if error_type == "content_policy":
+                    next_item["last_error_type"] = error_type
+                    account = self._normalize_account(next_item)
+                    if account is None:
+                        return None
+                    self._accounts[access_token] = account
+                    self._save_accounts()
+                    return dict(account)
+                consecutive = int(next_item.get("consecutive_failures") or 0) + 1
+                cooldown_seconds = self._cooldown_seconds_for_error(error_type, consecutive)
                 next_item["fail"] = int(next_item.get("fail") or 0) + 1
+                next_item["consecutive_failures"] = consecutive
+                next_item["last_error_type"] = error_type
+                next_item["last_failure_at"] = datetime.now(timezone.utc).isoformat()
+                if cooldown_seconds > 0:
+                    next_item["cooldown_until"] = (
+                        datetime.now(timezone.utc) + timedelta(seconds=cooldown_seconds)
+                    ).isoformat()
+                if error_type == "rate_limited":
+                    next_item["status"] = "限流"
+                    next_item["restore_at"] = next_item.get("restore_at") or next_item.get("cooldown_until")
             account = self._normalize_account(next_item)
             if account is None:
                 return None

@@ -241,6 +241,80 @@ class AccountCapabilityTests(unittest.TestCase):
             self.assertEqual(plus_token, "token-plus")
             self.assertEqual(pro_token, "token-pro")
 
+    def test_get_available_access_token_skips_cooling_account(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            fresh = datetime.now(timezone.utc).isoformat()
+            service.add_account_items([
+                {
+                    "access_token": "token-cooling",
+                    "status": "正常",
+                    "quota": 5,
+                    "last_account_refresh_at": fresh,
+                    "cooldown_until": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+                },
+                {"access_token": "token-ready", "status": "正常", "quota": 1, "last_account_refresh_at": fresh},
+            ])
+            service.fetch_remote_info = mock.Mock(side_effect=AssertionError("fresh account should not precheck"))
+
+            with mock.patch("services.account_service.config", mock.Mock(
+                image_account_concurrency=3,
+                image_account_precheck_interval_minutes=10,
+            )):
+                token = service.get_available_access_token()
+
+            service.release_image_slot(token)
+            self.assertEqual(token, "token-ready")
+
+    def test_get_available_access_token_prefers_higher_scored_account(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            fresh = datetime.now(timezone.utc).isoformat()
+            service.add_account_items([
+                {
+                    "access_token": "token-low",
+                    "status": "正常",
+                    "quota": 1,
+                    "success": 1,
+                    "fail": 6,
+                    "consecutive_failures": 2,
+                    "last_account_refresh_at": fresh,
+                },
+                {
+                    "access_token": "token-high",
+                    "status": "正常",
+                    "quota": 8,
+                    "success": 8,
+                    "fail": 1,
+                    "last_account_refresh_at": fresh,
+                },
+            ])
+            service.fetch_remote_info = mock.Mock(side_effect=AssertionError("fresh account should not precheck"))
+
+            with mock.patch("services.account_service.config", mock.Mock(
+                image_account_concurrency=3,
+                image_account_precheck_interval_minutes=10,
+            )):
+                token = service.get_available_access_token()
+
+            service.release_image_slot(token)
+            self.assertEqual(token, "token-high")
+
+    def test_content_policy_failure_does_not_penalize_account(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service.add_account_items([
+                {"access_token": "token-policy", "status": "正常", "quota": 5, "fail": 0},
+            ])
+
+            updated = service.mark_image_result("token-policy", success=False, error="content_policy_violation")
+
+            self.assertIsNotNone(updated)
+            self.assertEqual(updated["fail"], 0)
+            self.assertEqual(updated["consecutive_failures"], 0)
+            self.assertIsNone(updated["cooldown_until"])
+            self.assertEqual(updated["last_error_type"], "content_policy")
+
     def test_codex_route_allows_premium_account_types(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))

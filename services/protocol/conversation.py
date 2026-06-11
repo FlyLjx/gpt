@@ -845,6 +845,8 @@ def stream_text_deltas(backend: OpenAIBackendAPI, request: ConversationRequest) 
                     token = account_service.get_text_access_token(attempted_tokens)
                 if token:
                     continue
+            if token:
+                account_service.mark_text_failure(token, exc)
             raise
 
 
@@ -1443,11 +1445,11 @@ def _generate_single_image(
                 returned_result = returned_result or output.kind == "result"
                 outputs.append(output)
             if returned_message:
-                account_service.mark_image_result(token, False)
+                account_service.mark_image_result(token, False, outputs[-1].text if outputs else "message returned")
                 _mark_latest_route_attempt(route_attempts, "failed", outputs[-1].text if outputs else "message returned")
                 return _attach_route_attempts_to_outputs(outputs, route_meta, route_attempts)
             if not returned_result:
-                account_service.mark_image_result(token, False)
+                account_service.mark_image_result(token, False, "no image generated")
                 _mark_latest_route_attempt(route_attempts, "failed", "no image generated")
                 if emitted_for_token:
                     conv_id = outputs[-1].conversation_id if outputs else ""
@@ -1466,7 +1468,7 @@ def _generate_single_image(
             _mark_latest_route_attempt(route_attempts, "success")
             return _attach_route_attempts_to_outputs(outputs, route_meta, route_attempts)
         except ImagePollTimeoutError as exc:
-            account_service.mark_image_result(token, False)
+            account_service.mark_image_result(token, False, exc)
             _mark_latest_route_attempt(route_attempts, "failed", exc)
             if account_email:
                 setattr(exc, "account_email", account_email)
@@ -1495,7 +1497,7 @@ def _generate_single_image(
                 raise
             raise
         except ImageContentPolicyError as exc:
-            account_service.mark_image_result(token, False)
+            account_service.mark_image_result(token, False, exc)
             _mark_latest_route_attempt(route_attempts, "failed", exc)
             logger.warning({
                 "event": "image_stream_content_policy_error",
@@ -1515,7 +1517,7 @@ def _generate_single_image(
                 image_route_attempts=route_attempts,
             ) from exc
         except ImageGenerationError as exc:
-            account_service.mark_image_result(token, False)
+            account_service.mark_image_result(token, False, exc)
             _mark_latest_route_attempt(route_attempts, "failed", exc)
             if account_email and not getattr(exc, "account_email", ""):
                 exc.account_email = account_email
@@ -1562,7 +1564,7 @@ def _generate_single_image(
             })
             raise
         except Exception as exc:
-            account_service.mark_image_result(token, False)
+            account_service.mark_image_result(token, False, exc)
             _mark_latest_route_attempt(route_attempts, "failed", exc)
             _attach_image_route(exc, route_meta)
             _attach_image_route_attempts(exc, route_attempts)
