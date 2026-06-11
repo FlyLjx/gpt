@@ -117,111 +117,7 @@ function formatCompact(value: number) {
   return String(value);
 }
 
-function formatQuota(account: Account) {
-  if (isUnlimitedImageQuotaAccount(account)) {
-    return "∞";
-  }
-  if (imageQuotaUnknown(account)) {
-    return "未知";
-  }
-  return String(Math.max(0, account.quota));
-}
-
-function stringifyUsage(value: unknown) {
-  if (value === null || value === undefined || value === "") {
-    return "—";
-  }
-  if (typeof value === "number") {
-    return formatCompact(value);
-  }
-  if (typeof value === "string") {
-    return value;
-  }
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
-}
-
-function usagePercent(value: unknown) {
-  if (!value || typeof value !== "object") {
-    return "";
-  }
-  const utilization = (value as { utilization?: unknown }).utilization;
-  if (typeof utilization !== "number") {
-    const numeric = Number(utilization);
-    if (!Number.isFinite(numeric)) {
-      return "";
-    }
-    return `${Math.round(numeric * 10) / 10}%`;
-  }
-  return `${Math.round(utilization * 10) / 10}%`;
-}
-
-function usagePercentValue(value: unknown) {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-  const utilization = (value as { utilization?: unknown }).utilization;
-  const numeric = typeof utilization === "number" ? utilization : Number(utilization);
-  if (!Number.isFinite(numeric)) {
-    return null;
-  }
-  return Math.min(100, Math.max(0, numeric));
-}
-
-function usageResetText(value: unknown) {
-  if (!value || typeof value !== "object") {
-    return "";
-  }
-  const resetsAt = (value as { resets_at?: unknown }).resets_at;
-  if (!resetsAt) {
-    return "";
-  }
-  const date = new Date(String(resetsAt));
-  if (Number.isNaN(date.getTime())) {
-    return String(resetsAt);
-  }
-  const now = new Date();
-  const sameDay = date.toDateString() === now.toDateString();
-  const pad = (num: number) => String(num).padStart(2, "0");
-  const time = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
-  if (sameDay) {
-    return `${time} 重置`;
-  }
-  return `${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${time}`;
-}
-
-function formatUsage(value: unknown) {
-  if (value === null || value === undefined || value === "") {
-    return "—";
-  }
-  if (typeof value !== "object") {
-    return stringifyUsage(value);
-  }
-
-  const usage = value as {
-    five_hour?: unknown;
-    seven_day?: unknown;
-    image_gen_used?: unknown;
-  };
-  const parts: string[] = [];
-  const fiveHour = usagePercent(usage.five_hour);
-  const sevenDay = usagePercent(usage.seven_day);
-  if (fiveHour) {
-    parts.push(`5h ${fiveHour}`);
-  }
-  if (sevenDay) {
-    parts.push(`7d ${sevenDay}`);
-  }
-  if (usage.image_gen_used !== undefined && usage.image_gen_used !== null) {
-    parts.push(`图 ${formatCompact(Number(usage.image_gen_used) || 0)}`);
-  }
-  return parts.length ? parts.join(" / ") : stringifyUsage(value);
-}
-
-function usageBarColor(value: number) {
+function quotaBarColor(value: number) {
   if (value >= 85) {
     return "#f5222d";
   }
@@ -231,45 +127,86 @@ function usageBarColor(value: number) {
   return "#52c41a";
 }
 
-function UsageProgressCell({ usage }: { usage: unknown }) {
-  const usageObject = usage && typeof usage === "object" ? usage as {
-    five_hour?: unknown;
-    seven_day?: unknown;
-    image_gen_used?: unknown;
-  } : null;
-  const items = usageObject ? [
-    { label: "5h", value: usagePercentValue(usageObject.five_hour), resetText: usageResetText(usageObject.five_hour) },
-    { label: "7d", value: usagePercentValue(usageObject.seven_day), resetText: usageResetText(usageObject.seven_day) },
-  ].filter((item): item is { label: string; value: number; resetText: string } => item.value !== null) : [];
+function numberFrom(value: unknown) {
+  const numeric = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
 
-  if (items.length === 0) {
+function firstNumber(source: Record<string, unknown> | null, keys: string[]) {
+  if (!source) {
+    return null;
+  }
+  for (const key of keys) {
+    const value = numberFrom(source[key]);
+    if (value !== null) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function imageLimitProgress(account: Account) {
+  return (account.limits_progress || []).find((item) => String(item.feature_name || "") === "image_gen") as
+    | (Record<string, unknown> & { usage?: unknown })
+    | undefined;
+}
+
+function quotaProgress(account: Account) {
+  if (isUnlimitedImageQuotaAccount(account)) {
+    return { label: "不限", used: null, total: null, percent: 100, title: "不限额度" };
+  }
+  if (imageQuotaUnknown(account)) {
+    return { label: "未知", used: null, total: null, percent: 0, title: "额度未知" };
+  }
+
+  const remaining = Math.max(0, Number(account.quota || 0));
+  const imageProgress = imageLimitProgress(account);
+  const usage = account.usage && typeof account.usage === "object" ? account.usage as Record<string, unknown> : null;
+  const imageUsage = imageProgress?.usage && typeof imageProgress.usage === "object"
+    ? imageProgress.usage as Record<string, unknown>
+    : null;
+  const used =
+    firstNumber(imageUsage, ["used", "count", "current", "consumed", "image_gen_used"]) ??
+    firstNumber(usage, ["image_gen_used", "used", "count", "current", "consumed"]);
+  const total =
+    firstNumber(imageUsage, ["total", "limit", "max", "quota", "capacity"]) ??
+    firstNumber(imageProgress || null, ["total", "limit", "max", "quota", "capacity"]) ??
+    firstNumber(usage, ["image_gen_total", "total", "limit", "max", "quota", "capacity"]);
+  const normalizedUsed = Math.max(0, Math.round(used ?? (total !== null ? Math.max(0, total - remaining) : 0)));
+  const normalizedTotal = Math.max(remaining + normalizedUsed, Math.round(total ?? remaining + normalizedUsed));
+  const percent = normalizedTotal > 0 ? Math.min(100, Math.round((normalizedUsed / normalizedTotal) * 100)) : 0;
+  return {
+    label: `${formatCompact(normalizedUsed)}/${formatCompact(normalizedTotal)}`,
+    used: normalizedUsed,
+    total: normalizedTotal,
+    percent,
+    title: `已使用 ${normalizedUsed} / 总数量 ${normalizedTotal}，剩余 ${remaining}`,
+  };
+}
+
+function QuotaProgressCell({ account }: { account: Account }) {
+  const progress = quotaProgress(account);
+  if (progress.used === null || progress.total === null) {
     return (
       <span className="inline-flex rounded-md bg-stone-100 px-2 py-1 font-mono text-[11px] font-medium text-stone-700">
-        {formatUsage(usage)}
+        {progress.label}
       </span>
     );
   }
 
   return (
-    <div className="w-[150px] space-y-1" title={stringifyUsage(usage)}>
-      {items.map((item) => (
-        <div key={item.label} className="leading-none">
-          <div className="mb-0.5 flex items-center justify-between gap-1">
-            <Tag color="blue" className="m-0 rounded px-1 py-0 text-[10px] leading-4">{item.label}</Tag>
-            <span className="font-mono text-[10px] font-semibold text-slate-700">{item.value}%</span>
-            {item.resetText ? (
-              <span className="ml-auto truncate text-[10px] font-medium text-slate-400">{item.resetText}</span>
-            ) : null}
-          </div>
-          <AntProgress
-            percent={item.value}
-            showInfo={false}
-            size={[150, 4]}
-            strokeColor={usageBarColor(item.value)}
-            railColor="#eef2f7"
-          />
-        </div>
-      ))}
+    <div className="w-[150px] space-y-1" title={progress.title}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-mono text-[11px] font-semibold text-slate-700">{progress.label}</span>
+        <span className="font-mono text-[10px] text-slate-400">{progress.percent}%</span>
+      </div>
+      <AntProgress
+        percent={progress.percent}
+        showInfo={false}
+        size={[150, 5]}
+        strokeColor={quotaBarColor(progress.percent)}
+        railColor="#eef2f7"
+      />
     </div>
   );
 }
@@ -1128,17 +1065,11 @@ function AccountsPageContent() {
     {
       title: "额度",
       key: "quota",
-      width: 88,
-      render: (_value, account) => <Tag color="blue">{formatQuota(account)}</Tag>,
-    },
-    {
-      title: "Usage",
-      dataIndex: "usage",
       width: 178,
-      render: (usage: unknown) => (
-        <Tooltip title={stringifyUsage(usage)} placement="topLeft">
+      render: (_value, account) => (
+        <Tooltip title={quotaProgress(account).title} placement="topLeft">
           <div>
-            <UsageProgressCell usage={usage} />
+            <QuotaProgressCell account={account} />
           </div>
         </Tooltip>
       ),
