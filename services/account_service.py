@@ -527,7 +527,8 @@ class AccountService:
     def _export_account(self, account: dict, *, now: datetime | None = None) -> dict:
         now = now or datetime.now(timezone.utc)
         item = dict(account)
-        item["dispatch_score"] = round(self._account_dispatch_score(account, now=now, image=True), 2)
+        raw_score = self._account_dispatch_score(account, now=now, image=True)
+        item["dispatch_score"] = round(max(0.0, min(100.0, raw_score)), 1)
         item["cooldown_active"] = self._account_cooldown_active(account, now)
         item["proxy_cooldown_active"] = self._proxy_cooldown_active(account, now)
         success, total, rate = self._recent_success_rate(account)

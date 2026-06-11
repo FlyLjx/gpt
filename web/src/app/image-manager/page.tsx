@@ -7,7 +7,7 @@ export default function ImageManagerPage() {
   const router = useRouter();
 
   useEffect(() => {
-    router.replace("/image");
+    router.replace("/accounts");
   }, [router]);
 
   return null;

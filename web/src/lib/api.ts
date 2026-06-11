@@ -102,6 +102,27 @@ export type Model = {
   parent: string | null;
 };
 
+export type ChatGPTWebDebugPayload = {
+  method: string;
+  path: string;
+  access_token?: string;
+  headers?: Record<string, string>;
+  body?: unknown;
+  timeout_seconds?: number;
+  bootstrap?: boolean;
+};
+
+export type ChatGPTWebDebugResponse = {
+  ok: boolean;
+  status: number;
+  elapsed_ms: number;
+  method: string;
+  url: string;
+  request_headers?: Record<string, unknown>;
+  response_headers?: Record<string, string>;
+  body: unknown;
+};
+
 type AccountListResponse = {
   items: Account[];
 };
@@ -141,6 +162,14 @@ export type RefreshProgressResponse = {
 
 type AccountUpdateResponse = {
   item: Account;
+  items: Account[];
+};
+
+type AccountImageTestResponse = {
+  ok: boolean;
+  created?: number;
+  image_count?: number;
+  error?: string;
   items: Account[];
 };
 
@@ -373,6 +402,13 @@ export async function fetchModels() {
   return httpRequest<ModelListResponse>("/v1/models");
 }
 
+export async function debugChatGPTWeb(payload: ChatGPTWebDebugPayload) {
+  return httpRequest<ChatGPTWebDebugResponse>("/api/debug/chatgpt-web", {
+    method: "POST",
+    body: payload,
+  });
+}
+
 export async function createAccounts(tokens: string[], accounts: AccountImportPayload[] = []) {
   return httpRequest<AccountMutationResponse>("/api/accounts", {
     method: "POST",
@@ -445,6 +481,13 @@ export async function updateAccount(
       access_token: accessToken,
       ...updates,
     },
+  });
+}
+
+export async function testAccountImage(accessToken: string) {
+  return httpRequest<AccountImageTestResponse>("/api/accounts/test-image", {
+    method: "POST",
+    body: { access_token: accessToken },
   });
 }
 

@@ -26,12 +26,63 @@ from services.account_service import account_service
 from services.config import local_time_text
 from services.cpa_service import cpa_config, cpa_import_service, list_remote_files
 from services.oauth_login_service import OAuthLoginError, oauth_login_service
+from services.openai_backend_api import OpenAIBackendAPI
+from services.protocol.conversation import (
+    ConversationRequest,
+    collect_image_outputs,
+    stream_image_outputs,
+)
 from services.sub2api_service import (
     list_remote_accounts as sub2api_list_remote_accounts,
     list_remote_groups as sub2api_list_remote_groups,
     sub2api_config,
     sub2api_import_service,
 )
+
+
+def _test_account_image_generation(body: AccountImageTestRequest) -> dict[str, Any]:
+    access_token = str(body.access_token or "").strip()
+    if not access_token:
+        raise ValueError("access_token is required")
+    account = account_service.get_account(access_token)
+    if not account:
+        raise LookupError("account not found")
+
+    backend = OpenAIBackendAPI(access_token=access_token)
+    request = ConversationRequest(
+        prompt=str(body.prompt or "").strip() or "Generate a simple small blue circle on a white background.",
+        model=str(body.model or "gpt-image-2"),
+        n=1,
+        size=body.size,
+        quality=str(body.quality or "auto"),
+        response_format="b64_json",
+        message_as_error=True,
+    )
+    try:
+        result = collect_image_outputs(stream_image_outputs(backend, request, 1, 1))
+        data = result.get("data") if isinstance(result, dict) else []
+        if not data:
+            message = str(result.get("message") or "no image generated") if isinstance(result, dict) else "no image generated"
+            account_service.mark_image_result(access_token, False, message)
+            return {
+                "ok": False,
+                "error": message,
+                "items": account_service.list_accounts(),
+            }
+        account_service.mark_image_result(access_token, True)
+        return {
+            "ok": True,
+            "created": result.get("created"),
+            "image_count": len(data),
+            "items": account_service.list_accounts(),
+        }
+    except Exception as exc:
+        account_service.mark_image_result(access_token, False, exc)
+        return {
+            "ok": False,
+            "error": str(exc),
+            "items": account_service.list_accounts(),
+        }
 
 
 
@@ -69,6 +120,14 @@ class AccountUpdateRequest(BaseModel):
     status: str | None = None
     quota: int | None = None
     proxy: str | None = None
+
+
+class AccountImageTestRequest(BaseModel):
+    access_token: str = ""
+    prompt: str = "Generate a simple small blue circle on a white background."
+    model: str = "gpt-image-2"
+    size: str | None = None
+    quality: str = "auto"
 
 
 class CPAPoolCreateRequest(BaseModel):
@@ -343,6 +402,18 @@ def create_router() -> APIRouter:
         if account is None:
             raise HTTPException(status_code=404, detail={"error": "account not found"})
         return {"item": account, "items": account_service.list_accounts()}
+
+    @router.post("/api/accounts/test-image")
+    async def test_account_image(body: AccountImageTestRequest, authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        try:
+            return await run_in_threadpool(_test_account_image_generation, body)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail={"error": str(exc)}) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail={"error": str(exc)}) from exc
 
     @router.post("/api/accounts/oauth/start")
     async def start_oauth_login(

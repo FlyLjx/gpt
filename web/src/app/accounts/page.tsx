@@ -27,15 +27,14 @@ import {
   CheckCircle2,
   CircleAlert,
   CircleOff,
-  Copy,
   Download,
+  Image as ImageIcon,
   LoaderCircle,
   LogIn,
   Pencil,
   RefreshCw,
   Search,
   Trash2,
-  UserRound,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -47,6 +46,7 @@ import {
   fetchReLoginProgress,
   reLoginAccounts,
   refreshAccounts,
+  testAccountImage,
   testProxy,
   updateAccount,
   type Account,
@@ -82,13 +82,9 @@ const statusMeta: Record<
 };
 
 const metricCards = [
-  { key: "total", label: "账户总数", color: "text-stone-900", icon: UserRound },
-  { key: "active", label: "正常账户", color: "text-emerald-600", icon: CheckCircle2 },
-  { key: "limited", label: "限流账户", color: "text-orange-500", icon: CircleAlert },
-  { key: "abnormal", label: "异常账户", color: "text-rose-500", icon: CircleOff },
-  { key: "disabled", label: "禁用账户", color: "text-stone-500", icon: Ban },
+  { key: "active", label: "正常账号", color: "text-emerald-600", icon: CheckCircle2 },
+  { key: "abnormal", label: "异常账号", color: "text-rose-500", icon: CircleOff },
   { key: "cooling", label: "调度冷却", color: "text-amber-600", icon: LoaderCircle },
-  { key: "proxyCooling", label: "代理冷却", color: "text-sky-600", icon: RefreshCw },
   { key: "quota", label: "剩余额度", color: "text-blue-500", icon: RefreshCw },
 ] as const;
 
@@ -211,30 +207,6 @@ function QuotaProgressCell({ account }: { account: Account }) {
   );
 }
 
-function formatRestoreAt(value?: string | null) {
-  if (!value) {
-    return { absolute: "—", relative: "" };
-  }
-
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return { absolute: value, relative: "" };
-  }
-
-  const diffMs = Math.max(0, date.getTime() - Date.now());
-  const totalHours = Math.ceil(diffMs / (1000 * 60 * 60));
-  const days = Math.floor(totalHours / 24);
-  const hours = totalHours % 24;
-  const relative = diffMs > 0 ? `剩余 ${days}d ${hours}h` : "已到恢复时间";
-
-  const pad = (num: number) => String(num).padStart(2, "0");
-  const absolute = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(
-    date.getHours(),
-  )}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
-
-  return { absolute, relative };
-}
-
 function formatShortRelative(value?: string | null) {
   if (!value) {
     return "";
@@ -288,12 +260,6 @@ function formatQuotaSummary(accounts: Account[]) {
   return formatCompact(availableAccounts.reduce((sum, account) => sum + Math.max(0, account.quota), 0));
 }
 
-function maskToken(token?: string) {
-  if (!token) return "—";
-  if (token.length <= 18) return token;
-  return `${token.slice(0, 16)}...${token.slice(-8)}`;
-}
-
 function downloadTokens(accounts: Account[]) {
   const content = `${accounts.map((account) => account.access_token).join("\n")}\n`;
   const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
@@ -334,17 +300,6 @@ function compareAccountsByGroup(a: Account, b: Account) {
   return (a.email || a.access_token).localeCompare(b.email || b.access_token, "zh-CN");
 }
 
-function displayAccountSource(account: Account) {
-  const source = String(account.source_type || "").trim().toLowerCase();
-  if (!source) {
-    return "web";
-  }
-  if (source === "web") {
-    return "web";
-  }
-  return source;
-}
-
 function AccountsPageContent() {
   const didLoadRef = useRef(false);
   const screens = Grid.useBreakpoint();
@@ -365,6 +320,7 @@ function AccountsPageContent() {
   const [isLoadingModels, setIsLoadingModels] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshingTokens, setRefreshingTokens] = useState<Set<string>>(new Set());
+  const [testingImageTokens, setTestingImageTokens] = useState<Set<string>>(new Set());
   const [isDeleting, setIsDeleting] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [isRelogining, setIsRelogining] = useState(false);
@@ -916,6 +872,28 @@ function AccountsPageContent() {
     }
   };
 
+  const handleTestAccountImage = async (account: Account) => {
+    setTestingImageTokens((prev) => new Set([...prev, account.access_token]));
+    try {
+      const data = await testAccountImage(account.access_token);
+      setAccounts(data.items);
+      setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.access_token === id)));
+      if (data.ok) {
+        toast.success(`生图测试成功${data.image_count ? `，生成 ${data.image_count} 张` : ""}`);
+      } else {
+        toast.error(`生图测试失败：${data.error || "未生成图片"}`);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "生图测试失败");
+    } finally {
+      setTestingImageTokens((prev) => {
+        const next = new Set(prev);
+        next.delete(account.access_token);
+        return next;
+      });
+    }
+  };
+
   const handleUpdateAccount = async () => {
     if (!editingAccount) {
       return;
@@ -978,24 +956,11 @@ function AccountsPageContent() {
       ),
     },
     {
-      title: "Token",
-      dataIndex: "access_token",
-      width: isCompactTable ? 210 : 230,
+      title: "邮箱",
+      dataIndex: "email",
+      width: 240,
       fixed: isCompactTable ? undefined : "left",
-      render: (token: string) => (
-        <Space size={6}>
-          <span className="font-mono text-xs font-medium text-slate-700">{maskToken(token)}</span>
-          <AntButton
-            type="text"
-            size="small"
-            icon={<Copy className="size-3.5" />}
-            onClick={() => {
-              void navigator.clipboard.writeText(token);
-              toast.success("token 已复制");
-            }}
-          />
-        </Space>
-      ),
+      render: (email?: string | null) => <span className="text-xs text-slate-500">{email ?? "—"}</span>,
     },
     {
       title: "分组",
@@ -1012,12 +977,6 @@ function AccountsPageContent() {
       key: "type",
       width: 96,
       render: (_value, account) => <Tag>{displayAccountType(account)}</Tag>,
-    },
-    {
-      title: "来源",
-      key: "source",
-      width: 90,
-      render: (_value, account) => <Tag color={displayAccountSource(account) === "codex" ? "purple" : "default"}>{displayAccountSource(account)}</Tag>,
     },
     {
       title: "状态",
@@ -1042,27 +1001,6 @@ function AccountsPageContent() {
       },
     },
     {
-      title: "账号信息",
-      dataIndex: "email",
-      width: 220,
-      render: (email?: string | null) => <span className="text-xs text-slate-500">{email ?? "—"}</span>,
-    },
-    {
-      title: "创建时间",
-      dataIndex: "created_at",
-      width: 132,
-      render: (raw: unknown) => {
-        if (!raw) return "—";
-        try {
-          const date = new Date(String(raw) + "Z");
-          if (Number.isNaN(date.getTime())) return String(raw).slice(0, 10);
-          return date.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
-        } catch {
-          return String(raw).slice(0, 10);
-        }
-      },
-    },
-    {
       title: "额度",
       key: "quota",
       width: 178,
@@ -1077,28 +1015,22 @@ function AccountsPageContent() {
     {
       title: "调度",
       key: "dispatch",
-      width: 176,
+      width: 116,
       render: (_value, account) => {
-        const score = typeof account.dispatch_score === "number" ? account.dispatch_score.toFixed(1) : "—";
         const cooldown = account.cooldown_active ? formatShortRelative(account.cooldown_until) : "";
         const recentRate = typeof account.recent_success_rate === "number" ? `${account.recent_success_rate}%` : "—";
         const error = errorTypeLabel(account.last_error_type);
         return (
           <Tooltip
-            title={`最近成功率 ${recentRate}${account.recent_total ? ` (${account.recent_success || 0}/${account.recent_total})` : ""}${error ? `，最近错误 ${error}` : ""}`}
+            title={`最近成功率 ${recentRate}${account.recent_total ? ` (${account.recent_success || 0}/${account.recent_total})` : ""}${cooldown ? `，冷却${cooldown}` : ""}${error ? `，最近错误 ${error}` : ""}`}
             placement="topLeft"
           >
             <div className="space-y-1 text-xs">
-              <div className="flex items-center gap-1">
-                <Tag color={account.cooldown_active ? "warning" : "green"} className="m-0">
-                  {account.cooldown_active ? "冷却" : "可调度"}
-                </Tag>
-                <span className="font-mono text-slate-600">{score}</span>
-                {cooldown ? <span className="text-amber-600">{cooldown}</span> : null}
-              </div>
-              <div className="truncate text-slate-500">
+              <Tag color={account.cooldown_active ? "warning" : "green"} className="m-0">
+                {account.cooldown_active ? "冷却中" : "可调度"}
+              </Tag>
+              <div className="text-slate-500">
                 连败 {account.consecutive_failures || 0}
-                {error ? ` · ${error}` : ""}
               </div>
             </div>
           </Tooltip>
@@ -1134,33 +1066,24 @@ function AccountsPageContent() {
       },
     },
     {
-      title: "恢复时间",
-      dataIndex: "restore_at",
-      width: 170,
-      render: (value?: string | null) => {
-        const restore = formatRestoreAt(value);
-        return (
-          <div className="space-y-0.5 text-xs text-slate-500">
-            {restore.relative ? <div className="font-medium text-slate-700">{restore.relative}</div> : null}
-            <div>{restore.absolute}</div>
-          </div>
-        );
+      title: "创建时间",
+      dataIndex: "created_at",
+      width: 132,
+      render: (raw: unknown) => {
+        if (!raw) return "—";
+        try {
+          const date = new Date(String(raw) + "Z");
+          if (Number.isNaN(date.getTime())) return String(raw).slice(0, 10);
+          return date.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+        } catch {
+          return String(raw).slice(0, 10);
+        }
       },
-    },
-    {
-      title: "成功",
-      dataIndex: "success",
-      width: 76,
-    },
-    {
-      title: "失败",
-      dataIndex: "fail",
-      width: 76,
     },
     {
       title: "操作",
       key: "actions",
-      width: 132,
+      width: 164,
       fixed: isCompactTable ? undefined : "right",
       render: (_value, account) => (
         <Space size={2}>
@@ -1170,6 +1093,13 @@ function AccountsPageContent() {
             icon={<Pencil className="size-4" />}
             onClick={() => openEditDialog(account)}
             disabled={isUpdating}
+          />
+          <AntButton
+            type="text"
+            size="small"
+            icon={<ImageIcon className={cn("size-4", testingImageTokens.has(account.access_token) ? "animate-pulse" : "")} />}
+            onClick={() => void handleTestAccountImage(account)}
+            disabled={testingImageTokens.has(account.access_token)}
           />
           <AntButton
             type="text"
@@ -1340,7 +1270,7 @@ function AccountsPageContent() {
             const Icon = item.icon;
             const value = (refreshSummary ?? summary)[item.key];
             return (
-              <Col key={item.key} xs={24} sm={12} lg={8} xl={4}>
+              <Col key={item.key} xs={24} sm={12} lg={6}>
               <AntCard size="small" styles={{ body: { minHeight: 92, padding: 16 } }}>
                 <div className="mb-3 flex items-center justify-between">
                   <span className="text-xs text-slate-400">{item.label}</span>
@@ -1494,7 +1424,7 @@ function AccountsPageContent() {
               loading={isLoading}
               pagination={false}
               size="small"
-              scroll={{ x: isCompactTable ? 1420 : 1980 }}
+              scroll={{ x: isCompactTable ? 980 : 1180 }}
               locale={{
                 emptyText: (
                   <Empty

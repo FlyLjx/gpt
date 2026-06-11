@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
   Bug,
-  ImageIcon,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -22,7 +21,6 @@ import { getValidatedAuthSession } from "@/lib/auth-session";
 import { clearStoredAuthSession, type StoredAuthSession } from "@/store/auth";
 
 const adminNavItems = [
-  { href: "/image", label: "生图", icon: ImageIcon },
   { href: "/accounts", label: "号池管理", icon: UsersRound },
   { href: "/register", label: "注册机", icon: UserRound },
   { href: "/logs", label: "日志管理", icon: ScrollText },
@@ -30,13 +28,13 @@ const adminNavItems = [
   { href: "/settings", label: "设置", icon: Settings },
 ];
 
-const userNavItems = [{ href: "/image", label: "画图", icon: ImageIcon }];
+const userNavItems = [{ href: "/accounts", label: "号池管理", icon: UsersRound }];
 
 type NavItem = (typeof adminNavItems)[number];
 
 function SidebarBrand() {
   return (
-    <Link href="/image" className="flex items-center gap-3 px-3 py-2">
+    <Link href="/accounts" className="flex items-center gap-3 px-3 py-2">
       <span className="flex size-9 items-center justify-center rounded-xl bg-blue-600 text-white shadow-sm">
         <LayoutDashboard className="size-4" />
       </span>

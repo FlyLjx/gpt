@@ -61,7 +61,7 @@ export default function LoginPage() {
             </div>
             <div className="space-y-2">
               <Typography.Title level={2} className="!mb-0">欢迎回来</Typography.Title>
-              <Typography.Text type="secondary">输入密钥后继续使用账号管理和图片生成功能。</Typography.Text>
+              <Typography.Text type="secondary">输入密钥后继续使用账号管理和系统配置功能。</Typography.Text>
             </div>
           </div>
 
