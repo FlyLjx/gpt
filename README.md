@@ -48,6 +48,12 @@ uv sync
 uv run main.py
 ```
 
+注册机需要绕过 Cloudflare 时，本地直跑后端可先启动 FlareSolverr；程序会自动探测 `http://127.0.0.1:8191`：
+
+```bash
+docker run -d --name flaresolverr -p 8191:8191 ghcr.io/flaresolverr/flaresolverr:latest
+```
+
 启动前端：
 
 ```bash

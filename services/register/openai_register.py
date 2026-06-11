@@ -65,6 +65,8 @@ print_lock = threading.Lock()
 stats_lock = threading.Lock()
 stats = {"done": 0, "success": 0, "fail": 0, "start_time": 0.0}
 register_log_sink = None
+_flaresolverr_autodetect_lock = threading.Lock()
+_flaresolverr_autodetect_cache: dict[str, Any] | None = None
 
 common_headers = {
     "accept": "application/json",
@@ -258,17 +260,55 @@ def _env_flaresolverr_config() -> dict[str, Any]:
     }
 
 
+def _probe_flaresolverr_url(api_url: str) -> bool:
+    try:
+        resp = requests.get(api_url.rstrip("/"), timeout=2, verify=False)
+        return 200 <= int(resp.status_code) < 500
+    except Exception:
+        return False
+
+
+def _auto_flaresolverr_config() -> dict[str, Any]:
+    global _flaresolverr_autodetect_cache
+    with _flaresolverr_autodetect_lock:
+        if _flaresolverr_autodetect_cache is not None:
+            return dict(_flaresolverr_autodetect_cache)
+        auto_enabled = os.getenv("CHATGPT2API_FLARESOLVERR_AUTO")
+        if auto_enabled is not None and not _truthy(auto_enabled, True):
+            _flaresolverr_autodetect_cache = {}
+            return {}
+        for api_url in ("http://127.0.0.1:8191", "http://localhost:8191"):
+            if _probe_flaresolverr_url(api_url):
+                _flaresolverr_autodetect_cache = {
+                    "enabled": True,
+                    "url": api_url,
+                    "max_timeout_ms": os.getenv("CHATGPT2API_FLARESOLVERR_MAX_TIMEOUT_MS") or 60000,
+                    "preload": os.getenv("CHATGPT2API_FLARESOLVERR_PRELOAD") or True,
+                }
+                return dict(_flaresolverr_autodetect_cache)
+        _flaresolverr_autodetect_cache = {}
+        return {}
+
+
 def _current_flaresolverr_config() -> dict[str, Any]:
     raw = config.get("flaresolverr")
+    explicit = False
     try:
         saved = json.loads(register_config_file.read_text(encoding="utf-8"))
         if isinstance(saved, dict) and "flaresolverr" in saved:
             raw = saved.get("flaresolverr")
+            explicit = True
     except Exception:
         pass
+    env_config = _env_flaresolverr_config()
+    if env_config:
+        explicit = True
     merged = dict(raw) if isinstance(raw, dict) else {}
-    merged.update(_env_flaresolverr_config())
-    return _normalize_flaresolverr_config(merged)
+    merged.update(env_config)
+    normalized = _normalize_flaresolverr_config(merged)
+    if normalized["enabled"] or (explicit and normalized["url"]):
+        return normalized
+    return _normalize_flaresolverr_config(_auto_flaresolverr_config())
 
 
 def _flaresolverr_endpoint(api_url: str) -> str:
