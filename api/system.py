@@ -327,12 +327,19 @@ td{{padding:8px 12px;border-top:1px solid #2a2d3a;font-size:14px}}tr:hover td{{b
 <div class="card"><div class="label">限流</div><div class="value yellow">{stats['limited']}</div></div>
 <div class="card"><div class="label">异常</div><div class="value red">{stats['abnormal']}</div></div>
 <div class="card"><div class="label">禁用</div><div class="value">{stats['disabled']}</div></div>
+<div class="card"><div class="label">调度冷却</div><div class="value yellow">{stats.get('cooling', 0)}</div></div>
+<div class="card"><div class="label">最近成功率</div><div class="value blue">{stats.get('recent_success_rate') if stats.get('recent_success_rate') is not None else '-'}</div></div>
 <div class="card"><div class="label">成功/失败</div><div class="value">{stats['total_success']}<span style="font-size:18px;color:#94a3b8">/</span><span class="red">{stats['total_fail']}</span></div></div>
 </div>
 <h2 style="margin-bottom:12px;font-size:16px">账号类型分布</h2>
 <table>
 <tr><th>类型</th><th>数量</th></tr>
 {''.join(f'<tr><td>{t}</td><td>{c}</td></tr>' for t,c in sorted(stats['by_type'].items()))}
+</table>
+<h2 style="margin:24px 0 12px;font-size:16px">最近错误分布</h2>
+<table>
+<tr><th>错误类型</th><th>数量</th></tr>
+{''.join(f'<tr><td>{t}</td><td>{c}</td></tr>' for t,c in sorted(stats.get('by_error_type', {}).items())) or '<tr><td>无</td><td>0</td></tr>'}
 </table>
 <div class="refresh">JSON: <span class="api-url">/health?format=json</span></div>
 </div></body></html>""")

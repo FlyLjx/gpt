@@ -21,7 +21,30 @@ def _now() -> str:
 
 
 def _default_config() -> dict:
-    return {**openai_register.config, "mode": "total", "target_quota": 100, "target_available": 10, "check_interval": 5, "enabled": False, "stats": {"success": 0, "fail": 0, "done": 0, "running": 0, "threads": openai_register.config["threads"], "elapsed_seconds": 0, "avg_seconds": 0, "success_rate": 0, "current_quota": 0, "current_available": 0}}
+    return {
+        **openai_register.config,
+        "mode": "total",
+        "target_quota": 100,
+        "target_available": 10,
+        "check_interval": 5,
+        "low_success_pause_enabled": True,
+        "low_success_min_done": 5,
+        "low_success_threshold_percent": 20,
+        "low_success_pause_seconds": 60,
+        "enabled": False,
+        "stats": {
+            "success": 0,
+            "fail": 0,
+            "done": 0,
+            "running": 0,
+            "threads": openai_register.config["threads"],
+            "elapsed_seconds": 0,
+            "avg_seconds": 0,
+            "success_rate": 0,
+            "current_quota": 0,
+            "current_available": 0,
+        },
+    }
 
 
 def _normalize(raw: dict) -> dict:
@@ -33,6 +56,10 @@ def _normalize(raw: dict) -> dict:
     cfg["target_quota"] = max(1, int(cfg.get("target_quota") or 1))
     cfg["target_available"] = max(1, int(cfg.get("target_available") or 1))
     cfg["check_interval"] = max(1, int(cfg.get("check_interval") or 5))
+    cfg["low_success_pause_enabled"] = bool(cfg.get("low_success_pause_enabled", True))
+    cfg["low_success_min_done"] = max(1, int(cfg.get("low_success_min_done") or 5))
+    cfg["low_success_threshold_percent"] = max(0, min(100, int(cfg.get("low_success_threshold_percent") or 20)))
+    cfg["low_success_pause_seconds"] = max(5, int(cfg.get("low_success_pause_seconds") or 60))
     cfg["proxy"] = str(cfg.get("proxy") or "").strip()
     _sync_mail_proxy(cfg)
     cfg["enabled"] = bool(cfg.get("enabled"))
@@ -61,6 +88,8 @@ class RegisterService:
         self._logs: list[dict] = []
         openai_register.register_log_sink = self._append_log
         self._config = self._load()
+        self._low_success_pause_until = 0.0
+        self._low_success_pause_done = -1
         if self._config["enabled"]:
             self.start()
 
@@ -159,6 +188,32 @@ class RegisterService:
             return reached
         return submitted >= int(cfg.get("total") or 1)
 
+    def _should_pause_for_low_success(self, cfg: dict, done: int, success: int, fail: int) -> bool:
+        if not bool(cfg.get("low_success_pause_enabled", True)):
+            return False
+        if done < int(cfg.get("low_success_min_done") or 5):
+            return False
+        attempts = success + fail
+        if attempts <= 0:
+            return False
+        rate = success * 100 / attempts
+        threshold = int(cfg.get("low_success_threshold_percent") or 20)
+        if rate >= threshold:
+            return False
+        now_ts = time.time()
+        if now_ts < self._low_success_pause_until:
+            return True
+        if self._low_success_pause_done == done:
+            return False
+        pause_seconds = max(5, int(cfg.get("low_success_pause_seconds") or 60))
+        self._low_success_pause_until = now_ts + pause_seconds
+        self._low_success_pause_done = done
+        self._append_log(
+            f"注册成功率 {rate:.1f}% 低于 {threshold}%，暂停提交新任务 {pause_seconds}s，建议检查 IP/代理/FlareSolverr",
+            "yellow",
+        )
+        return True
+
     def _bump(self, **updates) -> None:
         with self._lock:
             self._config["stats"].update(updates)
@@ -185,11 +240,24 @@ class RegisterService:
             futures = set()
             while True:
                 cfg = self.get()
-                while self.get()["enabled"] and not self._target_reached(cfg, submitted) and len(futures) < threads:
+                target_reached = self._target_reached(cfg, submitted)
+                paused_for_low_success = (
+                    False if target_reached else self._should_pause_for_low_success(cfg, done, success, fail)
+                )
+                while (
+                    self.get()["enabled"]
+                    and not paused_for_low_success
+                    and not target_reached
+                    and len(futures) < threads
+                ):
                     submitted += 1
                     futures.add(executor.submit(openai_register.worker, submitted))
+                    target_reached = self._target_reached(cfg, submitted)
                 self._bump(running=len(futures), done=done, success=success, fail=fail)
                 if not futures and (not self.get()["enabled"] or str(cfg.get("mode") or "total") == "total"):
+                    if paused_for_low_success and self.get()["enabled"] and not target_reached:
+                        time.sleep(max(1, min(5, int(cfg.get("check_interval") or 5))))
+                        continue
                     break
                 if not futures:
                     time.sleep(max(1, int(cfg.get("check_interval") or 5)))

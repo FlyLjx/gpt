@@ -266,6 +266,36 @@ class AccountCapabilityTests(unittest.TestCase):
             service.release_image_slot(token)
             self.assertEqual(token, "token-ready")
 
+    def test_get_available_access_token_skips_proxy_cooling_account(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            fresh = datetime.now(timezone.utc).isoformat()
+            service.add_account_items([
+                {
+                    "access_token": "token-proxy-cooling",
+                    "status": "正常",
+                    "quota": 5,
+                    "proxy": "http://127.0.0.1:7890",
+                    "last_account_refresh_at": fresh,
+                    "proxy_stats": {
+                        "fail": 3,
+                        "last_error_type": "cloudflare",
+                        "cooldown_until": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+                    },
+                },
+                {"access_token": "token-ready", "status": "正常", "quota": 1, "last_account_refresh_at": fresh},
+            ])
+            service.fetch_remote_info = mock.Mock(side_effect=AssertionError("fresh account should not precheck"))
+
+            with mock.patch("services.account_service.config", mock.Mock(
+                image_account_concurrency=3,
+                image_account_precheck_interval_minutes=10,
+            )):
+                token = service.get_available_access_token()
+
+            service.release_image_slot(token)
+            self.assertEqual(token, "token-ready")
+
     def test_get_available_access_token_prefers_higher_scored_account(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
@@ -314,6 +344,46 @@ class AccountCapabilityTests(unittest.TestCase):
             self.assertEqual(updated["consecutive_failures"], 0)
             self.assertIsNone(updated["cooldown_until"])
             self.assertEqual(updated["last_error_type"], "content_policy")
+            self.assertEqual(updated["recent_results"], [])
+
+    def test_cloudflare_failure_records_recent_history_and_proxy_stats(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service.add_account_items([
+                {
+                    "access_token": "token-cloudflare",
+                    "status": "正常",
+                    "quota": 5,
+                    "proxy": "http://127.0.0.1:7890",
+                },
+            ])
+
+            updated = service.mark_image_result(
+                "token-cloudflare",
+                success=False,
+                error="被 Cloudflare 拦截，请配置/检查 FlareSolverr 或更换 IP 重试",
+            )
+
+            self.assertIsNotNone(updated)
+            self.assertEqual(updated["last_error_type"], "cloudflare")
+            self.assertEqual(updated["recent_results"][-1]["error_type"], "cloudflare")
+            self.assertEqual(updated["proxy_stats"]["fail"], 1)
+            self.assertEqual(updated["proxy_stats"]["last_error_type"], "cloudflare")
+            self.assertTrue(updated["proxy_stats"]["cooldown_until"])
+
+    def test_list_accounts_exports_dispatch_observability(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service.add_account_items([
+                {"access_token": "token-ok", "status": "正常", "quota": 5, "success": 1},
+            ])
+            service.mark_account_success("token-ok")
+
+            item = service.list_accounts()[0]
+
+            self.assertIn("dispatch_score", item)
+            self.assertEqual(item["recent_total"], 1)
+            self.assertEqual(item["recent_success_rate"], 100.0)
 
     def test_codex_route_allows_premium_account_types(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

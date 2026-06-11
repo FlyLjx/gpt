@@ -56,6 +56,31 @@ export type Account = {
   fail: number;
   last_used_at?: string | null;
   proxy?: string | null;
+  consecutive_failures?: number;
+  last_error_type?: string | null;
+  cooldown_until?: string | null;
+  last_success_at?: string | null;
+  last_failure_at?: string | null;
+  dispatch_score?: number;
+  cooldown_active?: boolean;
+  proxy_cooldown_active?: boolean;
+  recent_success?: number;
+  recent_total?: number;
+  recent_success_rate?: number | null;
+  proxy_stats?: {
+    success?: number;
+    fail?: number;
+    last_error_type?: string | null;
+    cooldown_until?: string | null;
+    last_success_at?: string | null;
+    last_failure_at?: string | null;
+  };
+  recent_results?: Array<{
+    time?: string;
+    ok?: boolean;
+    kind?: string;
+    error_type?: string;
+  }>;
 };
 
 export type AccountImportPayload = {

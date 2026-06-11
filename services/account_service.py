@@ -36,6 +36,7 @@ class AccountService:
         "content_policy": 0,
         "token_invalid": 0,
         "rate_limited": 60 * 60,
+        "cloudflare": 5 * 60,
         "network": 90,
         "timeout": 120,
         "poll_timeout": 180,
@@ -43,6 +44,9 @@ class AccountService:
         "no_image": 120,
         "generic": 180,
     }
+    _RECENT_RESULT_LIMIT = 20
+    _RECENT_RESULT_SCORE_WINDOW = 10
+    _PROXY_ERROR_TYPES = {"cloudflare", "network", "timeout", "upstream"}
     _OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
     _OAUTH_CLIENT_ID = "app_2SKx67EdpoN0G6j64rFvigXD"
     _OAUTH_USER_AGENT = (
@@ -392,6 +396,25 @@ class AccountService:
         normalized["cooldown_until"] = normalized.get("cooldown_until") or None
         normalized["last_success_at"] = normalized.get("last_success_at") or None
         normalized["last_failure_at"] = normalized.get("last_failure_at") or None
+        recent_results = normalized.get("recent_results")
+        if isinstance(recent_results, list):
+            normalized["recent_results"] = [
+                result
+                for result in recent_results[-self._RECENT_RESULT_LIMIT:]
+                if isinstance(result, dict)
+            ]
+        else:
+            normalized["recent_results"] = []
+        proxy_stats = normalized.get("proxy_stats")
+        proxy_stats = dict(proxy_stats) if isinstance(proxy_stats, dict) else {}
+        normalized["proxy_stats"] = {
+            "success": max(0, self._int_or_default(proxy_stats.get("success"), 0)),
+            "fail": max(0, self._int_or_default(proxy_stats.get("fail"), 0)),
+            "last_error_type": str(proxy_stats.get("last_error_type") or "").strip() or None,
+            "cooldown_until": proxy_stats.get("cooldown_until") or None,
+            "last_success_at": proxy_stats.get("last_success_at") or None,
+            "last_failure_at": proxy_stats.get("last_failure_at") or None,
+        }
         normalized["last_used_at"] = normalized.get("last_used_at")
         normalized["last_invalid_at"] = normalized.get("last_invalid_at") or None
         normalized["last_refresh_error"] = normalized.get("last_refresh_error") or None
@@ -433,6 +456,85 @@ class AccountService:
         if iat <= 0:
             return None
         return datetime.fromtimestamp(iat, tz=timezone.utc)
+
+    def _append_recent_result(
+            self,
+            item: dict,
+            *,
+            ok: bool,
+            kind: str,
+            error_type: str | None = None,
+            at: datetime | None = None,
+    ) -> None:
+        results = item.get("recent_results")
+        if not isinstance(results, list):
+            results = []
+        record = {
+            "time": (at or datetime.now(timezone.utc)).isoformat(),
+            "ok": bool(ok),
+            "kind": str(kind or "unknown"),
+        }
+        if error_type:
+            record["error_type"] = str(error_type)
+        item["recent_results"] = [*results, record][-self._RECENT_RESULT_LIMIT:]
+
+    @classmethod
+    def _recent_success_rate(cls, account: dict, *, limit: int | None = None) -> tuple[int, int, float | None]:
+        results = account.get("recent_results")
+        if not isinstance(results, list):
+            return 0, 0, None
+        window = [item for item in results[-(limit or cls._RECENT_RESULT_SCORE_WINDOW):] if isinstance(item, dict)]
+        if not window:
+            return 0, 0, None
+        success = sum(1 for item in window if bool(item.get("ok")))
+        return success, len(window), success / len(window)
+
+    def _proxy_cooldown_active(self, account: dict, now: datetime | None = None) -> bool:
+        proxy_stats = account.get("proxy_stats")
+        if not isinstance(proxy_stats, dict):
+            return False
+        cooldown_until = self._parse_time(proxy_stats.get("cooldown_until"))
+        if cooldown_until is None:
+            return False
+        return (now or datetime.now(timezone.utc)) < cooldown_until
+
+    def _record_proxy_result(
+            self,
+            item: dict,
+            *,
+            success: bool,
+            error_type: str | None = None,
+            now: datetime | None = None,
+    ) -> None:
+        if not str(item.get("proxy") or "").strip():
+            return
+        now = now or datetime.now(timezone.utc)
+        stats = item.get("proxy_stats")
+        stats = dict(stats) if isinstance(stats, dict) else {}
+        if success:
+            stats["success"] = int(stats.get("success") or 0) + 1
+            stats["last_success_at"] = now.isoformat()
+            stats["last_error_type"] = None
+            stats["cooldown_until"] = None
+        elif error_type in self._PROXY_ERROR_TYPES:
+            fail = int(stats.get("fail") or 0) + 1
+            stats["fail"] = fail
+            stats["last_error_type"] = error_type
+            stats["last_failure_at"] = now.isoformat()
+            stats["cooldown_until"] = (now + timedelta(seconds=min(15 * 60, 60 + fail * 30))).isoformat()
+        item["proxy_stats"] = stats
+
+    def _export_account(self, account: dict, *, now: datetime | None = None) -> dict:
+        now = now or datetime.now(timezone.utc)
+        item = dict(account)
+        item["dispatch_score"] = round(self._account_dispatch_score(account, now=now, image=True), 2)
+        item["cooldown_active"] = self._account_cooldown_active(account, now)
+        item["proxy_cooldown_active"] = self._proxy_cooldown_active(account, now)
+        success, total, rate = self._recent_success_rate(account)
+        item["recent_success"] = success
+        item["recent_total"] = total
+        item["recent_success_rate"] = round(rate * 100, 1) if rate is not None else None
+        return item
 
     @staticmethod
     def _safe_response_text(response: object, limit: int = 300) -> str:
@@ -1042,9 +1144,17 @@ class AccountService:
     def _image_precheck_due(self, account: dict | None, access_token: str) -> bool:
         if not isinstance(account, dict):
             return True
+        if self._account_cooldown_active(account) or self._proxy_cooldown_active(account):
+            return False
         if self._token_needs_refresh(access_token):
             return True
         interval_seconds = max(60, int(config.image_account_precheck_interval_minutes or 1) * 60)
+        consecutive_failures = int(account.get("consecutive_failures") or 0)
+        if consecutive_failures:
+            interval_seconds *= min(4, 1 + consecutive_failures)
+        _success, total, rate = self._recent_success_rate(account)
+        if total >= 5 and rate is not None and rate >= 0.8:
+            interval_seconds *= 2
         last_refresh = self._parse_time(account.get("last_account_refresh_at"))
         if last_refresh is None:
             return True
@@ -1098,6 +1208,10 @@ class AccountService:
             score -= 45.0 * (fail / total)
         else:
             score += 20.0
+        _recent_success, recent_total, recent_rate = self._recent_success_rate(account)
+        if recent_rate is not None and recent_total >= 3:
+            score += 40.0 * recent_rate
+            score -= 45.0 * (1.0 - recent_rate)
         consecutive_failures = int(account.get("consecutive_failures") or 0)
         score -= min(80.0, consecutive_failures * 18.0)
         if image:
@@ -1124,6 +1238,16 @@ class AccountService:
                 score -= 12.0 * (1.0 - age / (5 * 60))
         if str(account.get("status") or "") == "正常":
             score += 8.0
+        proxy_stats = account.get("proxy_stats")
+        if isinstance(proxy_stats, dict) and str(account.get("proxy") or "").strip():
+            proxy_success = int(proxy_stats.get("success") or 0)
+            proxy_fail = int(proxy_stats.get("fail") or 0)
+            proxy_total = proxy_success + proxy_fail
+            if proxy_total:
+                score += 20.0 * (proxy_success / proxy_total)
+                score -= 35.0 * (proxy_fail / proxy_total)
+            if self._proxy_cooldown_active(account, now):
+                score -= 120.0
         return score
 
     def _sort_candidate_tokens(self, tokens: list[str], *, image: bool = False) -> list[str]:
@@ -1151,6 +1275,7 @@ class AccountService:
             for item in self._accounts.values()
             if self._is_image_account_available(item)
                and not self._account_cooldown_active(item, now)
+               and not self._proxy_cooldown_active(item, now)
                and self._account_matches_plan_type(item, plan_type)
                and self._account_matches_any_plan_type(item, plan_types)
                and self._account_matches_source_type(item, source_type)
@@ -1261,6 +1386,7 @@ class AccountService:
                 for account in self._accounts.values()
                 if account.get("status") not in {"禁用", "异常"}
                    and not self._account_cooldown_active(account, now)
+                   and not self._proxy_cooldown_active(account, now)
                    and (token := account.get("access_token") or "")
                    and token not in excluded
             ]
@@ -1273,6 +1399,7 @@ class AccountService:
     def mark_text_used(self, access_token: str) -> None:
         if not access_token:
             return
+        now = datetime.now(timezone.utc)
         with self._lock:
             access_token = self._resolve_access_token_locked(access_token)
             current = self._accounts.get(access_token)
@@ -1283,7 +1410,9 @@ class AccountService:
             next_item["consecutive_failures"] = 0
             next_item["last_error_type"] = None
             next_item["cooldown_until"] = None
-            next_item["last_success_at"] = datetime.now(timezone.utc).isoformat()
+            next_item["last_success_at"] = now.isoformat()
+            self._append_recent_result(next_item, ok=True, kind="text", at=now)
+            self._record_proxy_result(next_item, success=True, now=now)
             account = self._normalize_account(next_item)
             if account is None:
                 return
@@ -1304,6 +1433,8 @@ class AccountService:
             return "token_invalid"
         if any(item in text for item in ("rate limit", "rate_limit", "429", "限流", "too many requests")):
             return "rate_limited"
+        if any(item in text for item in ("cloudflare", "cf-ray", "turnstile", "challenge", "被 cloudflare 拦截")):
+            return "cloudflare"
         if any(item in text for item in ("curl: (28)", "timed out", "timeout", "超时")):
             return "timeout"
         if any(item in text for item in ("poll", "still processing", "result could not be retrieved")):
@@ -1351,6 +1482,8 @@ class AccountService:
             next_item["last_error_type"] = error_type
             next_item["last_failure_at"] = now.isoformat()
             next_item["last_used_at"] = local_time_text()
+            self._append_recent_result(next_item, ok=False, kind="text", error_type=error_type, at=now)
+            self._record_proxy_result(next_item, success=False, error_type=error_type, now=now)
             if cooldown_seconds > 0:
                 next_item["cooldown_until"] = (now + timedelta(seconds=cooldown_seconds)).isoformat()
             if error_type == "rate_limited":
@@ -1380,6 +1513,8 @@ class AccountService:
             next_item["cooldown_until"] = None
             next_item["last_success_at"] = now.isoformat()
             next_item["last_used_at"] = local_time_text()
+            self._append_recent_result(next_item, ok=True, kind="image" if image else "text", at=now)
+            self._record_proxy_result(next_item, success=True, now=now)
             account = self._normalize_account(next_item)
             if account is None:
                 return None
@@ -1406,11 +1541,12 @@ class AccountService:
         with self._lock:
             access_token = self._resolve_access_token_locked(access_token)
             account = self._accounts.get(access_token)
-            return dict(account) if account else None
+            return self._export_account(account) if account else None
 
     def list_accounts(self) -> list[dict]:
         with self._lock:
-            return [dict(item) for item in self._accounts.values()]
+            now = datetime.now(timezone.utc)
+            return [self._export_account(item, now=now) for item in self._accounts.values()]
 
     def list_limited_tokens(self) -> list[str]:
         with self._lock:
@@ -1621,6 +1757,7 @@ class AccountService:
         if not access_token:
             return None
         self.release_image_slot(access_token)
+        now = datetime.now(timezone.utc)
         with self._lock:
             access_token = self._resolve_access_token_locked(access_token)
             current = self._accounts.get(access_token)
@@ -1634,18 +1771,20 @@ class AccountService:
                 next_item["consecutive_failures"] = 0
                 next_item["last_error_type"] = None
                 next_item["cooldown_until"] = None
-                next_item["last_success_at"] = datetime.now(timezone.utc).isoformat()
+                next_item["last_success_at"] = now.isoformat()
+                self._append_recent_result(next_item, ok=True, kind="image", at=now)
+                self._record_proxy_result(next_item, success=True, now=now)
                 if next_item.get("usage") is None:
                     next_item["usage"] = {
                         "source": "local_image_counter",
                         "image_gen_used": 0,
-                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                        "updated_at": now.isoformat(),
                     }
                 if isinstance(next_item.get("usage"), dict):
                     usage = dict(next_item["usage"])
                     usage["source"] = usage.get("source") or "local_image_counter"
                     usage["image_gen_used"] = int(usage.get("image_gen_used") or 0) + 1
-                    usage["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    usage["updated_at"] = now.isoformat()
                     if next_item.get("restore_at"):
                         usage["image_gen_resets_at"] = next_item.get("restore_at")
                     next_item["usage"] = usage
@@ -1671,11 +1810,11 @@ class AccountService:
                 next_item["fail"] = int(next_item.get("fail") or 0) + 1
                 next_item["consecutive_failures"] = consecutive
                 next_item["last_error_type"] = error_type
-                next_item["last_failure_at"] = datetime.now(timezone.utc).isoformat()
+                next_item["last_failure_at"] = now.isoformat()
+                self._append_recent_result(next_item, ok=False, kind="image", error_type=error_type, at=now)
+                self._record_proxy_result(next_item, success=False, error_type=error_type, now=now)
                 if cooldown_seconds > 0:
-                    next_item["cooldown_until"] = (
-                        datetime.now(timezone.utc) + timedelta(seconds=cooldown_seconds)
-                    ).isoformat()
+                    next_item["cooldown_until"] = (now + timedelta(seconds=cooldown_seconds)).isoformat()
                 if error_type == "rate_limited":
                     next_item["status"] = "限流"
                     next_item["restore_at"] = next_item.get("restore_at") or next_item.get("cooldown_until")
@@ -2063,19 +2202,44 @@ class AccountService:
     def get_stats(self) -> dict:
         with self._lock:
             items = list(self._accounts.values())
+        now = datetime.now(timezone.utc)
         total = len(items)
         active = sum(1 for a in items if a.get("status") == "正常")
         limited = sum(1 for a in items if a.get("status") == "限流")
         abnormal = sum(1 for a in items if a.get("status") == "异常")
         disabled = sum(1 for a in items if a.get("status") == "禁用")
+        cooling = sum(1 for a in items if self._account_cooldown_active(a, now))
+        proxy_cooling = sum(1 for a in items if self._proxy_cooldown_active(a, now))
         total_quota = sum(max(0, int(a.get("quota") or 0)) for a in items if a.get("status") == "正常")
         unlimited = sum(1 for a in items if a.get("status") == "正常" and bool(a.get("image_quota_unknown")))
         total_success = sum(int(a.get("success") or 0) for a in items)
         total_fail = sum(int(a.get("fail") or 0) for a in items)
         by_type = {}
+        by_error_type = {}
+        proxy_stats = {"accounts": 0, "success": 0, "fail": 0, "cooling": proxy_cooling, "by_error_type": {}}
         for a in items:
             t = a.get("type", "unknown")
             by_type[t] = by_type.get(t, 0) + 1
+            error_type = str(a.get("last_error_type") or "").strip()
+            if error_type:
+                by_error_type[error_type] = by_error_type.get(error_type, 0) + 1
+            if str(a.get("proxy") or "").strip():
+                proxy_stats["accounts"] += 1
+                stats = a.get("proxy_stats")
+                if isinstance(stats, dict):
+                    proxy_stats["success"] += int(stats.get("success") or 0)
+                    proxy_stats["fail"] += int(stats.get("fail") or 0)
+                    proxy_error = str(stats.get("last_error_type") or "").strip()
+                    if proxy_error:
+                        proxy_stats["by_error_type"][proxy_error] = (
+                            proxy_stats["by_error_type"].get(proxy_error, 0) + 1
+                        )
+        recent_total = 0
+        recent_success = 0
+        for account in items:
+            success_count, total_count, _rate = self._recent_success_rate(account)
+            recent_success += success_count
+            recent_total += total_count
         return {
             "total": total,
             "cumulative_total": self._cumulative_total,
@@ -2083,11 +2247,15 @@ class AccountService:
             "limited": limited,
             "abnormal": abnormal,
             "disabled": disabled,
+            "cooling": cooling,
             "total_quota": total_quota,
             "unlimited_quota_count": unlimited,
             "total_success": total_success,
             "total_fail": total_fail,
+            "recent_success_rate": round(recent_success * 100 / recent_total, 1) if recent_total else None,
             "by_type": by_type,
+            "by_error_type": by_error_type,
+            "proxy_stats": proxy_stats,
         }
 
     def account_health(self) -> dict:

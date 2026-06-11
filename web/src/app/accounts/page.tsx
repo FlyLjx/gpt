@@ -87,6 +87,8 @@ const metricCards = [
   { key: "limited", label: "限流账户", color: "text-orange-500", icon: CircleAlert },
   { key: "abnormal", label: "异常账户", color: "text-rose-500", icon: CircleOff },
   { key: "disabled", label: "禁用账户", color: "text-stone-500", icon: Ban },
+  { key: "cooling", label: "调度冷却", color: "text-amber-600", icon: LoaderCircle },
+  { key: "proxyCooling", label: "代理冷却", color: "text-sky-600", icon: RefreshCw },
   { key: "quota", label: "剩余额度", color: "text-blue-500", icon: RefreshCw },
 ] as const;
 
@@ -294,6 +296,48 @@ function formatRestoreAt(value?: string | null) {
   )}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 
   return { absolute, relative };
+}
+
+function formatShortRelative(value?: string | null) {
+  if (!value) {
+    return "";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return String(value);
+  }
+  const diffMs = date.getTime() - Date.now();
+  const absMs = Math.abs(diffMs);
+  const minutes = Math.ceil(absMs / (1000 * 60));
+  if (minutes < 60) {
+    return diffMs >= 0 ? `剩 ${minutes}m` : `${minutes}m前`;
+  }
+  const hours = Math.ceil(minutes / 60);
+  if (hours < 24) {
+    return diffMs >= 0 ? `剩 ${hours}h` : `${hours}h前`;
+  }
+  const days = Math.ceil(hours / 24);
+  return diffMs >= 0 ? `剩 ${days}d` : `${days}d前`;
+}
+
+function errorTypeLabel(value?: string | null) {
+  const key = String(value || "").trim();
+  if (!key) {
+    return "";
+  }
+  const labels: Record<string, string> = {
+    cloudflare: "Cloudflare",
+    rate_limited: "限流",
+    token_invalid: "Token 无效",
+    timeout: "超时",
+    poll_timeout: "轮询超时",
+    network: "网络",
+    upstream: "上游",
+    no_image: "无图",
+    generic: "通用",
+    content_policy: "内容策略",
+  };
+  return labels[key] || key;
 }
 
 function formatQuotaSummary(accounts: Account[]) {
@@ -509,9 +553,11 @@ function AccountsPageContent() {
     const limited = accounts.filter((item) => item.status === "限流").length;
     const abnormal = accounts.filter((item) => item.status === "异常").length;
     const disabled = accounts.filter((item) => item.status === "禁用").length;
+    const cooling = accounts.filter((item) => item.cooldown_active || item.proxy_cooldown_active).length;
+    const proxyCooling = accounts.filter((item) => item.proxy_cooldown_active).length;
     const quota = formatQuotaSummary(accounts);
 
-    return { total, active, limited, abnormal, disabled, quota };
+    return { total, active, limited, abnormal, disabled, cooling, proxyCooling, quota };
   }, [accounts]);
 
   const accountTypeOptions = useMemo(
@@ -1098,6 +1144,65 @@ function AccountsPageContent() {
       ),
     },
     {
+      title: "调度",
+      key: "dispatch",
+      width: 176,
+      render: (_value, account) => {
+        const score = typeof account.dispatch_score === "number" ? account.dispatch_score.toFixed(1) : "—";
+        const cooldown = account.cooldown_active ? formatShortRelative(account.cooldown_until) : "";
+        const recentRate = typeof account.recent_success_rate === "number" ? `${account.recent_success_rate}%` : "—";
+        const error = errorTypeLabel(account.last_error_type);
+        return (
+          <Tooltip
+            title={`最近成功率 ${recentRate}${account.recent_total ? ` (${account.recent_success || 0}/${account.recent_total})` : ""}${error ? `，最近错误 ${error}` : ""}`}
+            placement="topLeft"
+          >
+            <div className="space-y-1 text-xs">
+              <div className="flex items-center gap-1">
+                <Tag color={account.cooldown_active ? "warning" : "green"} className="m-0">
+                  {account.cooldown_active ? "冷却" : "可调度"}
+                </Tag>
+                <span className="font-mono text-slate-600">{score}</span>
+                {cooldown ? <span className="text-amber-600">{cooldown}</span> : null}
+              </div>
+              <div className="truncate text-slate-500">
+                连败 {account.consecutive_failures || 0}
+                {error ? ` · ${error}` : ""}
+              </div>
+            </div>
+          </Tooltip>
+        );
+      },
+    },
+    {
+      title: "代理",
+      key: "proxy",
+      width: 150,
+      render: (_value, account) => {
+        const proxy = String(account.proxy || "").trim();
+        if (!proxy) {
+          return <span className="text-xs text-slate-400">—</span>;
+        }
+        const stats = account.proxy_stats || {};
+        const success = Number(stats.success || 0);
+        const fail = Number(stats.fail || 0);
+        const error = errorTypeLabel(stats.last_error_type);
+        return (
+          <Tooltip title={`${proxy}${error ? `，最近错误 ${error}` : ""}`} placement="topLeft">
+            <div className="space-y-1 text-xs">
+              <Tag color={account.proxy_cooldown_active ? "warning" : "blue"} className="m-0 max-w-[128px] truncate">
+                {account.proxy_cooldown_active ? "代理冷却" : "代理"}
+              </Tag>
+              <div className="font-mono text-slate-500">
+                {success}/{fail}
+                {account.proxy_cooldown_active ? ` · ${formatShortRelative(stats.cooldown_until)}` : ""}
+              </div>
+            </div>
+          </Tooltip>
+        );
+      },
+    },
+    {
       title: "恢复时间",
       dataIndex: "restore_at",
       width: 170,
@@ -1458,7 +1563,7 @@ function AccountsPageContent() {
               loading={isLoading}
               pagination={false}
               size="small"
-              scroll={{ x: isCompactTable ? 1080 : 1680 }}
+              scroll={{ x: isCompactTable ? 1420 : 1980 }}
               locale={{
                 emptyText: (
                   <Empty
