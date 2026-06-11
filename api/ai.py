@@ -105,7 +105,6 @@ def create_router() -> APIRouter:
             request_text=body.prompt,
             request_params=image_request_params(payload),
         )
-        await filter_or_log(call, body.prompt)
         return await call.run(openai_v1_image_generations.handle, payload)
 
     @router.post("/v1/images/edits")
@@ -125,7 +124,6 @@ def create_router() -> APIRouter:
             request_text=prompt,
             request_params=image_request_params(payload),
         )
-        await filter_or_log(call, prompt)
         payload["images"] = await read_image_sources(image_sources)
         payload["base_url"] = resolve_image_base_url(request)
         return await call.run(openai_v1_image_edit.handle, payload)
