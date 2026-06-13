@@ -178,13 +178,14 @@ def text_output_item(text: str, item_id: str | None = None, status: str = "compl
 def image_output_items(prompt: str, data: list[dict[str, Any]], item_id: str | None = None) -> list[dict[str, Any]]:
     output = []
     for item in data:
-        b64_json = str(item.get("b64_json") or "").strip()
-        if b64_json:
+        url = str(item.get("url") or "").strip()
+        if url:
             output.append({
                 "id": item_id or f"ig_{len(output) + 1}",
                 "type": "image_generation_call",
                 "status": "completed",
-                "result": b64_json,
+                "result": url,
+                "url": url,
                 "revised_prompt": str(item.get("revised_prompt") or prompt).strip() or prompt,
             })
     return output
@@ -343,7 +344,7 @@ def response_events(body: dict[str, Any]) -> Iterator[dict[str, Any]]:
         model=model,
         size=tool.get("size"),
         quality=str(tool.get("quality") or "auto"),
-        response_format="b64_json",
+        response_format="url",
         images=images,
     ))
     yield from stream_image_response(image_outputs, prompt, model, input_image_tokens, tool.get("size"), str(tool.get("quality") or "auto"))

@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import base64
 import unittest
 from unittest import mock
 
 from services.config import config
 from services.openai_backend_api import OpenAIBackendAPI
-from services.protocol.conversation import ImageOutput, extract_conversation_ids
+from services.protocol.conversation import ImageOutput, extract_conversation_ids, format_image_result
 from services.protocol.openai_v1_response import stream_image_response
 
 
@@ -155,15 +154,13 @@ class MultiImageResultTests(unittest.TestCase):
         self.assertEqual(urls, ["https://files.test/one.png"])
 
     def test_responses_stream_emits_all_image_output_items(self) -> None:
-        first = base64.b64encode(b"first").decode("ascii")
-        second = base64.b64encode(b"second").decode("ascii")
         events = list(stream_image_response(
             [ImageOutput(
                 kind="result",
                 model="gpt-image-2",
                 index=1,
                 total=1,
-                data=[{"b64_json": first}, {"b64_json": second}],
+                data=[{"url": "https://images.test/first.png"}, {"url": "https://images.test/second.png"}],
             )],
             "draw two options",
             "gpt-image-2",
@@ -173,7 +170,26 @@ class MultiImageResultTests(unittest.TestCase):
         completed = next(event["response"] for event in events if event.get("type") == "response.completed")
 
         self.assertEqual([event["output_index"] for event in done_events], [0, 1])
-        self.assertEqual([item["result"] for item in completed["output"]], [first, second])
+        self.assertEqual([item["result"] for item in completed["output"]], [
+            "https://images.test/first.png",
+            "https://images.test/second.png",
+        ])
+        self.assertEqual([item["url"] for item in completed["output"]], [
+            "https://images.test/first.png",
+            "https://images.test/second.png",
+        ])
+
+    def test_format_image_result_only_exposes_urls(self) -> None:
+        with mock.patch("services.protocol.conversation.save_image_bytes", return_value="https://images.test/out.png"):
+            result = format_image_result(
+                [{"b64_json": "ZmFrZQ==", "revised_prompt": "draw"}],
+                "draw",
+                "b64_json",
+            )
+
+        self.assertEqual(result["data"], [{"url": "https://images.test/out.png", "revised_prompt": "draw"}])
+        self.assertNotIn("b64_json", result["data"][0])
+        self.assertNotIn("_b64_json", result["data"][0])
 
 
 if __name__ == "__main__":

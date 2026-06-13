@@ -286,7 +286,21 @@ function getAccountGroupKey(account: Account): AccountGroupKey {
   return "other";
 }
 
-function compareAccountsByGroup(a: Account, b: Account) {
+function accountLastUsedTimestamp(account: Account) {
+  const value = String(account.last_used_at || "").trim();
+  if (!value) {
+    return 0;
+  }
+  const timestamp = Date.parse(value.includes("T") ? value : value.replace(" ", "T"));
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function compareAccountsByUsage(a: Account, b: Account) {
+  const lastUsedDiff = accountLastUsedTimestamp(b) - accountLastUsedTimestamp(a);
+  if (lastUsedDiff !== 0) {
+    return lastUsedDiff;
+  }
+
   const groupDiff = accountGroupOrder.indexOf(getAccountGroupKey(a)) - accountGroupOrder.indexOf(getAccountGroupKey(b));
   if (groupDiff !== 0) {
     return groupDiff;
@@ -430,7 +444,7 @@ function AccountsPageContent() {
   }, [accounts, query, statusFilter, typeFilter]);
 
   const groupedAccounts = useMemo(() => {
-    return [...filteredAccounts].sort(compareAccountsByGroup);
+    return [...filteredAccounts].sort(compareAccountsByUsage);
   }, [filteredAccounts]);
 
   const pageCount = Math.max(1, Math.ceil(groupedAccounts.length / Number(pageSize)));

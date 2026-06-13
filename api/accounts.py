@@ -55,7 +55,7 @@ def _test_account_image_generation(body: AccountImageTestRequest) -> dict[str, A
         n=1,
         size=body.size,
         quality=str(body.quality or "auto"),
-        response_format="b64_json",
+        response_format="url",
         message_as_error=True,
     )
     try:

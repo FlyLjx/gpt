@@ -406,18 +406,10 @@ def format_image_result(
         revised_prompt = str(item.get("revised_prompt") or prompt).strip() or prompt
         image_bytes = base64.b64decode(b64_json)
         url = save_image_bytes(image_bytes, base_url)
-        if response_format == "b64_json":
-            data.append({
-                "b64_json": b64_json,
-                "url": url,
-                "revised_prompt": revised_prompt,
-            })
-        else:
-            data.append({
-                "url": url,
-                "_b64_json": b64_json,
-                "revised_prompt": revised_prompt,
-            })
+        data.append({
+            "url": url,
+            "revised_prompt": revised_prompt,
+        })
     result: dict[str, Any] = {"created": created or int(time.time()), "data": data}
     if message and not data:
         result["message"] = message
@@ -433,7 +425,7 @@ class ConversationRequest:
     n: int = 1
     size: str | None = None
     quality: str = "auto"
-    response_format: str = "b64_json"
+    response_format: str = "url"
     base_url: str | None = None
     message_as_error: bool = False
     progress_callback: Any = None  # Callable[[str], None] | None
