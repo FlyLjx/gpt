@@ -10,10 +10,26 @@ from pathlib import Path
 
 from services.account_service import account_service
 from services.config import DATA_DIR
-from services.register import openai_register
+from services.register import mail_provider, openai_register
 
 
 REGISTER_FILE = DATA_DIR / "register.json"
+
+
+def _serialize_outlook_pool(credentials: list[dict]) -> str:
+    return "\n".join(
+        f'{item["email"]}----{item.get("password", "")}----{item["client_id"]}----{item["refresh_token"]}'
+        for item in credentials
+    )
+
+
+def _merge_outlook_pool(old_text: str, new_text: str) -> str:
+    merged: dict[str, dict] = {}
+    for credential in mail_provider.parse_outlook_credentials(old_text or ""):
+        merged[credential["email"].strip().lower()] = credential
+    for credential in mail_provider.parse_outlook_credentials(new_text or ""):
+        merged[credential["email"].strip().lower()] = credential
+    return _serialize_outlook_pool(list(merged.values()))
 
 
 def _now() -> str:
@@ -61,23 +77,13 @@ def _normalize(raw: dict) -> dict:
     cfg["low_success_threshold_percent"] = max(0, min(100, int(cfg.get("low_success_threshold_percent") or 20)))
     cfg["low_success_pause_seconds"] = max(5, int(cfg.get("low_success_pause_seconds") or 60))
     cfg["proxy"] = str(cfg.get("proxy") or "").strip()
-    _sync_mail_proxy(cfg)
+    if isinstance(cfg.get("mail"), dict):
+        cfg["mail"].pop("proxy", None)
     cfg["enabled"] = bool(cfg.get("enabled"))
     stats = {**_default_config()["stats"], **(raw.get("stats") if isinstance(raw.get("stats"), dict) else {}),
              "threads": cfg["threads"]}
     cfg["stats"] = stats
     return cfg
-
-
-def _sync_mail_proxy(cfg: dict) -> None:
-    mail = cfg.get("mail")
-    if not isinstance(mail, dict):
-        return
-    proxy = str(cfg.get("proxy") or "").strip()
-    if proxy:
-        mail["proxy"] = proxy
-    else:
-        mail.pop("proxy", None)
 
 
 class RegisterService:
@@ -105,15 +111,79 @@ class RegisterService:
 
     def get(self) -> dict:
         with self._lock:
-            return json.loads(json.dumps({**self._config, "logs": self._logs[-300:]}, ensure_ascii=False))
+            snapshot = json.loads(json.dumps({**self._config, "logs": self._logs[-300:]}, ensure_ascii=False))
+        self._redact_outlook_pools(snapshot)
+        return snapshot
 
-    def _inject_proxy_to_mail(self) -> None:
-        _sync_mail_proxy(self._config)
+    @staticmethod
+    def _mask_email(email: str) -> str:
+        local, sep, domain = str(email or "").partition("@")
+        if not sep:
+            return "***"
+        masked = (local[:2] + "***" + local[-1:]) if len(local) > 2 else (local[:1] + "***")
+        return f"{masked}@{domain}"
+
+    def _redact_outlook_pools(self, snapshot: dict) -> None:
+        mail = snapshot.get("mail")
+        if not isinstance(mail, dict):
+            return
+        providers = mail.get("providers")
+        if not isinstance(providers, list):
+            return
+        for provider in providers:
+            if not isinstance(provider, dict) or provider.get("type") != "outlook_token":
+                continue
+            credentials = mail_provider.parse_outlook_credentials(str(provider.get("mailboxes") or ""))
+            provider["mailboxes"] = ""
+            provider["mailboxes_count"] = len(credentials)
+            provider["mailboxes_preview"] = [self._mask_email(item["email"]) for item in credentials]
+            provider["mailboxes_stats"] = mail_provider.outlook_token_pool_stats(credentials)
+
+    def _drop_mail_proxy(self) -> None:
+        if isinstance(self._config.get("mail"), dict):
+            self._config["mail"].pop("proxy", None)
+
+    def _merge_outlook_pools(self, updates: dict) -> None:
+        mail = updates.get("mail")
+        if not isinstance(mail, dict) or not isinstance(mail.get("providers"), list):
+            return
+        old_mail = self._config.get("mail") if isinstance(self._config.get("mail"), dict) else {}
+        old_providers = old_mail.get("providers") if isinstance(old_mail.get("providers"), list) else []
+        for index, provider in enumerate(mail["providers"]):
+            if not isinstance(provider, dict) or provider.get("type") != "outlook_token":
+                continue
+            old = old_providers[index] if index < len(old_providers) and isinstance(old_providers[index], dict) else {}
+            old_text = str(old.get("mailboxes") or "") if old.get("type") == "outlook_token" else ""
+            new_text = str(provider.get("mailboxes") or "")
+            provider["mailboxes"] = _merge_outlook_pool(old_text, new_text) if (old_text or new_text) else ""
+            for key in ("mailboxes_count", "mailboxes_preview", "mailboxes_stats"):
+                provider.pop(key, None)
+
+    def _prune_unused_outlook_pools(self) -> int:
+        mail = self._config.get("mail")
+        if not isinstance(mail, dict):
+            return 0
+        providers = mail.get("providers")
+        if not isinstance(providers, list):
+            return 0
+        total_removed = 0
+        for provider in providers:
+            if not isinstance(provider, dict) or provider.get("type") != "outlook_token":
+                continue
+            credentials = mail_provider.parse_outlook_credentials(str(provider.get("mailboxes") or ""))
+            kept, removed = mail_provider.prune_outlook_unused_credentials(credentials)
+            if removed:
+                provider["mailboxes"] = _serialize_outlook_pool(kept)
+                total_removed += removed
+            for key in ("mailboxes_count", "mailboxes_preview", "mailboxes_stats"):
+                provider.pop(key, None)
+        return total_removed
 
     def update(self, updates: dict) -> dict:
         with self._lock:
+            self._merge_outlook_pools(updates)
             self._config = _normalize({**self._config, **updates})
-            self._inject_proxy_to_mail()
+            self._drop_mail_proxy()
             openai_register.config.update({k: self._config[k] for k in ("mail", "proxy", "total", "threads")})
             self._save()
             return self.get()
@@ -125,7 +195,7 @@ class RegisterService:
                 self._save()
                 return self.get()
             self._config["enabled"] = True
-            self._inject_proxy_to_mail()
+            self._drop_mail_proxy()
             self._logs = []
             metrics = self._pool_metrics()
             self._config["stats"] = {"job_id": uuid.uuid4().hex, "success": 0, "fail": 0, "done": 0, "running": 0, "threads": self._config["threads"], **metrics, "started_at": _now(), "updated_at": _now()}
@@ -154,6 +224,24 @@ class RegisterService:
                 openai_register.stats.update({"done": 0, "success": 0, "fail": 0, "start_time": 0.0})
             self._save()
             return self.get()
+
+    def reset_outlook_pool(self, scope: str = "all") -> dict:
+        scope = str(scope or "all").strip().lower()
+        if scope == "unused":
+            with self._lock:
+                removed = self._prune_unused_outlook_pools()
+                openai_register.config.update({k: self._config[k] for k in ("mail", "proxy", "total", "threads")})
+                self._save()
+                self._append_log(f"已清空 Outlook 邮箱池未使用邮箱，移除 {removed} 个", "yellow")
+            return self.get()
+        scope = "failed" if scope == "failed" else "all"
+        cleared = mail_provider.reset_outlook_token_pool_state(scope)
+        with self._lock:
+            self._append_log(
+                f"已重置 Outlook 邮箱池状态（范围={'仅失败/占用' if scope == 'failed' else '全部'}），清除 {cleared} 条记录",
+                "yellow",
+            )
+        return self.get()
 
     def _append_log(self, text: str, color: str = "") -> None:
         with self._lock:

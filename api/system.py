@@ -8,7 +8,6 @@ from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
 from api.support import require_admin, require_identity, resolve_image_base_url
-from services.backup_service import BackupError, backup_service
 from services.config import config
 from services.dashboard_service import build_dashboard_summary
 from services.image_service import (
@@ -22,11 +21,10 @@ from services.image_service import (
     list_images,
     storage_stats,
 )
-from services.image_storage_service import ImageStorageError, image_storage_service
 from services.image_tags_service import delete_tag, get_all_tags, set_tags
 from services.log_service import log_service
 from services.notification_service import notification_service
-from services.proxy_service import test_proxy
+from services.proxy_service import proxy_settings, test_clearance, test_proxy
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -35,6 +33,10 @@ class SettingsUpdateRequest(BaseModel):
 
 class ProxyTestRequest(BaseModel):
     url: str = ""
+
+
+class ClearanceTestRequest(BaseModel):
+    target_url: str = "https://chatgpt.com"
 
 
 class ImageDeleteRequest(BaseModel):
@@ -52,8 +54,6 @@ class ImageTagsRequest(BaseModel):
 
 class LogDeleteRequest(BaseModel):
     ids: list[str] = []
-class BackupDeleteRequest(BaseModel):
-    key: str = ""
 
 
 def create_router(app_version: str) -> APIRouter:
@@ -83,6 +83,11 @@ def create_router(app_version: str) -> APIRouter:
     async def get_dashboard(authorization: str | None = Header(default=None)):
         require_admin(authorization)
         return await run_in_threadpool(build_dashboard_summary, app_version)
+
+    @router.get("/api/third-party-apps")
+    async def get_third_party_apps(authorization: str | None = Header(default=None)):
+        require_identity(authorization)
+        return {"third_party_apps": config.get_third_party_apps_settings()}
 
     @router.post("/api/settings")
     async def save_settings(body: SettingsUpdateRequest, authorization: str | None = Header(default=None)):
@@ -138,10 +143,32 @@ def create_router(app_version: str) -> APIRouter:
     @router.post("/api/proxy/test")
     async def test_proxy_endpoint(body: ProxyTestRequest, authorization: str | None = Header(default=None)):
         require_admin(authorization)
-        candidate = (body.url or "").strip() or config.get_proxy_settings()
-        if not candidate:
-            raise HTTPException(status_code=400, detail={"error": "proxy url is required"})
-        return {"result": await run_in_threadpool(test_proxy, candidate)}
+        return {"result": await run_in_threadpool(test_proxy, (body.url or "").strip())}
+
+    @router.get("/api/proxy/runtime")
+    async def get_proxy_runtime_endpoint(authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        return {
+            "runtime": config.get_public_proxy_runtime_settings(),
+            "status": proxy_settings.get_runtime_status(),
+        }
+
+    @router.post("/api/proxy/runtime")
+    async def save_proxy_runtime_endpoint(body: SettingsUpdateRequest, authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        try:
+            config.update({"proxy_runtime": body.model_dump(mode="python")})
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+        return {
+            "runtime": config.get_public_proxy_runtime_settings(),
+            "status": proxy_settings.get_runtime_status(),
+        }
+
+    @router.post("/api/proxy/clearance/test")
+    async def test_proxy_clearance_endpoint(body: ClearanceTestRequest, authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        return {"result": await run_in_threadpool(test_clearance, body.target_url)}
 
     @router.post("/api/notifications/bark/test")
     async def test_bark_notification_endpoint(authorization: str | None = Header(default=None)):
@@ -156,84 +183,6 @@ def create_router(app_version: str) -> APIRouter:
             "backend": storage.get_backend_info(),
             "health": storage.health_check(),
         }
-
-    @router.post("/api/backup/test")
-    async def test_backup_connection(authorization: str | None = Header(default=None)):
-        require_admin(authorization)
-        try:
-            return {"result": await run_in_threadpool(backup_service.test_connection)}
-        except BackupError as exc:
-            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
-
-    @router.post("/api/image-storage/test")
-    async def test_image_storage_endpoint(authorization: str | None = Header(default=None)):
-        require_admin(authorization)
-        return {"result": await run_in_threadpool(image_storage_service.test_webdav)}
-
-    @router.post("/api/image-storage/sync")
-    async def sync_image_storage_endpoint(authorization: str | None = Header(default=None)):
-        require_admin(authorization)
-        try:
-            return {"result": await run_in_threadpool(image_storage_service.sync_all)}
-        except ImageStorageError as exc:
-            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
-
-    @router.get("/api/backups")
-    async def get_backups(authorization: str | None = Header(default=None)):
-        require_admin(authorization)
-        try:
-            return {
-                "items": await run_in_threadpool(backup_service.list_backups),
-                "state": backup_service.get_status(),
-                "settings": backup_service.get_settings(),
-            }
-        except BackupError as exc:
-            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
-
-    @router.post("/api/backups/run")
-    async def run_backup_endpoint(authorization: str | None = Header(default=None)):
-        require_admin(authorization)
-        try:
-            return {"result": await run_in_threadpool(backup_service.run_backup)}
-        except BackupError as exc:
-            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
-
-    @router.post("/api/backups/delete")
-    async def delete_backup_endpoint(body: BackupDeleteRequest, authorization: str | None = Header(default=None)):
-        require_admin(authorization)
-        try:
-            await run_in_threadpool(backup_service.delete_backup, body.key)
-            return {"ok": True}
-        except BackupError as exc:
-            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
-
-    @router.get("/api/backups/detail")
-    async def get_backup_detail(key: str = "", authorization: str | None = Header(default=None)):
-        require_admin(authorization)
-        try:
-            return {"item": await run_in_threadpool(backup_service.get_backup_detail, key)}
-        except BackupError as exc:
-            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
-
-    @router.get("/api/backups/download")
-    async def download_backup_endpoint(key: str = "", authorization: str | None = Header(default=None)):
-        require_admin(authorization)
-        try:
-            item = await run_in_threadpool(backup_service.download_backup, key)
-        except BackupError as exc:
-            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
-        filename = str(item.get("name") or "backup.bin")
-        quoted = quote(filename)
-        headers = {
-            "Content-Disposition": f"attachment; filename*=UTF-8''{quoted}",
-            "Content-Length": str(int(item.get("size") or 0)),
-        }
-        return Response(
-            content=bytes(item.get("payload") or b""),
-            media_type=str(item.get("content_type") or "application/octet-stream"),
-            headers=headers,
-        )
-
 
     @router.get("/api/images/tags")
     async def list_image_tags(authorization: str | None = Header(default=None)):
@@ -287,6 +236,7 @@ def create_router(app_version: str) -> APIRouter:
             "healthy": healthy,
             "version": app_version,
             "storage": {"backend": storage.get_backend_info(), "health": storage_health},
+            "proxy_runtime": proxy_settings.get_runtime_status(),
             "accounts": stats,
         }
         if format == "json":

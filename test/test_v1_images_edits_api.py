@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import os
 import unittest
 from unittest import mock
 
@@ -10,6 +11,7 @@ from fastapi.testclient import TestClient
 import api.ai as ai_module
 
 
+os.environ["CHATGPT2API_AUTH_KEY"] = "chatgpt2api"
 AUTH_HEADERS = {"Authorization": "Bearer chatgpt2api"}
 PNG_BYTES = b"\x89PNG\r\n\x1a\n"
 DATA_IMAGE_URL = f"data:image/png;base64,{base64.b64encode(PNG_BYTES).decode('ascii')}"
@@ -50,6 +52,24 @@ class ImagesEditsApiTests(unittest.TestCase):
         self.assertEqual(payload["prompt"], "edit")
         self.assertEqual(payload["n"], 1)
         self.assertEqual(payload["images"], [(PNG_BYTES, "image_url.png", "image/png")])
+
+    def test_edit_accepts_json_mask_url(self):
+        """测试图片编辑接口支持官方 JSON mask 引用。"""
+        response = self.client.post(
+            "/v1/images/edits",
+            headers=AUTH_HEADERS,
+            json={
+                "model": "gpt-image-2",
+                "prompt": "edit",
+                "images": [{"image_url": DATA_IMAGE_URL}],
+                "mask": {"image_url": DATA_IMAGE_URL},
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = self.handle_calls[0]
+        self.assertEqual(payload["images"], [(PNG_BYTES, "image_url.png", "image/png")])
+        self.assertEqual(payload["mask"], [(PNG_BYTES, "image_url.png", "image/png")])
 
     def test_edit_rejects_file_id_reference(self):
         """测试图片编辑接口对暂不支持的 file_id 返回明确错误。"""

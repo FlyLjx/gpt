@@ -15,6 +15,7 @@ const providerOptions = [
   { value: "gptmail", label: "gptmail(未测试)" },
   { value: "yyds_mail", label: "yyds_mail" },
   { value: "ddg_mail", label: "ddg_mail (DDG邮箱+CF中转)" },
+  { value: "outlook_token", label: "outlook_token (Outlook/Hotmail邮箱池)" },
 ];
 
 function textList(value: unknown) {
@@ -52,6 +53,7 @@ export function RegisterCard() {
   const save = useSettingsStore((state) => state.saveRegister);
   const toggle = useSettingsStore((state) => state.toggleRegister);
   const reset = useSettingsStore((state) => state.resetRegister);
+  const resetOutlookPool = useSettingsStore((state) => state.resetOutlookPool);
 
   if (isLoading) {
     return (
@@ -81,6 +83,7 @@ export function RegisterCard() {
       ...(type === "gptmail" ? { api_key: "", default_domain: "" } : {}),
       ...(type === "yyds_mail" ? { api_base: "https://maliapi.215.im/v1", api_key: "", domain: [], subdomain: "", wildcard: false } : {}),
       ...(type === "ddg_mail" ? { ddg_token: "", cf_inbox_jwt: "", cf_domain: [], admin_password: "" } : {}),
+      ...(type === "outlook_token" ? { mailboxes: "", mode: "graph", imap_host: "outlook.office365.com", message_limit: 10 } : {}),
     });
   };
 
@@ -290,6 +293,77 @@ export function RegisterCard() {
                           <Checkbox checked={Boolean(provider.wildcard)} onChange={(event) => updateProvider(index, { wildcard: event.target.checked })} disabled={config.enabled}>
                             Wildcard
                           </Checkbox>
+                        </Col>
+                      </>
+                    ) : null}
+                    {type === "outlook_token" ? (
+                      <>
+                        <Col xs={24} md={12}>
+                          <Field label="读取方式">
+                            <Select
+                              className="w-full"
+                              value={String(provider.mode || "graph")}
+                              onChange={(value) => updateProvider(index, { mode: value })}
+                              disabled={config.enabled}
+                              options={[
+                                { value: "graph", label: "Graph API" },
+                                { value: "imap", label: "IMAP (XOAUTH2)" },
+                                { value: "auto", label: "自动 (Graph→IMAP)" },
+                              ]}
+                            />
+                          </Field>
+                        </Col>
+                        {String(provider.mode || "graph") !== "graph" ? (
+                          <Col xs={24} md={12}>
+                            <Field label="IMAP Host">
+                              <Input value={String(provider.imap_host || "outlook.office365.com")} onChange={(event) => updateProvider(index, { imap_host: event.target.value })} disabled={config.enabled} />
+                            </Field>
+                          </Col>
+                        ) : null}
+                        <Col xs={24} md={12}>
+                          <Field label="读取邮件数量">
+                            <Input value={String(provider.message_limit || 10)} onChange={(event) => updateProvider(index, { message_limit: Number(event.target.value) || 10 })} disabled={config.enabled} />
+                          </Field>
+                        </Col>
+                        <Col xs={24}>
+                          <Field label="邮箱池导入">
+                            <Input.TextArea
+                              value={String(provider.mailboxes || "")}
+                              onChange={(event) => updateProvider(index, { mailboxes: event.target.value })}
+                              placeholder={"每行一个邮箱，格式：\nemail----password----client_id----refresh_token\n已保存的密码/refresh_token 不会回显；这里用于新增或覆盖同名邮箱。"}
+                              autoSize={{ minRows: 5, maxRows: 10 }}
+                              disabled={config.enabled}
+                            />
+                          </Field>
+                          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                            <Tag>已保存 {Number(provider.mailboxes_count || 0)}</Tag>
+                            <Tag color="default">未使用 {Number((provider.mailboxes_stats as Record<string, number> | undefined)?.unused || 0)}</Tag>
+                            <Tag color="processing">占用中 {Number((provider.mailboxes_stats as Record<string, number> | undefined)?.in_use || 0)}</Tag>
+                            <Tag color="success">已用 {Number((provider.mailboxes_stats as Record<string, number> | undefined)?.used || 0)}</Tag>
+                            <Tag color="warning">token失效 {Number((provider.mailboxes_stats as Record<string, number> | undefined)?.token_invalid || 0)}</Tag>
+                            <Tag color="error">失败 {Number((provider.mailboxes_stats as Record<string, number> | undefined)?.failed || 0)}</Tag>
+                          </div>
+                          {Array.isArray(provider.mailboxes_preview) && provider.mailboxes_preview.length > 0 ? (
+                            <Typography.Text type="secondary" className="mt-2 block text-xs">
+                              已保存邮箱（脱敏）：{provider.mailboxes_preview.slice(0, 8).join("、")}{provider.mailboxes_preview.length > 8 ? ` 等 ${provider.mailboxes_preview.length} 个` : ""}
+                            </Typography.Text>
+                          ) : null}
+                          <Space wrap className="mt-3">
+                            <Button size="small" onClick={() => void resetOutlookPool("failed")} disabled={config.enabled}>
+                              清除失败/占用状态
+                            </Button>
+                            <Button size="small" danger onClick={() => {
+                              if (window.confirm("确定要重置整个 Outlook 邮箱池状态吗？所有邮箱会被标记为可重新使用。")) void resetOutlookPool("all");
+                            }} disabled={config.enabled}>
+                              重置全部状态
+                            </Button>
+                            <Button size="small" danger onClick={() => {
+                              if (window.confirm("确定要从 Outlook 邮箱池中删除所有未使用邮箱吗？此操作会移除这些已保存凭据。")) void resetOutlookPool("unused");
+                            }} disabled={config.enabled}>
+                              清空未使用
+                            </Button>
+                          </Space>
+                          <Alert className="mt-3" type="info" showIcon message="Outlook 邮箱池格式为 email----password----client_id----refresh_token；成功注册后邮箱会标记 used，不会重复使用。" />
                         </Col>
                       </>
                     ) : null}

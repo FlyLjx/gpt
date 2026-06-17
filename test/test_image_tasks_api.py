@@ -132,6 +132,25 @@ class ImageTasksApiTests(unittest.TestCase):
         images = self.fake_service.edit_calls[0][1]["images"]
         self.assertEqual(images, [(PNG_BYTES, "image_url.png", "image/png")])
 
+    def test_create_edit_task_accepts_mask_url(self):
+        """测试图片编辑任务接口支持表单 mask 引用。"""
+        response = self.client.post(
+            "/api/image-tasks/edits",
+            headers=AUTH_HEADERS,
+            data={
+                "client_task_id": "edit-mask-1",
+                "prompt": "edit",
+                "model": "gpt-image-2",
+                "image_url": DATA_IMAGE_URL,
+                "mask": DATA_IMAGE_URL,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        kwargs = self.fake_service.edit_calls[0][1]
+        self.assertEqual(kwargs["images"], [(PNG_BYTES, "image_url.png", "image/png")])
+        self.assertEqual(kwargs["masks"], [(PNG_BYTES, "image_url.png", "image/png")])
+
     def test_list_tasks_reports_missing_ids(self):
         response = self.client.get("/api/image-tasks?ids=task-1,missing", headers=AUTH_HEADERS)
 

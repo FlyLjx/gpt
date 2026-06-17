@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from io import BytesIO
 from typing import Any, Iterator
+
+from PIL import Image
 
 from services.protocol.conversation import (
     ConversationRequest,
@@ -14,9 +17,37 @@ from services.protocol.conversation import (
 from utils.image_tokens import count_image_inputs_tokens, count_image_output_items_tokens, image_usage
 
 
+def _composite_mask(
+    images: list[tuple[bytes, str, str]],
+    masks: list[tuple[bytes, str, str]],
+) -> list[tuple[bytes, str, str]]:
+    """把 mask 的 alpha/灰度通道合成到图片 alpha 通道中。"""
+    if not masks:
+        return images
+    result: list[tuple[bytes, str, str]] = []
+    for index, (data, filename, _mime_type) in enumerate(images):
+        mask_data = masks[index][0] if index < len(masks) else masks[-1][0]
+        image = Image.open(BytesIO(data)).convert("RGBA")
+        mask_image = Image.open(BytesIO(mask_data))
+        if mask_image.mode == "RGBA":
+            alpha = mask_image.split()[3]
+        elif mask_image.mode == "L":
+            alpha = mask_image
+        else:
+            alpha = mask_image.convert("L")
+        alpha = alpha.resize(image.size, Image.LANCZOS)
+        image.putalpha(alpha)
+        buffer = BytesIO()
+        image.save(buffer, format="PNG")
+        result.append((buffer.getvalue(), filename, "image/png"))
+    return result
+
+
 def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
     prompt = str(body.get("prompt") or "")
     images = body.get("images") or []
+    masks = body.get("mask") or []
+    images = _composite_mask(images, masks)
     model = str(body.get("model") or "gpt-image-2")
     n = int(body.get("n") or 1)
     size = body.get("size")

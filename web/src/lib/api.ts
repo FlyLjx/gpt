@@ -5,6 +5,8 @@ export type AccountStatus = "正常" | "限流" | "异常" | "禁用";
 export type ImageModel = string;
 export type AuthRole = "admin" | "user";
 export type ImageStorageMode = "local" | "webdav" | "both";
+export type ProxyRuntimeEgressMode = "direct" | "single_proxy";
+export type ProxyRuntimeClearanceMode = "none" | "manual" | "flaresolverr";
 
 export type ImageStorageSettings = {
   enabled: boolean;
@@ -33,6 +35,50 @@ export type BarkNotificationSettings = {
 
 export type NotificationSettings = {
   bark: BarkNotificationSettings;
+};
+
+export type ProxyRuntimeSettings = {
+  enabled: boolean;
+  egress_mode: ProxyRuntimeEgressMode;
+  proxy_url: string;
+  resource_proxy_url: string;
+  skip_ssl_verify: boolean;
+  reset_session_status_codes: number[];
+  clearance: {
+    enabled: boolean;
+    mode: ProxyRuntimeClearanceMode;
+    cf_cookies: string;
+    cf_clearance: string;
+    has_cf_cookies?: boolean;
+    has_cf_clearance?: boolean;
+    user_agent: string;
+    browser: string;
+    flaresolverr_url: string;
+    timeout_sec: number | string;
+    refresh_interval: number | string;
+    warm_up_on_start: boolean;
+  };
+};
+
+export type ProxyRuntimeStatus = {
+  enabled: boolean;
+  egress_mode: string;
+  proxy_source: string;
+  has_proxy: boolean;
+  clearance_enabled: boolean;
+  clearance_mode: string;
+  has_clearance_bundle: boolean;
+  cached_clearance_hosts: string[];
+};
+
+export type ClearanceTestResult = {
+  ok: boolean;
+  status: string;
+  latency_ms: number;
+  has_cookies: boolean;
+  user_agent: string;
+  error: string | null;
+  runtime: ProxyRuntimeStatus;
 };
 
 export type Account = {
@@ -209,6 +255,7 @@ export type SettingsConfig = {
   auto_refill_interval_minutes?: number | string;
   log_levels?: string[];
   notifications?: NotificationSettings;
+  proxy_runtime?: ProxyRuntimeSettings;
   image_storage?: ImageStorageSettings;
   backup?: BackupSettings;
   backup_state?: BackupState;
@@ -1081,6 +1128,8 @@ export type ProxyTestResult = {
   ok: boolean;
   status: number;
   latency_ms: number;
+  proxy_source?: string;
+  has_proxy?: boolean;
   exit_ip?: {
     ip?: string;
     country?: string;
@@ -1121,5 +1170,30 @@ export async function testProxy(url?: string) {
   return httpRequest<{ result: ProxyTestResult }>("/api/proxy/test", {
     method: "POST",
     body: { url: url ?? "" },
+  });
+}
+
+export async function fetchProxyRuntime() {
+  return httpRequest<{ runtime: ProxyRuntimeSettings; status: ProxyRuntimeStatus }>("/api/proxy/runtime");
+}
+
+export async function updateProxyRuntime(runtime: ProxyRuntimeSettings) {
+  return httpRequest<{ runtime: ProxyRuntimeSettings; status: ProxyRuntimeStatus }>("/api/proxy/runtime", {
+    method: "POST",
+    body: runtime,
+  });
+}
+
+export async function testProxyClearance(targetUrl = "https://chatgpt.com") {
+  return httpRequest<{ result: ClearanceTestResult }>("/api/proxy/clearance/test", {
+    method: "POST",
+    body: { target_url: targetUrl },
+  });
+}
+
+export async function resetOutlookPool(scope: "all" | "failed" | "unused" = "all") {
+  return httpRequest<{ register: RegisterConfig }>("/api/register/outlook-pool/reset", {
+    method: "POST",
+    body: { scope },
   });
 }

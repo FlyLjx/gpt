@@ -11,6 +11,7 @@ import {
   fetchCPAPools,
   fetchBackups,
   fetchRegisterConfig,
+  resetOutlookPool as resetOutlookPoolApi,
   resetRegister as resetRegisterApi,
   fetchSettingsConfig,
   runBackupNow,
@@ -32,6 +33,7 @@ import {
   type CPARemoteFile,
   type ImageStorageMode,
   type ImageStorageSettings,
+  type ProxyRuntimeSettings,
   type RegisterConfig,
   type SettingsConfig,
 } from "@/lib/api";
@@ -41,6 +43,28 @@ export const PAGE_SIZE_OPTIONS = ["50", "100", "200"] as const;
 export type PageSizeOption = (typeof PAGE_SIZE_OPTIONS)[number];
 
 function normalizeConfig(config: SettingsConfig): SettingsConfig {
+  const proxyRuntime = typeof config.proxy_runtime === "object" && config.proxy_runtime
+    ? config.proxy_runtime as ProxyRuntimeSettings
+    : {
+      enabled: false,
+      egress_mode: "direct",
+      proxy_url: "",
+      resource_proxy_url: "",
+      skip_ssl_verify: false,
+      reset_session_status_codes: [403],
+      clearance: {
+        enabled: false,
+        mode: "none",
+        cf_cookies: "",
+        cf_clearance: "",
+        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+        browser: "chrome",
+        flaresolverr_url: "",
+        timeout_sec: 60,
+        refresh_interval: 3600,
+        warm_up_on_start: false,
+      },
+    };
   const imageStorage = typeof config.image_storage === "object" && config.image_storage
     ? config.image_storage as ImageStorageSettings
     : {
@@ -133,6 +157,32 @@ function normalizeConfig(config: SettingsConfig): SettingsConfig {
         notify_register: Boolean(bark.notify_register !== false),
         notify_register_errors_only: Boolean(bark.notify_register_errors_only),
         notify_auto_refill: Boolean(bark.notify_auto_refill !== false),
+      },
+    },
+    proxy_runtime: {
+      enabled: Boolean(proxyRuntime.enabled),
+      egress_mode: proxyRuntime.egress_mode === "single_proxy" ? "single_proxy" : "direct",
+      proxy_url: String(proxyRuntime.proxy_url || ""),
+      resource_proxy_url: String(proxyRuntime.resource_proxy_url || ""),
+      skip_ssl_verify: Boolean(proxyRuntime.skip_ssl_verify),
+      reset_session_status_codes: Array.isArray(proxyRuntime.reset_session_status_codes)
+        ? proxyRuntime.reset_session_status_codes.map(Number).filter((item) => Number.isFinite(item))
+        : [403],
+      clearance: {
+        enabled: Boolean(proxyRuntime.clearance?.enabled),
+        mode: ["none", "manual", "flaresolverr"].includes(String(proxyRuntime.clearance?.mode))
+          ? proxyRuntime.clearance.mode
+          : "none",
+        cf_cookies: String(proxyRuntime.clearance?.cf_cookies || ""),
+        cf_clearance: String(proxyRuntime.clearance?.cf_clearance || ""),
+        has_cf_cookies: Boolean(proxyRuntime.clearance?.has_cf_cookies),
+        has_cf_clearance: Boolean(proxyRuntime.clearance?.has_cf_clearance),
+        user_agent: String(proxyRuntime.clearance?.user_agent || ""),
+        browser: String(proxyRuntime.clearance?.browser || "chrome"),
+        flaresolverr_url: String(proxyRuntime.clearance?.flaresolverr_url || ""),
+        timeout_sec: Number(proxyRuntime.clearance?.timeout_sec || 60),
+        refresh_interval: Number(proxyRuntime.clearance?.refresh_interval || 3600),
+        warm_up_on_start: Boolean(proxyRuntime.clearance?.warm_up_on_start),
       },
     },
     proxy: typeof config.proxy === "string" ? config.proxy : "",
@@ -273,6 +323,9 @@ type SettingsStore = {
   setAIReviewField: (key: "enabled" | "base_url" | "api_key" | "model" | "prompt", value: string | boolean) => void;
   setBarkNotificationField: (key: keyof BarkNotificationSettings, value: string | boolean) => void;
   testBark: () => Promise<void>;
+  setProxyRuntimeField: (key: keyof ProxyRuntimeSettings, value: string | boolean | string[]) => void;
+  setProxyRuntimeClearanceField: (key: keyof ProxyRuntimeSettings["clearance"], value: string | boolean) => void;
+  setProxyRuntimeStatusCodesText: (value: string) => void;
   setImageStorageField: (key: keyof ImageStorageSettings, value: string | boolean) => void;
   testImageStorage: () => Promise<void>;
   syncImagesToWebDAV: () => Promise<void>;
@@ -295,6 +348,7 @@ type SettingsStore = {
   saveRegister: () => Promise<void>;
   toggleRegister: () => Promise<void>;
   resetRegister: () => Promise<void>;
+  resetOutlookPool: (scope: "all" | "failed" | "unused") => Promise<void>;
 
   loadPools: (silent?: boolean) => Promise<void>;
   openAddDialog: () => void;
@@ -358,19 +412,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   isStartingImport: false,
 
   initialize: async () => {
-    await Promise.allSettled([get().loadConfig(), get().loadPools()]);
-    const backup = get().config?.backup;
-    const isConfigured = Boolean(
-      String(backup?.account_id || "").trim()
-      && String(backup?.access_key_id || "").trim()
-      && String(backup?.secret_access_key || "").trim()
-      && String(backup?.bucket || "").trim(),
-    );
-    if (isConfigured) {
-      await get().loadBackups();
-    } else {
-      set({ backups: [], isLoadingBackups: false });
-    }
+    await get().loadConfig();
+    set({ backups: [], pools: [], isLoadingBackups: false, isLoadingPools: false });
   },
 
   loadConfig: async () => {
@@ -433,6 +476,32 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
             notify_register: Boolean(config.notifications?.bark?.notify_register !== false),
             notify_register_errors_only: Boolean(config.notifications?.bark?.notify_register_errors_only),
             notify_auto_refill: Boolean(config.notifications?.bark?.notify_auto_refill !== false),
+          },
+        },
+        proxy_runtime: {
+          ...(config.proxy_runtime as ProxyRuntimeSettings),
+          enabled: Boolean(config.proxy_runtime?.enabled),
+          egress_mode: config.proxy_runtime?.egress_mode === "single_proxy" ? "single_proxy" : "direct",
+          proxy_url: String(config.proxy_runtime?.proxy_url || "").trim(),
+          resource_proxy_url: String(config.proxy_runtime?.resource_proxy_url || "").trim(),
+          skip_ssl_verify: Boolean(config.proxy_runtime?.skip_ssl_verify),
+          reset_session_status_codes: Array.isArray(config.proxy_runtime?.reset_session_status_codes)
+            ? config.proxy_runtime.reset_session_status_codes.map(Number).filter((item) => Number.isFinite(item))
+            : [403],
+          clearance: {
+            ...(config.proxy_runtime?.clearance || {}),
+            enabled: Boolean(config.proxy_runtime?.clearance?.enabled),
+            mode: ["none", "manual", "flaresolverr"].includes(String(config.proxy_runtime?.clearance?.mode))
+              ? config.proxy_runtime?.clearance?.mode
+              : "none",
+            cf_cookies: String(config.proxy_runtime?.clearance?.cf_cookies || "").trim(),
+            cf_clearance: String(config.proxy_runtime?.clearance?.cf_clearance || "").trim(),
+            user_agent: String(config.proxy_runtime?.clearance?.user_agent || "").trim(),
+            browser: String(config.proxy_runtime?.clearance?.browser || "chrome").trim(),
+            flaresolverr_url: String(config.proxy_runtime?.clearance?.flaresolverr_url || "").trim(),
+            timeout_sec: Math.max(1, Number(config.proxy_runtime?.clearance?.timeout_sec) || 60),
+            refresh_interval: Math.max(60, Number(config.proxy_runtime?.clearance?.refresh_interval) || 3600),
+            warm_up_on_start: Boolean(config.proxy_runtime?.clearance?.warm_up_on_start),
           },
         },
         proxy: config.proxy.trim(),
@@ -661,6 +730,59 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     } finally {
       set({ isTestingBarkNotification: false });
     }
+  },
+
+  setProxyRuntimeField: (key, value) => {
+    set((state) => {
+      if (!state.config?.proxy_runtime) {
+        return {};
+      }
+      return {
+        config: {
+          ...state.config,
+          proxy_runtime: {
+            ...state.config.proxy_runtime,
+            [key]: value,
+          },
+        },
+      };
+    });
+  },
+
+  setProxyRuntimeClearanceField: (key, value) => {
+    set((state) => {
+      if (!state.config?.proxy_runtime) {
+        return {};
+      }
+      return {
+        config: {
+          ...state.config,
+          proxy_runtime: {
+            ...state.config.proxy_runtime,
+            clearance: {
+              ...state.config.proxy_runtime.clearance,
+              [key]: value,
+            },
+          },
+        },
+      };
+    });
+  },
+
+  setProxyRuntimeStatusCodesText: (value) => {
+    const codes = value
+      .split(/[\s,，]+/)
+      .map((item) => Number(item.trim()))
+      .filter((item) => Number.isInteger(item) && item >= 100 && item <= 599);
+    set((state) => state.config?.proxy_runtime ? {
+      config: {
+        ...state.config,
+        proxy_runtime: {
+          ...state.config.proxy_runtime,
+          reset_session_status_codes: codes.length ? Array.from(new Set(codes)) : [403],
+        },
+      },
+    } : {});
   },
 
   setImageStorageField: (key, value) => {
@@ -922,10 +1044,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     try {
       set({ isSavingRegister: true });
       const proxy = registerConfig.proxy.trim();
-      const mail = { ...registerConfig.mail, proxy: proxy || undefined };
-      if (!proxy) {
-        delete mail.proxy;
-      }
+      const mail = { ...registerConfig.mail };
+      delete (mail as Record<string, unknown>).proxy;
       const data = await updateRegisterConfig({
         mail,
         proxy,
@@ -952,10 +1072,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     try {
       if (!registerConfig.enabled) {
         const proxy = registerConfig.proxy.trim();
-        const mail = { ...registerConfig.mail, proxy: proxy || undefined };
-        if (!proxy) {
-          delete mail.proxy;
-        }
+        const mail = { ...registerConfig.mail };
+        delete (mail as Record<string, unknown>).proxy;
         await updateRegisterConfig({
           mail,
           proxy,
@@ -985,6 +1103,19 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       toast.success("注册统计已重置");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "重置注册统计失败");
+    } finally {
+      set({ isSavingRegister: false });
+    }
+  },
+
+  resetOutlookPool: async (scope) => {
+    set({ isSavingRegister: true });
+    try {
+      const data = await resetOutlookPoolApi(scope);
+      set({ registerConfig: data.register });
+      toast.success("Outlook 邮箱池已更新");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "重置 Outlook 邮箱池失败");
     } finally {
       set({ isSavingRegister: false });
     }
