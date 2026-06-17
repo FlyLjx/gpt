@@ -94,6 +94,7 @@ class UserKeyUpdateRequest(BaseModel):
     name: str | None = None
     enabled: bool | None = None
     key: str | None = None
+    limits: dict[str, Any] | None = None
 
 
 class AccountCreateRequest(BaseModel):
@@ -246,6 +247,7 @@ def create_router() -> APIRouter:
                 "name": body.name,
                 "enabled": body.enabled,
                 "key": body.key,
+                "limits": body.limits,
             }.items()
             if value is not None
         }

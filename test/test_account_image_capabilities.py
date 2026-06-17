@@ -7,10 +7,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-os.environ.setdefault("CHATGPT2API_AUTH_KEY", "test-auth")
+os.environ.setdefault("CHATGPT2API_AUTH_KEY", "chatgpt2api")
 
 from services.account_service import AccountService
-from services.auth_service import AuthService
+from services.auth_service import AuthQuotaError, AuthService
 from services.openai_backend_api import InvalidAccessTokenError, OpenAIBackendAPI
 from services.storage.json_storage import JSONStorageBackend
 from utils.helper import anonymize_token, split_image_model
@@ -480,6 +480,62 @@ class AuthServiceTests(unittest.TestCase):
             updated = service.update_key(first["id"], {"name": "Alice"}, role="user")
             self.assertIsNotNone(updated)
             self.assertEqual(updated["name"], "Alice")
+
+    def test_user_key_quota_defaults_to_unlimited(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AuthService(JSONStorageBackend(Path(tmp_dir) / "accounts.json", Path(tmp_dir) / "auth_keys.json"))
+            item, _ = service.create_key(role="user", name="Alice")
+
+            updated = service.consume_quota(item, endpoint="/v1/chat/completions", model="gpt-5")
+
+            self.assertIsNotNone(updated)
+            self.assertEqual(updated["usage"]["requests"], 1)
+            self.assertEqual(updated["usage"]["images"], 0)
+
+    def test_user_key_daily_request_limit_is_enforced(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AuthService(JSONStorageBackend(Path(tmp_dir) / "accounts.json", Path(tmp_dir) / "auth_keys.json"))
+            item, _ = service.create_key(role="user", name="Alice")
+            service.update_key(item["id"], {"limits": {"daily_requests": 1}}, role="user")
+
+            identity = service.list_keys(role="user")[0]
+            service.consume_quota(identity, endpoint="/v1/chat/completions")
+
+            with self.assertRaisesRegex(AuthQuotaError, "今日调用次数已用完"):
+                service.consume_quota(identity, endpoint="/v1/chat/completions")
+
+    def test_user_key_daily_image_limit_is_enforced(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AuthService(JSONStorageBackend(Path(tmp_dir) / "accounts.json", Path(tmp_dir) / "auth_keys.json"))
+            item, _ = service.create_key(role="user", name="Alice")
+            service.update_key(item["id"], {"limits": {"daily_images": 2}}, role="user")
+
+            identity = service.list_keys(role="user")[0]
+
+            with self.assertRaisesRegex(AuthQuotaError, "今日图片额度已用完"):
+                service.consume_quota(identity, endpoint="/v1/images/generations", image_units=3)
+
+    def test_user_key_model_and_endpoint_allow_lists_are_enforced(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AuthService(JSONStorageBackend(Path(tmp_dir) / "accounts.json", Path(tmp_dir) / "auth_keys.json"))
+            item, _ = service.create_key(role="user", name="Alice")
+            service.update_key(
+                item["id"],
+                {
+                    "limits": {
+                        "allowed_endpoints": ["/v1/images/generations"],
+                        "allowed_models": ["gpt-image-2"],
+                    }
+                },
+                role="user",
+            )
+            identity = service.list_keys(role="user")[0]
+
+            service.consume_quota(identity, endpoint="/v1/images/generations", model="gpt-image-2", image_units=1)
+            with self.assertRaisesRegex(AuthQuotaError, "没有访问该接口"):
+                service.consume_quota(identity, endpoint="/v1/chat/completions", model="gpt-image-2")
+            with self.assertRaisesRegex(AuthQuotaError, "没有使用该模型"):
+                service.consume_quota(identity, endpoint="/v1/images/generations", model="codex-gpt-image-2")
 
 
 if __name__ == "__main__":

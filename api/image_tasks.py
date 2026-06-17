@@ -5,7 +5,7 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from api.image_inputs import parse_image_edit_request, read_image_sources
-from api.support import require_identity, resolve_image_base_url
+from api.support import consume_identity_quota, require_identity, resolve_image_base_url
 from services.image_task_service import image_task_service
 
 
@@ -43,6 +43,12 @@ def create_router() -> APIRouter:
         authorization: str | None = Header(default=None),
     ):
         identity = require_identity(authorization)
+        consume_identity_quota(
+            identity,
+            endpoint="/api/image-tasks/generations",
+            model=body.model,
+            image_units=1,
+        )
         try:
             return await run_in_threadpool(
                 image_task_service.submit_generation,
@@ -69,6 +75,12 @@ def create_router() -> APIRouter:
             raise HTTPException(status_code=400, detail={"error": "client_task_id is required"})
         prompt = str(payload["prompt"])
         model = str(payload["model"])
+        consume_identity_quota(
+            identity,
+            endpoint="/api/image-tasks/edits",
+            model=model,
+            image_units=1,
+        )
         images = await read_image_sources(image_sources)
         try:
             return await run_in_threadpool(
@@ -100,6 +112,17 @@ def create_router() -> APIRouter:
                 task_id,
                 body.extra_timeout_secs,
             )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+
+    @router.post("/api/image-tasks/{task_id}/cancel")
+    async def cancel_image_task(
+        task_id: str,
+        authorization: str | None = Header(default=None),
+    ):
+        identity = require_identity(authorization)
+        try:
+            return await run_in_threadpool(image_task_service.cancel_task, identity, task_id)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
 

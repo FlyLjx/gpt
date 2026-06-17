@@ -258,6 +258,21 @@
   margin-top: 14px;
 }
 
+.dashboard-console {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.dashboard-console > .ant-card,
+.dashboard-console .ant-card {
+  border-radius: 8px;
+}
+
+.dashboard-console .ant-card-body {
+  padding: 20px;
+}
+
 .accounts-table-card .ant-card-body {
   overflow: hidden;
 }

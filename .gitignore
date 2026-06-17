@@ -10,6 +10,9 @@ web_dist
 .venv
 .idea
 data
+logs/
+postgres-data/
+postgres-data-local/
 config.json
 edit
 

@@ -210,6 +210,8 @@ def _public_task(task: dict[str, Any]) -> dict[str, Any]:
         item["progress"] = task.get("progress")
     if task.get("duration_ms") is not None:
         item["duration_ms"] = task.get("duration_ms")
+    if task.get("cancelled"):
+        item["cancelled"] = True
     if task.get("status") in (TASK_STATUS_RUNNING, TASK_STATUS_QUEUED):
         if task.get("status") == TASK_STATUS_RUNNING:
             # RUNNING 状态仅在 started_ts 被设置后（image_stream_resolve_start）才计时
@@ -314,6 +316,33 @@ class ImageTaskService:
                 items.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
                 missing_ids = []
             return {"items": items, "missing_ids": missing_ids}
+
+    def get_stats(self) -> dict[str, Any]:
+        with self._lock:
+            if self._cleanup_locked():
+                self._save_locked()
+            tasks = [_public_task(task) for task in self._tasks.values()]
+        tasks.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+        by_status = {
+            TASK_STATUS_QUEUED: 0,
+            TASK_STATUS_RUNNING: 0,
+            TASK_STATUS_SUCCESS: 0,
+            TASK_STATUS_ERROR: 0,
+        }
+        by_mode = {"generate": 0, "edit": 0}
+        for task in tasks:
+            status = _clean(task.get("status"))
+            mode = _clean(task.get("mode"))
+            if status in by_status:
+                by_status[status] += 1
+            if mode in by_mode:
+                by_mode[mode] += 1
+        return {
+            "total": len(tasks),
+            "by_status": by_status,
+            "by_mode": by_mode,
+            "recent": tasks[:8],
+        }
 
     def _submit(
         self,
@@ -530,10 +559,31 @@ class ImageTaskService:
             task = self._tasks.get(key)
             if task is None:
                 return
+            if task.get("cancelled"):
+                return
             task.update(updates)
             task["updated_at"] = _now_iso()
             task["updated_ts"] = time.time()
             self._save_locked()
+
+    def cancel_task(self, identity: dict[str, object], task_id: str) -> dict[str, Any]:
+        owner = _owner_id(identity)
+        key = _task_key(owner, _clean(task_id))
+        if not _clean(task_id):
+            raise ValueError("task_id is required")
+        with self._lock:
+            task = self._tasks.get(key)
+            if task is None:
+                raise ValueError("task not found")
+            if task.get("status") in TERMINAL_STATUSES:
+                raise ValueError("task is already finished")
+            task["cancelled"] = True
+            task["status"] = TASK_STATUS_ERROR
+            task["error"] = "任务已取消"
+            task["updated_at"] = _now_iso()
+            task["updated_ts"] = time.time()
+            self._save_locked()
+            return _public_task(task)
 
     def _load_locked(self) -> dict[str, dict[str, Any]]:
         if not self.path.exists():
@@ -572,6 +622,8 @@ class ImageTaskService:
                 "duration_ms": item.get("duration_ms"),
                 "log_id": _clean(item.get("log_id")),
             }
+            if item.get("cancelled"):
+                task["cancelled"] = True
             data = item.get("data")
             if isinstance(data, list):
                 task["data"] = data

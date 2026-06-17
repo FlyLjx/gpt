@@ -19,6 +19,9 @@ const authStorage = localforage.createInstance({
   storeName: "auth",
 });
 
+let cachedAuthKey: string | null = null;
+let cachedSession: StoredAuthSession | null | undefined;
+
 function normalizeSession(value: unknown, fallbackKey = ""): StoredAuthSession | null {
   if (!value || typeof value !== "object") {
     return null;
@@ -40,20 +43,27 @@ function normalizeSession(value: unknown, fallbackKey = ""): StoredAuthSession |
 }
 
 export function getDefaultRouteForRole(_role: AuthRole) {
-  return "/accounts";
+  return "/dashboard";
 }
 
 export async function getStoredAuthKey() {
   if (typeof window === "undefined") {
     return "";
   }
+  if (cachedAuthKey !== null) {
+    return cachedAuthKey;
+  }
   const value = await authStorage.getItem<string>(AUTH_KEY_STORAGE_KEY);
-  return String(value || "").trim();
+  cachedAuthKey = String(value || "").trim();
+  return cachedAuthKey;
 }
 
 export async function getStoredAuthSession() {
   if (typeof window === "undefined") {
     return null;
+  }
+  if (cachedSession !== undefined) {
+    return cachedSession;
   }
 
   const [storedKey, storedSession] = await Promise.all([
@@ -61,17 +71,21 @@ export async function getStoredAuthSession() {
     authStorage.getItem<StoredAuthSession>(AUTH_SESSION_STORAGE_KEY),
   ]);
 
+  cachedAuthKey = String(storedKey || "").trim();
   const normalizedSession = normalizeSession(storedSession, String(storedKey || ""));
   if (normalizedSession) {
     if (normalizedSession.key !== String(storedKey || "").trim()) {
       await authStorage.setItem(AUTH_KEY_STORAGE_KEY, normalizedSession.key);
+      cachedAuthKey = normalizedSession.key;
     }
+    cachedSession = normalizedSession;
     return normalizedSession;
   }
 
   if (String(storedKey || "").trim()) {
     await clearStoredAuthSession();
   }
+  cachedSession = null;
   return null;
 }
 
@@ -86,6 +100,8 @@ export async function setStoredAuthSession(session: StoredAuthSession) {
     authStorage.setItem(AUTH_KEY_STORAGE_KEY, normalizedSession.key),
     authStorage.setItem(AUTH_SESSION_STORAGE_KEY, normalizedSession),
   ]);
+  cachedAuthKey = normalizedSession.key;
+  cachedSession = normalizedSession;
 }
 
 export async function setStoredAuthKey(authKey: string) {
@@ -95,6 +111,8 @@ export async function setStoredAuthKey(authKey: string) {
     return;
   }
   await authStorage.setItem(AUTH_KEY_STORAGE_KEY, normalizedAuthKey);
+  cachedAuthKey = normalizedAuthKey;
+  cachedSession = null;
 }
 
 export async function clearStoredAuthSession() {
@@ -105,6 +123,8 @@ export async function clearStoredAuthSession() {
     authStorage.removeItem(AUTH_KEY_STORAGE_KEY),
     authStorage.removeItem(AUTH_SESSION_STORAGE_KEY),
   ]);
+  cachedAuthKey = "";
+  cachedSession = null;
 }
 
 export async function clearStoredAuthKey() {

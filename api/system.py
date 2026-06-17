@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict
 from api.support import require_admin, require_identity, resolve_image_base_url
 from services.backup_service import BackupError, backup_service
 from services.config import config
+from services.dashboard_service import build_dashboard_summary
 from services.image_service import (
     compress_images,
     delete_images,
@@ -77,6 +78,11 @@ def create_router(app_version: str) -> APIRouter:
     async def get_settings(authorization: str | None = Header(default=None)):
         require_admin(authorization)
         return {"config": config.get()}
+
+    @router.get("/api/dashboard")
+    async def get_dashboard(authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        return await run_in_threadpool(build_dashboard_summary, app_version)
 
     @router.post("/api/settings")
     async def save_settings(body: SettingsUpdateRequest, authorization: str | None = Header(default=None)):

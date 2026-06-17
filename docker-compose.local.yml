@@ -1,4 +1,22 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: chatgpt2api-postgres-local
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: chatgpt2api
+      POSTGRES_USER: chatgpt2api
+      POSTGRES_PASSWORD: chatgpt2api
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./postgres-data-local:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chatgpt2api -d chatgpt2api"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   flaresolverr:
     image: ghcr.io/flaresolverr/flaresolverr:latest
     container_name: chatgpt2api-flaresolverr-local
@@ -11,14 +29,11 @@ services:
     shm_size: 2gb
 
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        INSTALL_SYSTEM_DEPS: "0"
-    image: chatgpt2api:local
+    image: ghcr.io/flyljx/chatgpt2api:latest
     container_name: chatgpt2api-local
     depends_on:
+      postgres:
+        condition: service_healthy
       flaresolverr:
         condition: service_started
     ports:
@@ -28,12 +43,14 @@ services:
       - ./config.json:/app/config.json
     environment:
       TZ: Asia/Shanghai
-      STORAGE_BACKEND: sqlite
-      DATABASE_URL: sqlite:////app/data/accounts.db
+      STORAGE_BACKEND: postgres
+      DATABASE_URL: postgresql://chatgpt2api:chatgpt2api@postgres:5432/chatgpt2api
       CHATGPT2API_FLARESOLVERR_ENABLED: "true"
       CHATGPT2API_FLARESOLVERR_URL: http://flaresolverr:8191
       CHATGPT2API_FLARESOLVERR_MAX_TIMEOUT_MS: "60000"
       CHATGPT2API_FLARESOLVERR_PRELOAD: "true"
+      CHATGPT2API_IMAGE_ACCOUNT_CONCURRENCY: "8"
+      CHATGPT2API_REFRESH_ACCOUNT_CONCURRENCY: "40"
     # 存储后端配置 (可选值: json, sqlite, postgres, git)
     # environment:
     #   STORAGE_BACKEND: json

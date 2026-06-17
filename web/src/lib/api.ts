@@ -62,6 +62,9 @@ export type Account = {
   last_success_at?: string | null;
   last_failure_at?: string | null;
   dispatch_score?: number;
+  health_score?: number;
+  health_label?: string;
+  health_reasons?: string[];
   cooldown_active?: boolean;
   proxy_cooldown_active?: boolean;
   recent_success?: number;
@@ -342,6 +345,17 @@ export type UserKey = {
   enabled: boolean;
   created_at: string | null;
   last_used_at: string | null;
+  limits: {
+    daily_requests: number;
+    daily_images: number;
+    allowed_models: string[];
+    allowed_endpoints: string[];
+  };
+  usage: {
+    date: string;
+    requests: number;
+    images: number;
+  };
 };
 
 export type RegisterConfig = {
@@ -382,6 +396,77 @@ export type RegisterConfig = {
   }>;
 };
 
+export type DashboardSummary = {
+  version: string;
+  generated_at: string;
+  storage: {
+    backend: {
+      type?: string;
+      db_type?: string;
+      description?: string;
+      database_url?: string;
+      [key: string]: unknown;
+    };
+    health: {
+      status?: string;
+      backend?: string;
+      account_count?: number;
+      auth_key_count?: number;
+      error?: string;
+      [key: string]: unknown;
+    };
+  };
+  accounts: {
+    total: number;
+    cumulative_total?: number;
+    active: number;
+    limited: number;
+    abnormal: number;
+    disabled: number;
+    cooling: number;
+    total_quota: number;
+    unlimited_quota_count: number;
+    total_success: number;
+    total_fail: number;
+    recent_success_rate?: number | null;
+    by_type: Record<string, number>;
+    by_error_type: Record<string, number>;
+    proxy_stats: {
+      accounts: number;
+      success: number;
+      fail: number;
+      cooling: number;
+      by_error_type: Record<string, number>;
+    };
+  };
+  auth_keys: {
+    users: number;
+    enabled_users: number;
+  };
+  calls: {
+    date: string;
+    total: number;
+    by_status: Record<string, number>;
+    by_endpoint: Record<string, number>;
+    by_model: Record<string, number>;
+    recent_failed: Array<{
+      id?: string;
+      time?: string;
+      summary?: string;
+      endpoint?: string;
+      model?: string;
+      error?: string;
+      account_email?: string;
+    }>;
+  };
+  tasks: {
+    total: number;
+    by_status: Record<string, number>;
+    by_mode: Record<string, number>;
+    recent: ImageTask[];
+  };
+};
+
 export async function login(authKey: string) {
   const normalizedAuthKey = String(authKey || "").trim();
   return httpRequest<LoginResponse>("/auth/login", {
@@ -400,6 +485,10 @@ export async function fetchAccounts() {
 
 export async function fetchModels() {
   return httpRequest<ModelListResponse>("/v1/models");
+}
+
+export async function fetchDashboard() {
+  return httpRequest<DashboardSummary>("/api/dashboard");
 }
 
 export async function debugChatGPTWeb(payload: ChatGPTWebDebugPayload) {
@@ -593,6 +682,13 @@ export async function resumeImagePoll(taskId: string, extraTimeoutSecs = 30) {
   });
 }
 
+export async function cancelImageTask(taskId: string) {
+  return httpRequest<ImageTask>(`/api/image-tasks/${encodeURIComponent(taskId)}/cancel`, {
+    method: "POST",
+    body: {},
+  });
+}
+
 export async function fetchSettingsConfig() {
   return httpRequest<{ config: SettingsConfig }>("/api/settings");
 }
@@ -764,7 +860,15 @@ export async function createUserKey(name: string) {
   });
 }
 
-export async function updateUserKey(keyId: string, updates: { enabled?: boolean; name?: string; key?: string }) {
+export async function updateUserKey(
+  keyId: string,
+  updates: {
+    enabled?: boolean;
+    name?: string;
+    key?: string;
+    limits?: UserKey["limits"];
+  },
+) {
   return httpRequest<{ item: UserKey; items: UserKey[] }>(`/api/auth/users/${keyId}`, {
     method: "POST",
     body: updates,

@@ -9,6 +9,7 @@ import {
   Menu,
   ScrollText,
   Settings,
+  TimerReset,
   UserRound,
   UsersRound,
 } from "lucide-react";
@@ -17,11 +18,13 @@ import type { MenuProps } from "antd";
 import { usePathname, useRouter } from "next/navigation";
 
 import { HeaderActions } from "@/components/header-actions";
-import { getValidatedAuthSession } from "@/lib/auth-session";
+import { getStoredAuthSessionFast, getValidatedAuthSession } from "@/lib/auth-session";
 import { clearStoredAuthSession, type StoredAuthSession } from "@/store/auth";
 
 const adminNavItems = [
+  { href: "/dashboard", label: "系统总览", icon: LayoutDashboard },
   { href: "/accounts", label: "号池管理", icon: UsersRound },
+  { href: "/tasks", label: "任务队列", icon: TimerReset },
   { href: "/register", label: "注册机", icon: UserRound },
   { href: "/logs", label: "日志管理", icon: ScrollText },
   { href: "/debug", label: "调试", icon: Bug },
@@ -34,7 +37,7 @@ type NavItem = (typeof adminNavItems)[number];
 
 function SidebarBrand() {
   return (
-    <Link href="/accounts" className="flex items-center gap-3 px-3 py-2">
+    <Link href="/dashboard" className="flex items-center gap-3 px-3 py-2">
       <span className="flex size-9 items-center justify-center rounded-xl bg-blue-600 text-white shadow-sm">
         <LayoutDashboard className="size-4" />
       </span>
@@ -85,6 +88,11 @@ export function TopNav({ children }: { children?: React.ReactNode }) {
           setSession(null);
         }
         return;
+      }
+
+      const cachedSession = await getStoredAuthSessionFast();
+      if (active && cachedSession) {
+        setSession(cachedSession);
       }
 
       const storedSession = await getValidatedAuthSession();

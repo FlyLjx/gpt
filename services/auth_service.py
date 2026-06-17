@@ -14,12 +14,22 @@ from services.storage.base import StorageBackend
 AuthRole = Literal["admin", "user"]
 
 
+class AuthQuotaError(RuntimeError):
+    def __init__(self, message: str, status_code: int = 429):
+        super().__init__(message)
+        self.status_code = status_code
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
 def _hash_key(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _today() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
 
 
 class AuthService:
@@ -36,6 +46,43 @@ class AuthService:
     @staticmethod
     def _default_name(role: object) -> str:
         return "管理员密钥" if str(role or "").strip().lower() == "admin" else "普通用户"
+
+    @staticmethod
+    def _normalize_positive_int(value: object) -> int:
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    @classmethod
+    def _normalize_string_list(cls, value: object) -> list[str]:
+        if isinstance(value, str):
+            candidates = [item.strip() for item in value.split(",")]
+        elif isinstance(value, list):
+            candidates = [cls._clean(item) for item in value]
+        else:
+            candidates = []
+        return list(dict.fromkeys(item for item in candidates if item))
+
+    @classmethod
+    def _normalize_limits(cls, value: object) -> dict[str, object]:
+        raw = value if isinstance(value, dict) else {}
+        return {
+            "daily_requests": cls._normalize_positive_int(raw.get("daily_requests")),
+            "daily_images": cls._normalize_positive_int(raw.get("daily_images")),
+            "allowed_models": cls._normalize_string_list(raw.get("allowed_models")),
+            "allowed_endpoints": cls._normalize_string_list(raw.get("allowed_endpoints")),
+        }
+
+    @classmethod
+    def _normalize_usage(cls, value: object) -> dict[str, object]:
+        raw = value if isinstance(value, dict) else {}
+        date = cls._clean(raw.get("date")) or _today()
+        return {
+            "date": date,
+            "requests": cls._normalize_positive_int(raw.get("requests")),
+            "images": cls._normalize_positive_int(raw.get("images")),
+        }
 
     def _normalize_item(self, raw: object) -> dict[str, object] | None:
         if not isinstance(raw, dict):
@@ -58,6 +105,8 @@ class AuthService:
             "enabled": bool(raw.get("enabled", True)),
             "created_at": created_at,
             "last_used_at": last_used_at,
+            "limits": self._normalize_limits(raw.get("limits")),
+            "usage": self._normalize_usage(raw.get("usage")),
         }
 
     def _load(self) -> list[dict[str, object]]:
@@ -84,6 +133,8 @@ class AuthService:
             "enabled": bool(item.get("enabled", True)),
             "created_at": item.get("created_at"),
             "last_used_at": item.get("last_used_at"),
+            "limits": AuthService._normalize_limits(item.get("limits")),
+            "usage": AuthService._normalize_usage(item.get("usage")),
         }
 
     def list_keys(self, role: AuthRole | None = None) -> list[dict[str, object]]:
@@ -200,6 +251,8 @@ class AuthService:
                     next_item["enabled"] = bool(updates.get("enabled"))
                 if "key" in updates and updates.get("key") is not None:
                     next_item["key_hash"] = self._build_key_hash_locked(str(updates.get("key") or ""), exclude_id=normalized_id)
+                if "limits" in updates and updates.get("limits") is not None:
+                    next_item["limits"] = self._normalize_limits(updates.get("limits"))
                 self._items[index] = next_item
                 self._save()
                 return self._public_item(next_item)
@@ -248,6 +301,63 @@ class AuthService:
                         pass
                 return self._public_item(next_item)
         return None
+
+    def consume_quota(
+        self,
+        identity: dict[str, object],
+        *,
+        endpoint: str,
+        model: str = "",
+        request_units: int = 1,
+        image_units: int = 0,
+    ) -> dict[str, object] | None:
+        if identity.get("role") != "user":
+            return None
+        item_id = self._clean(identity.get("id"))
+        if not item_id:
+            return None
+        endpoint = self._clean(endpoint)
+        model = self._clean(model)
+        request_units = max(0, int(request_units or 0))
+        image_units = max(0, int(image_units or 0))
+        today = _today()
+        with self._lock:
+            self._reload_locked()
+            for index, item in enumerate(self._items):
+                if item.get("id") != item_id:
+                    continue
+                if not bool(item.get("enabled", True)):
+                    raise AuthQuotaError("用户密钥已禁用", status_code=401)
+                limits = self._normalize_limits(item.get("limits"))
+                allowed_endpoints = set(limits["allowed_endpoints"])
+                allowed_models = set(limits["allowed_models"])
+                if allowed_endpoints and endpoint not in allowed_endpoints:
+                    raise AuthQuotaError("这个用户密钥没有访问该接口的权限", status_code=403)
+                if allowed_models and model and model not in allowed_models:
+                    raise AuthQuotaError("这个用户密钥没有使用该模型的权限", status_code=403)
+
+                usage = self._normalize_usage(item.get("usage"))
+                if usage.get("date") != today:
+                    usage = {"date": today, "requests": 0, "images": 0}
+                daily_requests = int(limits.get("daily_requests") or 0)
+                daily_images = int(limits.get("daily_images") or 0)
+                next_requests = int(usage.get("requests") or 0) + request_units
+                next_images = int(usage.get("images") or 0) + image_units
+                if daily_requests > 0 and next_requests > daily_requests:
+                    raise AuthQuotaError("这个用户密钥今日调用次数已用完", status_code=429)
+                if daily_images > 0 and next_images > daily_images:
+                    raise AuthQuotaError("这个用户密钥今日图片额度已用完", status_code=429)
+
+                next_item = dict(item)
+                next_item["usage"] = {
+                    "date": today,
+                    "requests": next_requests,
+                    "images": next_images,
+                }
+                self._items[index] = next_item
+                self._save()
+                return self._public_item(next_item)
+        raise AuthQuotaError("用户密钥不存在或已被删除", status_code=401)
 
 
 auth_service = AuthService(config.get_storage_backend())

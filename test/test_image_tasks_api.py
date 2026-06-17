@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import base64
+import os
 import unittest
 from unittest import mock
+
+os.environ.setdefault("CHATGPT2API_AUTH_KEY", "chatgpt2api")
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -56,6 +59,17 @@ class FakeImageTaskService:
                 if task_id != "missing"
             ],
             "missing_ids": [task_id for task_id in ids if task_id == "missing"],
+        }
+
+    def cancel_task(self, _identity, task_id):
+        return {
+            "id": task_id,
+            "status": "error",
+            "mode": "generate",
+            "error": "任务已取消",
+            "cancelled": True,
+            "created_at": "2026-01-01 00:00:00",
+            "updated_at": "2026-01-01 00:00:00",
         }
 
 
@@ -125,6 +139,15 @@ class ImageTasksApiTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual([item["id"] for item in payload["items"]], ["task-1"])
         self.assertEqual(payload["missing_ids"], ["missing"])
+
+    def test_cancel_task(self):
+        response = self.client.post("/api/image-tasks/task-1/cancel", headers=AUTH_HEADERS)
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["status"], "error")
+        self.assertTrue(payload["cancelled"])
+        self.assertEqual(payload["error"], "任务已取消")
 
 
 if __name__ == "__main__":

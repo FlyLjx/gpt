@@ -249,6 +249,14 @@ function errorTypeLabel(value?: string | null) {
   return labels[key] || key;
 }
 
+function healthColor(score?: number) {
+  const value = typeof score === "number" ? score : 0;
+  if (value >= 80) return "#10b981";
+  if (value >= 60) return "#1677ff";
+  if (value >= 40) return "#faad14";
+  return "#f43f5e";
+}
+
 function formatQuotaSummary(accounts: Account[]) {
   const availableAccounts = accounts.filter((account) => account.status === "正常");
   if (availableAccounts.some(isUnlimitedImageQuotaAccount)) {
@@ -423,8 +431,7 @@ function AccountsPageContent() {
       return;
     }
     didLoadRef.current = true;
-    void loadAccounts();
-    void loadModels();
+    void Promise.allSettled([loadAccounts(), loadModels()]);
 
     // 清理进度条定时器
     return () => {
@@ -991,6 +998,32 @@ function AccountsPageContent() {
       key: "type",
       width: 96,
       render: (_value, account) => <Tag>{displayAccountType(account)}</Tag>,
+    },
+    {
+      title: "健康",
+      key: "health",
+      width: 132,
+      render: (_value, account) => {
+        const score = typeof account.health_score === "number" ? account.health_score : account.dispatch_score;
+        const reasons = Array.isArray(account.health_reasons) ? account.health_reasons : [];
+        return (
+          <Tooltip title={reasons.length ? reasons.join(" / ") : "账号近期表现稳定"}>
+            <div className="w-[108px] space-y-1">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-medium text-slate-600">{account.health_label || "健康"}</span>
+                <span className="font-mono text-[11px] text-slate-400">{typeof score === "number" ? score.toFixed(0) : "-"}</span>
+              </div>
+              <AntProgress
+                percent={typeof score === "number" ? Math.round(score) : 0}
+                showInfo={false}
+                size={[108, 5]}
+                strokeColor={healthColor(score)}
+                railColor="#eef2f7"
+              />
+            </div>
+          </Tooltip>
+        );
+      },
     },
     {
       title: "状态",

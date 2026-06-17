@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.image_inputs import parse_image_edit_request, read_image_sources
-from api.support import require_identity, resolve_image_base_url
+from api.support import consume_identity_quota, require_identity, resolve_image_base_url
 from services.content_filter import check_request, request_shape, request_text
 from services.editable_file_task_service import editable_file_task_service
 from services.log_service import LoggedCall, image_request_params
@@ -96,6 +96,12 @@ def create_router() -> APIRouter:
     ):
         identity = require_identity(authorization)
         payload = body.model_dump(mode="python")
+        consume_identity_quota(
+            identity,
+            endpoint="/v1/images/generations",
+            model=body.model,
+            image_units=body.n,
+        )
         payload["base_url"] = resolve_image_base_url(request)
         call = LoggedCall(
             identity,
@@ -116,6 +122,12 @@ def create_router() -> APIRouter:
         payload, image_sources = await parse_image_edit_request(request)
         prompt = str(payload["prompt"])
         model = str(payload["model"])
+        consume_identity_quota(
+            identity,
+            endpoint="/v1/images/edits",
+            model=model,
+            image_units=int(payload.get("n") or 1),
+        )
         call = LoggedCall(
             identity,
             "/v1/images/edits",
@@ -133,6 +145,7 @@ def create_router() -> APIRouter:
         identity = require_identity(authorization)
         payload = body.model_dump(mode="python")
         model = str(payload.get("model") or "auto")
+        consume_identity_quota(identity, endpoint="/v1/chat/completions", model=model)
         request_preview = request_text(payload.get("prompt"), payload.get("messages"))
         call = LoggedCall(
             identity,
@@ -150,6 +163,7 @@ def create_router() -> APIRouter:
         identity = require_identity(authorization)
         payload = body.model_dump(mode="python")
         model = str(payload.get("model") or "auto")
+        consume_identity_quota(identity, endpoint="/v1/responses", model=model)
         request_preview = request_text(payload.get("input"), payload.get("instructions"))
         call = LoggedCall(
             identity,
@@ -172,6 +186,7 @@ def create_router() -> APIRouter:
         identity = require_identity(authorization or (f"Bearer {x_api_key}" if x_api_key else None))
         payload = body.model_dump(mode="python")
         model = str(payload.get("model") or "auto")
+        consume_identity_quota(identity, endpoint="/v1/messages", model=model)
         request_preview = request_text(payload.get("system"), payload.get("messages"), payload.get("tools"))
         call = LoggedCall(identity, "/v1/messages", model, "Messages", request_text=request_preview)
         await filter_or_log(call, request_preview)
@@ -180,6 +195,7 @@ def create_router() -> APIRouter:
     @router.post("/v1/search")
     async def search(body: SearchRequest, authorization: str | None = Header(default=None)):
         identity = require_identity(authorization)
+        consume_identity_quota(identity, endpoint="/v1/search", model=openai_search.MODEL)
         call = LoggedCall(identity, "/v1/search", openai_search.MODEL, "搜索", request_text=body.prompt)
         await filter_or_log(call, body.prompt)
         return await call.run(openai_search.handle, body.model_dump(mode="python"))
@@ -187,6 +203,7 @@ def create_router() -> APIRouter:
     @router.get("/v1/editable-file-tasks")
     async def list_editable_file_tasks(ids: str = "", authorization: str | None = Header(default=None)):
         identity = require_identity(authorization)
+        consume_identity_quota(identity, endpoint="/v1/editable-file-tasks")
         task_ids = [item.strip() for item in ids.split(",") if item.strip()]
         return await run_in_threadpool(editable_file_task_service.list_tasks, identity, task_ids)
 
@@ -201,6 +218,7 @@ def create_router() -> APIRouter:
     @router.post("/v1/ppt/generations")
     async def create_ppt_task(body: EditableFileTaskRequest, request: Request, authorization: str | None = Header(default=None)):
         identity = require_identity(authorization)
+        consume_identity_quota(identity, endpoint="/v1/ppt/generations", model="gpt-5-5-thinking")
         await filter_or_log(LoggedCall(identity, "/v1/ppt/generations", "gpt-5-5-thinking", "PPT生成任务", request_text=body.prompt), body.prompt)
         return await run_in_threadpool(
             editable_file_task_service.submit_ppt,
@@ -214,6 +232,7 @@ def create_router() -> APIRouter:
     @router.post("/v1/psd/generations")
     async def create_psd_task(body: EditableFileTaskRequest, request: Request, authorization: str | None = Header(default=None)):
         identity = require_identity(authorization)
+        consume_identity_quota(identity, endpoint="/v1/psd/generations", model="gpt-5-5-thinking")
         await filter_or_log(LoggedCall(identity, "/v1/psd/generations", "gpt-5-5-thinking", "PSD生成任务", request_text=body.prompt), body.prompt)
         return await run_in_threadpool(
             editable_file_task_service.submit_psd,

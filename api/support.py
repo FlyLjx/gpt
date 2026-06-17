@@ -6,7 +6,7 @@ from threading import Event, Thread
 from fastapi import HTTPException, Request
 
 from services.account_service import account_service
-from services.auth_service import auth_service
+from services.auth_service import AuthQuotaError, auth_service
 from services.config import config
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -44,6 +44,26 @@ def require_admin(authorization: str | None) -> dict[str, object]:
     if identity.get("role") != "admin":
         raise HTTPException(status_code=403, detail={"error": "需要管理员权限才能执行这个操作"})
     return identity
+
+
+def consume_identity_quota(
+    identity: dict[str, object],
+    *,
+    endpoint: str,
+    model: str = "",
+    request_units: int = 1,
+    image_units: int = 0,
+) -> None:
+    try:
+        auth_service.consume_quota(
+            identity,
+            endpoint=endpoint,
+            model=model,
+            request_units=request_units,
+            image_units=image_units,
+        )
+    except AuthQuotaError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"error": str(exc)}) from exc
 
 
 def resolve_image_base_url(request: Request) -> str:

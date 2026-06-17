@@ -528,13 +528,38 @@ class AccountService:
         now = now or datetime.now(timezone.utc)
         item = dict(account)
         raw_score = self._account_dispatch_score(account, now=now, image=True)
-        item["dispatch_score"] = round(max(0.0, min(100.0, raw_score)), 1)
+        health_score = round(max(0.0, min(100.0, raw_score)), 1)
+        item["dispatch_score"] = health_score
+        item["health_score"] = health_score
         item["cooldown_active"] = self._account_cooldown_active(account, now)
         item["proxy_cooldown_active"] = self._proxy_cooldown_active(account, now)
         success, total, rate = self._recent_success_rate(account)
         item["recent_success"] = success
         item["recent_total"] = total
         item["recent_success_rate"] = round(rate * 100, 1) if rate is not None else None
+        reasons = []
+        status = str(account.get("status") or "").strip()
+        if status and status != "正常":
+            reasons.append(status)
+        if item["cooldown_active"]:
+            reasons.append("调度冷却")
+        if item["proxy_cooldown_active"]:
+            reasons.append("代理冷却")
+        failures = int(account.get("consecutive_failures") or 0)
+        if failures > 0:
+            reasons.append(f"连续失败 {failures}")
+        if item["recent_success_rate"] is not None and item["recent_success_rate"] < 70:
+            reasons.append(f"近况 {item['recent_success_rate']}%")
+        if health_score >= 80:
+            label = "优秀"
+        elif health_score >= 60:
+            label = "良好"
+        elif health_score >= 40:
+            label = "观察"
+        else:
+            label = "风险"
+        item["health_label"] = label
+        item["health_reasons"] = reasons
         return item
 
     @staticmethod

@@ -422,9 +422,10 @@ class ConfigStore:
     @property
     def refresh_account_concurrency(self) -> int:
         try:
-            return min(100, max(1, int(self.data.get("refresh_account_concurrency", 20))))
+            value = os.getenv("CHATGPT2API_REFRESH_ACCOUNT_CONCURRENCY") or self.data.get("refresh_account_concurrency", 40)
+            return min(200, max(1, int(value)))
         except (TypeError, ValueError):
-            return 20
+            return 40
 
     @property
     def image_retention_days(self) -> int:
@@ -460,9 +461,10 @@ class ConfigStore:
     @property
     def image_account_concurrency(self) -> int:
         try:
-            return max(1, int(self.data.get("image_account_concurrency", 3)))
+            value = os.getenv("CHATGPT2API_IMAGE_ACCOUNT_CONCURRENCY") or self.data.get("image_account_concurrency", 8)
+            return min(32, max(1, int(value)))
         except (TypeError, ValueError):
-            return 3
+            return 8
 
     @property
     def image_account_precheck_interval_minutes(self) -> int:

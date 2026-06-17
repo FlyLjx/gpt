@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 
-import { getValidatedAuthSession } from "@/lib/auth-session";
+import { getStoredAuthSessionFast, getValidatedAuthSession } from "@/lib/auth-session";
 import { getDefaultRouteForRole } from "@/store/auth";
 
 export default function HomePage() {
@@ -13,6 +13,12 @@ export default function HomePage() {
     let active = true;
 
     const redirect = async () => {
+      const cachedSession = await getStoredAuthSessionFast();
+      if (active && cachedSession) {
+        router.replace(getDefaultRouteForRole(cachedSession.role));
+        return;
+      }
+
       const session = await getValidatedAuthSession();
       if (!active) {
         return;
