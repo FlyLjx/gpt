@@ -205,6 +205,8 @@ domain_index = 0
 provider_index = 0
 cloudmail_token_lock = Lock()
 cloudmail_token_cache: dict[str, tuple[str, float]] = {}
+mailbox_name_lock = Lock()
+mailbox_name_sequence = 0
 
 
 def _config(mail_config: dict) -> dict:
@@ -217,8 +219,31 @@ def _config(mail_config: dict) -> dict:
     }
 
 
+def _base36(value: int) -> str:
+    alphabet = string.digits + string.ascii_lowercase
+    value = max(int(value), 0)
+    if value == 0:
+        return "0"
+    chars: list[str] = []
+    while value:
+        value, remainder = divmod(value, 36)
+        chars.append(alphabet[remainder])
+    return "".join(reversed(chars))
+
+
+def _mailbox_unique_suffix() -> str:
+    global mailbox_name_sequence
+    now_ms = int(time.time() * 1000)
+    with mailbox_name_lock:
+        mailbox_name_sequence = (mailbox_name_sequence + 1) % (36 * 36)
+        sequence = mailbox_name_sequence
+    random_tail = "".join(random.choices(string.ascii_lowercase + string.digits, k=2))
+    return f"{_base36(now_ms)}{_base36(sequence).rjust(2, '0')}{random_tail}"
+
+
 def _random_mailbox_name() -> str:
-    return f"{''.join(random.choices(string.ascii_lowercase, k=5))}{''.join(random.choices(string.digits, k=random.randint(1, 3)))}{''.join(random.choices(string.ascii_lowercase, k=random.randint(1, 3)))}"
+    prefix = "".join(random.choices(string.ascii_lowercase, k=3))
+    return f"{prefix}{_mailbox_unique_suffix()}"
 
 
 def _random_subdomain_label() -> str:
@@ -645,7 +670,7 @@ class CloudMailGenProvider(BaseMailProvider):
         if username:
             local_part = username
         elif self.email_prefix:
-            local_part = f"{self.email_prefix}_{''.join(random.choices(string.ascii_lowercase + string.digits, k=6))}"
+            local_part = f"{self.email_prefix}_{_mailbox_unique_suffix()}"
         else:
             local_part = _random_mailbox_name()
         return f"{local_part}@{domain}"
