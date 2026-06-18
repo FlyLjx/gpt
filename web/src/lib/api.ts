@@ -335,7 +335,12 @@ export type RegisterConfig = {
     providers: Array<Record<string, unknown>>;
   };
   proxy: string;
-  use_warp_proxy: boolean;
+  flaresolverr?: {
+    enabled?: boolean;
+    url?: string;
+    max_timeout_ms?: number;
+    preload?: boolean;
+  };
   total: number;
   threads: number;
   mode: "total" | "quota" | "available";

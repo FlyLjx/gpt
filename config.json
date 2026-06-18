@@ -102,7 +102,7 @@
   "proxy_runtime": {
     "enabled": true,
     "egress_mode": "single_proxy",
-    "proxy_url": "http://warp:8118",
+    "proxy_url": "",
     "resource_proxy_url": "",
     "skip_ssl_verify": false,
     "reset_session_status_codes": [

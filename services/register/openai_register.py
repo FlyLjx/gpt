@@ -32,9 +32,8 @@ config = {
         "providers": [],
     },
     "proxy": "",
-    "use_warp_proxy": False,
     "flaresolverr": {
-        "enabled": False,
+        "enabled": True,
         "url": "",
         "max_timeout_ms": 60000,
         "preload": True,
@@ -45,7 +44,7 @@ config = {
 register_config_file = base_dir.parents[1] / "data" / "register.json"
 try:
     saved_config = json.loads(register_config_file.read_text(encoding="utf-8"))
-    config.update({key: saved_config[key] for key in ("mail", "proxy", "use_warp_proxy", "flaresolverr", "total", "threads") if key in saved_config})
+    config.update({key: saved_config[key] for key in ("mail", "proxy", "flaresolverr", "total", "threads") if key in saved_config})
 except Exception:
     pass
 
@@ -63,7 +62,6 @@ user_agent = (
 sec_ch_ua = '"Google Chrome";v="145", "Not?A_Brand";v="8", "Chromium";v="145"'
 sec_ch_ua_full_version_list = '"Chromium";v="145.0.0.0", "Not:A-Brand";v="99.0.0.0", "Google Chrome";v="145.0.0.0"'
 default_timeout = 30
-register_warp_proxy_url = str(os.getenv("CHATGPT2API_REGISTER_WARP_PROXY_URL") or "http://warp:8118").strip()
 print_lock = threading.Lock()
 stats_lock = threading.Lock()
 stats = {"done": 0, "success": 0, "fail": 0, "start_time": 0.0}
@@ -162,8 +160,6 @@ def _proxy_log_label(proxy: str) -> str:
 
 def resolve_register_proxy(settings: dict[str, Any] | None = None) -> tuple[str, str]:
     source = settings if isinstance(settings, dict) else config
-    if _truthy(source.get("use_warp_proxy"), False):
-        return register_warp_proxy_url, f"WARP={_redact_proxy(register_warp_proxy_url)}"
     runtime_profile = proxy_settings.get_profile(upstream=True)
     runtime_proxy = str(getattr(runtime_profile, "proxy_url", "") or "").strip()
     runtime_source = str(getattr(runtime_profile, "proxy_source", "") or "").strip()

@@ -40,7 +40,6 @@ export function RegisterCard() {
   const isLoading = useSettingsStore((state) => state.isLoadingRegister);
   const isSaving = useSettingsStore((state) => state.isSavingRegister);
   const setProxy = useSettingsStore((state) => state.setRegisterProxy);
-  const setUseWarpProxy = useSettingsStore((state) => state.setRegisterUseWarpProxy);
   const setTotal = useSettingsStore((state) => state.setRegisterTotal);
   const setThreads = useSettingsStore((state) => state.setRegisterThreads);
   const setMode = useSettingsStore((state) => state.setRegisterMode);
@@ -135,16 +134,9 @@ export function RegisterCard() {
                 <Input
                   value={config.proxy}
                   onChange={(event) => setProxy(event.target.value)}
-                  placeholder={config.use_warp_proxy ? "已启用 WARP，手填代理不会生效" : "http://127.0.0.1:7890"}
-                  disabled={config.enabled || config.use_warp_proxy}
+                  placeholder="http://127.0.0.1:7890"
+                  disabled={config.enabled}
                 />
-              </Field>
-            </Col>
-            <Col xs={24} md={8}>
-              <Field label="注册走 WARP">
-                <Checkbox checked={Boolean(config.use_warp_proxy)} onChange={(event) => setUseWarpProxy(event.target.checked)} disabled={config.enabled}>
-                  使用容器内 WARP 代理
-                </Checkbox>
               </Field>
             </Col>
             <Col xs={24} md={8}>
@@ -164,15 +156,13 @@ export function RegisterCard() {
             </Col>
           </Row>
 
-          {config.use_warp_proxy ? (
-            <Alert
-              className="mt-4"
-              type="info"
-              showIcon
-              message="当前注册任务已启用 WARP 代理"
-              description="启动后会固定走容器内地址 http://warp:8118；上面的“注册代理”输入框会被忽略。"
-            />
-          ) : null}
+          <Alert
+            className="mt-4"
+            type="info"
+            showIcon
+            message="注册默认启用 FlareSolverr"
+            description={`当前${config.flaresolverr?.enabled === false ? "未开启" : "已开启"} FlareSolverr 预热；注册地址优先走你填写的“注册代理”，未填写时按全局代理或直连处理。`}
+          />
 
           <Divider className="!my-5" />
 

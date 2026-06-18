@@ -29,6 +29,15 @@ class RegisterServiceTests(unittest.TestCase):
         self.assertEqual(cfg["low_success_min_done"], 5)
         self.assertEqual(cfg["low_success_threshold_percent"], 20)
         self.assertEqual(cfg["low_success_pause_seconds"], 60)
+        self.assertTrue(cfg["flaresolverr"]["enabled"])
+        self.assertTrue(cfg["flaresolverr"]["preload"])
+
+    def test_normalize_drops_legacy_warp_flag_and_keeps_flaresolverr_defaults(self) -> None:
+        cfg = _normalize({"use_warp_proxy": True, "flaresolverr": {"url": "http://flaresolverr:8191"}})
+
+        self.assertNotIn("use_warp_proxy", cfg)
+        self.assertTrue(cfg["flaresolverr"]["enabled"])
+        self.assertEqual(cfg["flaresolverr"]["url"], "http://flaresolverr:8191")
 
     def test_low_success_pause_is_rate_limited_by_done_count(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

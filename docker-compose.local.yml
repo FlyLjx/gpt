@@ -28,25 +28,6 @@ services:
       TZ: Asia/Shanghai
     shm_size: 2gb
 
-  warp:
-    image: ghcr.io/flyljx/chatgpt2api-warp:latest
-    container_name: chatgpt2api-warp-local
-    restart: unless-stopped
-    cap_add:
-      - NET_ADMIN
-      - SYS_ADMIN
-    environment:
-      TZ: Asia/Shanghai
-      WARP_SOCKS_PORT: "40000"
-      WARP_HTTP_PORT: "8118"
-    volumes:
-      - ./warp-state-local:/var/lib/cloudflare-warp
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('127.0.0.1', 8118), 5); s.close()\""]
-      interval: 20s
-      timeout: 10s
-      retries: 8
-
   app:
     image: ghcr.io/flyljx/chatgpt2api:latest
     container_name: chatgpt2api-local
@@ -54,8 +35,6 @@ services:
       postgres:
         condition: service_healthy
       flaresolverr:
-        condition: service_started
-      warp:
         condition: service_started
     ports:
       - "8000:80"

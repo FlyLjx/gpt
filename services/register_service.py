@@ -66,6 +66,7 @@ def _default_config() -> dict:
 def _normalize(raw: dict) -> dict:
     cfg = _default_config()
     cfg.update({k: v for k, v in raw.items() if k not in {"stats", "logs"}})
+    cfg.pop("use_warp_proxy", None)
     cfg["total"] = max(1, int(cfg.get("total") or 1))
     cfg["threads"] = max(1, int(cfg.get("threads") or 1))
     cfg["mode"] = str(cfg.get("mode") or "total").strip() if str(cfg.get("mode") or "total").strip() in {"total", "quota", "available"} else "total"
@@ -77,10 +78,16 @@ def _normalize(raw: dict) -> dict:
     cfg["low_success_threshold_percent"] = max(0, min(100, int(cfg.get("low_success_threshold_percent") or 20)))
     cfg["low_success_pause_seconds"] = max(5, int(cfg.get("low_success_pause_seconds") or 60))
     cfg["proxy"] = str(cfg.get("proxy") or "").strip()
-    cfg["use_warp_proxy"] = bool(cfg.get("use_warp_proxy"))
     if isinstance(cfg.get("mail"), dict):
         cfg["mail"].pop("proxy", None)
     cfg["enabled"] = bool(cfg.get("enabled"))
+    flaresolverr = cfg.get("flaresolverr") if isinstance(cfg.get("flaresolverr"), dict) else {}
+    cfg["flaresolverr"] = {
+        "enabled": bool(flaresolverr.get("enabled", True)),
+        "url": str(flaresolverr.get("url") or "").strip(),
+        "max_timeout_ms": max(1000, int(flaresolverr.get("max_timeout_ms") or 60000)),
+        "preload": bool(flaresolverr.get("preload", True)),
+    }
     stats = {**_default_config()["stats"], **(raw.get("stats") if isinstance(raw.get("stats"), dict) else {}),
              "threads": cfg["threads"]}
     cfg["stats"] = stats
@@ -185,7 +192,7 @@ class RegisterService:
             self._merge_outlook_pools(updates)
             self._config = _normalize({**self._config, **updates})
             self._drop_mail_proxy()
-            openai_register.config.update({k: self._config[k] for k in ("mail", "proxy", "use_warp_proxy", "total", "threads")})
+            openai_register.config.update({k: self._config[k] for k in ("mail", "proxy", "flaresolverr", "total", "threads")})
             self._save()
             return self.get()
 
@@ -200,7 +207,7 @@ class RegisterService:
             self._logs = []
             metrics = self._pool_metrics()
             self._config["stats"] = {"job_id": uuid.uuid4().hex, "success": 0, "fail": 0, "done": 0, "running": 0, "threads": self._config["threads"], **metrics, "started_at": _now(), "updated_at": _now()}
-            openai_register.config.update({k: self._config[k] for k in ("mail", "proxy", "use_warp_proxy", "total", "threads")})
+            openai_register.config.update({k: self._config[k] for k in ("mail", "proxy", "flaresolverr", "total", "threads")})
             with openai_register.stats_lock:
                 openai_register.stats.update({"done": 0, "success": 0, "fail": 0, "start_time": time.time()})
             self._save()
@@ -231,7 +238,7 @@ class RegisterService:
         if scope == "unused":
             with self._lock:
                 removed = self._prune_unused_outlook_pools()
-                openai_register.config.update({k: self._config[k] for k in ("mail", "proxy", "use_warp_proxy", "total", "threads")})
+                openai_register.config.update({k: self._config[k] for k in ("mail", "proxy", "flaresolverr", "total", "threads")})
                 self._save()
                 self._append_log(f"已清空 Outlook 邮箱池未使用邮箱，移除 {removed} 个", "yellow")
             return self.get()

@@ -91,7 +91,7 @@ export function ProxyRuntimeCard() {
       title={
         <Space>
           <PlugZap className="size-4 text-amber-500" />
-          <span>FlareSolverr 清障 / WARP 代理</span>
+          <span>FlareSolverr 清障代理</span>
           <Tag color={runtimeEnabled ? "green" : "default"}>{runtimeEnabled ? "已启用" : "未启用"}</Tag>
         </Space>
       }
@@ -116,14 +116,14 @@ export function ProxyRuntimeCard() {
             </Checkbox>
           </Col>
           <Col xs={24} md={8}>
-            <Form.Item label="出站模式" extra="WARP compose 通常选单代理/WARP。">
+            <Form.Item label="出站模式" extra="需要固定代理出口时选择单代理。">
               <Select
                 value={runtime.egress_mode}
                 onChange={(value) => setProxyRuntimeField("egress_mode", value as ProxyRuntimeEgressMode)}
                 disabled={!runtimeEnabled}
                 options={[
                   { value: "direct", label: "直连" },
-                  { value: "single_proxy", label: "单代理/WARP" },
+                  { value: "single_proxy", label: "单代理" },
                 ]}
               />
             </Form.Item>

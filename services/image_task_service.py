@@ -47,6 +47,10 @@ def _owner_id(identity: dict[str, object]) -> str:
     return _clean(identity.get("id")) or "anonymous"
 
 
+def _is_admin(identity: dict[str, object]) -> bool:
+    return _clean(identity.get("role")).lower() == "admin"
+
+
 def _task_key(owner_id: str, task_id: str) -> str:
     return f"{owner_id}:{task_id}"
 
@@ -296,7 +300,6 @@ class ImageTaskService:
         return self._submit(identity, client_task_id=client_task_id, mode="edit", payload=payload)
 
     def list_tasks(self, identity: dict[str, object], task_ids: list[str]) -> dict[str, Any]:
-        owner = _owner_id(identity)
         requested_ids = [_clean(task_id) for task_id in task_ids if _clean(task_id)]
         with self._lock:
             if self._cleanup_locked():
@@ -304,17 +307,21 @@ class ImageTaskService:
             items = []
             missing_ids = []
             for task_id in requested_ids:
-                task = self._tasks.get(_task_key(owner, task_id))
+                _, task = self._find_task_locked(identity, task_id)
                 if task is None:
                     missing_ids.append(task_id)
                 else:
                     items.append(_public_task(task))
             if not requested_ids:
-                items = [
-                    _public_task(task)
-                    for task in self._tasks.values()
-                    if task.get("owner_id") == owner
-                ]
+                if _is_admin(identity):
+                    items = [_public_task(task) for task in self._tasks.values()]
+                else:
+                    owner = _owner_id(identity)
+                    items = [
+                        _public_task(task)
+                        for task in self._tasks.values()
+                        if task.get("owner_id") == owner
+                    ]
                 items.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
                 missing_ids = []
             return {"items": items, "missing_ids": missing_ids}
@@ -688,13 +695,31 @@ class ImageTaskService:
             task["updated_ts"] = time.time()
             self._save_locked()
 
+    def _find_task_locked(self, identity: dict[str, object], task_id: str) -> tuple[str, dict[str, Any] | None]:
+        normalized_id = _clean(task_id)
+        if not normalized_id:
+            return "", None
+        own_key = _task_key(_owner_id(identity), normalized_id)
+        task = self._tasks.get(own_key)
+        if task is not None:
+            return own_key, task
+        if not _is_admin(identity):
+            return "", None
+        matches = [
+            (key, item)
+            for key, item in self._tasks.items()
+            if _clean(item.get("id")) == normalized_id
+        ]
+        if not matches:
+            return "", None
+        matches.sort(key=lambda entry: str((entry[1] or {}).get("updated_at") or ""), reverse=True)
+        return matches[0]
+
     def cancel_task(self, identity: dict[str, object], task_id: str) -> dict[str, Any]:
-        owner = _owner_id(identity)
-        key = _task_key(owner, _clean(task_id))
         if not _clean(task_id):
             raise ValueError("task_id is required")
         with self._lock:
-            task = self._tasks.get(key)
+            key, task = self._find_task_locked(identity, task_id)
             if task is None:
                 raise ValueError("task not found")
             if task.get("status") in TERMINAL_STATUSES:
@@ -796,10 +821,8 @@ class ImageTaskService:
         extra_timeout_secs: float = 30.0,
     ) -> dict[str, Any]:
         """恢复对已超时任务的轮询，额外等待 extra_timeout_secs 秒。"""
-        owner = _owner_id(identity)
-        key = _task_key(owner, _clean(task_id))
         with self._lock:
-            task = self._tasks.get(key)
+            key, task = self._find_task_locked(identity, task_id)
             if task is None:
                 raise ValueError("task not found")
             if task.get("status") != TASK_STATUS_ERROR:

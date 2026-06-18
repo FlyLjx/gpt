@@ -182,7 +182,6 @@ type SettingsStore = {
   loadRegister: (silent?: boolean) => Promise<void>;
   setRegisterConfig: (config: RegisterConfig) => void;
   setRegisterProxy: (value: string) => void;
-  setRegisterUseWarpProxy: (value: boolean) => void;
   setRegisterTotal: (value: string) => void;
   setRegisterThreads: (value: string) => void;
   setRegisterMode: (value: "total" | "quota" | "available") => void;
@@ -493,17 +492,22 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   },
 
   setRegisterConfig: (config) => {
-    set({ registerConfig: config, isLoadingRegister: false });
+    set({
+      registerConfig: {
+        ...config,
+        flaresolverr: {
+          enabled: config.flaresolverr?.enabled !== false,
+          url: String(config.flaresolverr?.url || ""),
+          max_timeout_ms: Number(config.flaresolverr?.max_timeout_ms || 60000),
+          preload: config.flaresolverr?.preload !== false,
+        },
+      },
+      isLoadingRegister: false,
+    });
   },
 
   setRegisterProxy: (value) => {
     set((state) => (state.registerConfig ? { registerConfig: { ...state.registerConfig, proxy: value } } : {}));
-  },
-
-  setRegisterUseWarpProxy: (value) => {
-    set((state) =>
-      state.registerConfig ? { registerConfig: { ...state.registerConfig, use_warp_proxy: value } } : {},
-    );
   },
 
   setRegisterTotal: (value) => {
@@ -615,7 +619,12 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       const data = await updateRegisterConfig({
         mail,
         proxy,
-        use_warp_proxy: Boolean(registerConfig.use_warp_proxy),
+        flaresolverr: {
+          enabled: registerConfig.flaresolverr?.enabled !== false,
+          url: String(registerConfig.flaresolverr?.url || "").trim(),
+          max_timeout_ms: Math.max(1000, Number(registerConfig.flaresolverr?.max_timeout_ms) || 60000),
+          preload: registerConfig.flaresolverr?.preload !== false,
+        },
         total: Math.max(1, Number(registerConfig.total) || 1),
         threads: Math.max(1, Number(registerConfig.threads) || 1),
         mode: registerConfig.mode,
@@ -644,7 +653,12 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         await updateRegisterConfig({
           mail,
           proxy,
-          use_warp_proxy: Boolean(registerConfig.use_warp_proxy),
+          flaresolverr: {
+            enabled: registerConfig.flaresolverr?.enabled !== false,
+            url: String(registerConfig.flaresolverr?.url || "").trim(),
+            max_timeout_ms: Math.max(1000, Number(registerConfig.flaresolverr?.max_timeout_ms) || 60000),
+            preload: registerConfig.flaresolverr?.preload !== false,
+          },
           total: Math.max(1, Number(registerConfig.total) || 1),
           threads: Math.max(1, Number(registerConfig.threads) || 1),
           mode: registerConfig.mode,
