@@ -1,16 +1,11 @@
 FROM python:3.13-slim
 
-ARG APT_MIRROR=https://mirrors.aliyun.com/debian
-
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     WARP_SOCKS_PORT=40000 \
     WARP_HTTP_PORT=8118
 
-RUN if [ -n "$APT_MIRROR" ]; then \
-      sed -i "s#http://deb.debian.org/debian-security#${APT_MIRROR}-security#g; s#http://deb.debian.org/debian#${APT_MIRROR}#g" /etc/apt/sources.list.d/debian.sources; \
-    fi \
-    && apt-get update -o Acquire::Retries=5 \
+RUN apt-get update -o Acquire::Retries=5 \
     && apt-get install -y --no-install-recommends \
       curl \
       gnupg \

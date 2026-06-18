@@ -19,7 +19,6 @@ FROM --platform=$TARGETPLATFORM python:3.13-slim AS app
 
 ARG TARGETPLATFORM
 ARG TARGETARCH
-ARG APT_MIRROR=""
 ARG INSTALL_SYSTEM_DEPS=1
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -35,10 +34,7 @@ WORKDIR /app
 # - libpq-dev: PostgreSQL 客户端库
 # - gcc: 编译 psycopg2-binary 需要
 RUN if [ "$INSTALL_SYSTEM_DEPS" = "1" ]; then \
-      if [ -n "$APT_MIRROR" ]; then \
-        sed -i "s#http://deb.debian.org/debian-security#$APT_MIRROR-security#g; s#http://deb.debian.org/debian#$APT_MIRROR#g" /etc/apt/sources.list.d/debian.sources; \
-      fi \
-      && apt-get update -o Acquire::Retries=5 \
+      apt-get update -o Acquire::Retries=5 \
       && apt-get install -y --no-install-recommends \
         git \
         libpq-dev \
