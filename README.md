@@ -69,6 +69,13 @@ docker compose pull
 docker compose up -d
 ```
 
+如果你使用的是带本地 PostgreSQL / FlareSolverr / WARP 的 `docker-compose.local.yml`，现在 `app` 和 `warp` 都支持直接从 GHCR 拉取镜像，无需本地构建：
+
+```bash
+docker compose -f docker-compose.local.yml pull
+docker compose -f docker-compose.local.yml up -d
+```
+
 ### 存储后端配置
 
 支持通过环境变量 `STORAGE_BACKEND` 切换存储方式：

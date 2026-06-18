@@ -29,12 +29,7 @@ services:
     shm_size: 2gb
 
   warp:
-    build:
-      context: .
-      dockerfile: docker/warp/Dockerfile
-      args:
-        APT_MIRROR: https://mirrors.aliyun.com/debian
-    image: chatgpt2api-warp-local:latest
+    image: ghcr.io/flyljx/chatgpt2api-warp:latest
     container_name: chatgpt2api-warp-local
     restart: unless-stopped
     cap_add:
