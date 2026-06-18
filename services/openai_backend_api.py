@@ -174,6 +174,7 @@ class OpenAIBackendAPI:
         self.session = requests.Session(**proxy_settings.build_session_kwargs(
             account=self.account,
             upstream=True,
+            allow_runtime_proxy=False,
             impersonate=self.fp["impersonate"],
             verify=True,
         ))
@@ -247,6 +248,7 @@ class OpenAIBackendAPI:
             target_url=self.base_url + path,
             account=self.account,
             upstream=True,
+            allow_runtime_proxy=False,
         )
 
     @staticmethod

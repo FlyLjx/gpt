@@ -176,6 +176,7 @@ class ProxySettingsStore:
         proxy: str = "",
         resource: bool = False,
         upstream: bool = False,
+        allow_runtime_proxy: bool = True,
     ) -> ProxyRuntimeProfile:
         runtime = self._get_runtime_settings()
         clearance = dict(runtime.get("clearance") if isinstance(runtime.get("clearance"), dict) else {})
@@ -188,7 +189,7 @@ class ProxySettingsStore:
 
         runtime_proxy = ""
         runtime_proxy_source = "runtime"
-        if upstream and runtime_enabled and egress_mode == "single_proxy":
+        if allow_runtime_proxy and upstream and runtime_enabled and egress_mode == "single_proxy":
             resource_proxy = _clean(runtime.get("resource_proxy_url")) if resource else ""
             runtime_proxy = resource_proxy or _clean(runtime.get("proxy_url"))
             runtime_proxy_source = "runtime_resource" if resource_proxy else "runtime"
@@ -225,9 +226,16 @@ class ProxySettingsStore:
         proxy: str = "",
         resource: bool = False,
         upstream: bool = False,
+        allow_runtime_proxy: bool = True,
         **session_kwargs,
     ) -> dict[str, object]:
-        profile = self.get_profile(account=account, proxy=proxy, resource=resource, upstream=upstream)
+        profile = self.get_profile(
+            account=account,
+            proxy=proxy,
+            resource=resource,
+            upstream=upstream,
+            allow_runtime_proxy=allow_runtime_proxy,
+        )
         if profile.proxy_url:
             session_kwargs["proxy"] = profile.proxy_url
         if profile.runtime_enabled and profile.skip_ssl_verify:
@@ -242,9 +250,16 @@ class ProxySettingsStore:
         proxy: str = "",
         resource: bool = False,
         upstream: bool = True,
+        allow_runtime_proxy: bool = True,
     ) -> dict[str, object]:
         merged_headers: dict[str, object] = dict(headers or {})
-        profile = self.get_profile(account=account, proxy=proxy, resource=resource, upstream=upstream)
+        profile = self.get_profile(
+            account=account,
+            proxy=proxy,
+            resource=resource,
+            upstream=upstream,
+            allow_runtime_proxy=allow_runtime_proxy,
+        )
         if not profile.clearance_enabled:
             return merged_headers
 
@@ -272,8 +287,15 @@ class ProxySettingsStore:
         resource: bool = False,
         force: bool = False,
         upstream: bool = True,
+        allow_runtime_proxy: bool = True,
     ) -> ClearanceBundle | None:
-        profile = self.get_profile(account=account, proxy=proxy, resource=resource, upstream=upstream)
+        profile = self.get_profile(
+            account=account,
+            proxy=proxy,
+            resource=resource,
+            upstream=upstream,
+            allow_runtime_proxy=allow_runtime_proxy,
+        )
         if not profile.clearance_enabled:
             return None
 
@@ -331,8 +353,15 @@ class ProxySettingsStore:
         proxy: str = "",
         resource: bool = False,
         upstream: bool = True,
+        allow_runtime_proxy: bool = True,
     ) -> None:
-        profile = self.get_profile(account=account, proxy=proxy, resource=resource, upstream=upstream)
+        profile = self.get_profile(
+            account=account,
+            proxy=proxy,
+            resource=resource,
+            upstream=upstream,
+            allow_runtime_proxy=allow_runtime_proxy,
+        )
         target_host = _host_from_url(target_url)
         key = self._cache_key(profile.proxy_url, target_host)
         with self._lock:

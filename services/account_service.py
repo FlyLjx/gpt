@@ -645,7 +645,14 @@ class AccountService:
         from curl_cffi import requests
         from services.proxy_service import proxy_settings
 
-        session = requests.Session(**proxy_settings.build_session_kwargs(account=account, impersonate="chrome", verify=True))
+        session = requests.Session(
+            **proxy_settings.build_session_kwargs(
+                account=account,
+                impersonate="chrome",
+                verify=True,
+                allow_runtime_proxy=False,
+            )
+        )
         try:
             response = session.post(
                 self._OAUTH_TOKEN_URL,
