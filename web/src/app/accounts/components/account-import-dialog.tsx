@@ -1,6 +1,5 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useRef, useState, type ChangeEvent } from "react";
 import {
   Button as AntButton,
@@ -15,10 +14,8 @@ import {
   ExternalLink,
   FileJson,
   FileText,
-  Files,
   KeyRound,
   LogIn,
-  ServerCog,
   Upload,
   type LucideIcon,
 } from "lucide-react";
@@ -33,18 +30,11 @@ import {
   type OAuthLoginStartResponse,
 } from "@/lib/api";
 
-type ImportMethod = "menu" | "token" | "session" | "codex-auth" | "cpa" | "oauth";
+type ImportMethod = "menu" | "token" | "session" | "codex-auth" | "oauth";
 
 type AccountImportDialogProps = {
   disabled?: boolean;
   onImported: (items: Account[]) => void;
-};
-
-type PendingCpaImport = {
-  tokens: string[];
-  accounts: AccountImportPayload[];
-  parsedFileCount: number;
-  errorCount: number;
 };
 
 const sessionUrl = "https://chatgpt.com/api/auth/session";
@@ -59,30 +49,6 @@ function splitTokens(value: string) {
 function getSessionAccessToken(value: unknown) {
   const token = (value as { accessToken?: unknown })?.accessToken;
   return typeof token === "string" ? token.trim() : "";
-}
-
-function getCpaAccount(value: unknown): AccountImportPayload | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-  const raw = value as Record<string, unknown>;
-  const tokenValue = raw.access_token ?? raw.accessToken;
-  const token = typeof tokenValue === "string" ? tokenValue.trim() : "";
-  if (!token) {
-    return null;
-  }
-
-  const payload: AccountImportPayload = {
-    ...raw,
-    access_token: token,
-    source_type: "codex",
-  };
-  delete payload.accessToken;
-  if (payload.type === "codex") {
-    payload.export_type = "codex";
-    delete payload.type;
-  }
-  return payload;
 }
 
 function getCodexAuthAccount(value: unknown): AccountImportPayload | null {
@@ -158,30 +124,24 @@ function MethodCard({
 }
 
 export function AccountImportDialog({ disabled, onImported }: AccountImportDialogProps) {
-  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [method, setMethod] = useState<ImportMethod>("menu");
   const [tokenInput, setTokenInput] = useState("");
   const [sessionInput, setSessionInput] = useState("");
   const [codexAuthInput, setCodexAuthInput] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [pendingCpaImport, setPendingCpaImport] = useState<PendingCpaImport | null>(null);
-  const [confirmOpen, setConfirmOpen] = useState(false);
   const [oauthEmailHint, setOauthEmailHint] = useState("");
   const [oauthSession, setOauthSession] = useState<OAuthLoginStartResponse | null>(null);
   const [oauthCallbackInput, setOauthCallbackInput] = useState("");
   const [oauthStarting, setOauthStarting] = useState(false);
 
   const txtInputRef = useRef<HTMLInputElement | null>(null);
-  const cpaInputRef = useRef<HTMLInputElement | null>(null);
 
   const resetState = () => {
     setMethod("menu");
     setTokenInput("");
     setSessionInput("");
     setCodexAuthInput("");
-    setPendingCpaImport(null);
-    setConfirmOpen(false);
     setOauthEmailHint("");
     setOauthSession(null);
     setOauthCallbackInput("");
@@ -377,49 +337,6 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
     }
   };
 
-  const handleCpaSelected = async (event: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files ?? []);
-    event.target.value = "";
-
-    if (files.length === 0) {
-      return;
-    }
-
-    try {
-      const results = await Promise.all(
-        files.map(async (file) => {
-          const raw = await readFileAsText(file);
-          const parsed = JSON.parse(raw) as unknown;
-          const account = getCpaAccount(parsed);
-          return {
-            account,
-          };
-        }),
-      );
-
-      const accounts = results.map((item) => item.account).filter((item): item is AccountImportPayload => Boolean(item));
-      const tokens = accounts.map((item) => item.access_token);
-      const parsedFileCount = accounts.length;
-      const errorCount = results.length - parsedFileCount;
-
-      if (parsedFileCount === 0) {
-        toast.error("这些 CPA JSON 文件里没有读取到可用 access_token");
-        return;
-      }
-
-      setPendingCpaImport({
-        tokens,
-        accounts,
-        parsedFileCount,
-        errorCount,
-      });
-      setConfirmOpen(true);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "读取 CPA JSON 文件失败";
-      toast.error(message);
-    }
-  };
-
   const renderMethodBody = () => {
     if (method === "token") {
       const tokenCount = splitTokens(tokenInput).length;
@@ -606,52 +523,6 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
       );
     }
 
-    if (method === "cpa") {
-      return (
-        <div className="space-y-4">
-          <button
-            type="button"
-            onClick={() => setMethod("menu")}
-            className="inline-flex items-center gap-1 text-sm text-stone-500 transition hover:text-stone-800"
-          >
-            <ArrowLeft className="size-4" />
-            返回导入方式
-          </button>
-          <div className="rounded-2xl border border-dashed border-stone-200 bg-stone-50 p-5">
-            <div className="space-y-2">
-              <div className="text-sm font-medium text-stone-800">多选本地 CPA JSON 文件</div>
-              <div className="text-sm leading-6 text-stone-500">
-                每个文件应为一个 JSON 对象。系统会从对象中自动提取 `access_token` 或 `accessToken`，
-              </div>
-            </div>
-            <AntButton
-              type="primary"
-              className="mt-4"
-              onClick={() => cpaInputRef.current?.click()}
-              disabled={isSubmitting}
-              icon={<Files className="size-4" />}
-            >
-              选择多个 JSON 文件
-            </AntButton>
-          </div>
-          <input
-            ref={cpaInputRef}
-            type="file"
-            accept=".json,application/json"
-            multiple
-            className="hidden"
-            onChange={(event) => void handleCpaSelected(event)}
-          />
-          {pendingCpaImport ? (
-            <div className="rounded-2xl border border-stone-200 bg-white p-4 text-sm leading-6 text-stone-600">
-              最近一次读取到 {pendingCpaImport.parsedFileCount} 个 Token
-              {pendingCpaImport.errorCount > 0 ? `，另有 ${pendingCpaImport.errorCount} 个文件未提取成功` : ""}。
-            </div>
-          ) : null}
-        </div>
-      );
-    }
-
     if (method === "codex-auth") {
       return (
         <div className="space-y-4">
@@ -708,32 +579,6 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
             icon={FileJson}
             onClick={() => setMethod("codex-auth")}
           />
-          <MethodCard
-            title="导入 CPA JSON 文件"
-            description="多选本地 JSON，逐个读取 access_token。"
-            icon={Files}
-            onClick={() => setMethod("cpa")}
-          />
-          <MethodCard
-            title="从远程 CPA 服务器导入"
-            description="先到设置页配置 CPA 服务器。"
-            icon={Files}
-            onClick={() => {
-              setOpen(false);
-              resetState();
-              router.push("/settings");
-            }}
-          />
-          <MethodCard
-            title="从 Sub2API 服务器导入"
-            description="配置 Sub2API 后选择 OpenAI 账号导入。"
-            icon={ServerCog}
-            onClick={() => {
-              setOpen(false);
-              resetState();
-              router.push("/settings");
-            }}
-          />
         </div>
       </div>
     );
@@ -763,7 +608,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
                   ? "导入 Codex 认证 JSON"
                 : method === "oauth"
                   ? "OAuth 登录已有账号"
-                  : "导入 CPA JSON"
+                  : "导入账户"
         }
         open={open}
         onCancel={() => handleOpenChange(false)}
@@ -793,11 +638,6 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
               完成导入
             </AntButton>
           ) : null,
-          method === "cpa" && pendingCpaImport ? (
-            <AntButton key="cpa" type="primary" onClick={() => setConfirmOpen(true)} disabled={footerDisabled || !pendingCpaImport}>
-              查看导入确认
-            </AntButton>
-          ) : null,
         ].filter(Boolean)}
       >
         <div className="mb-5 rounded-xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-500">
@@ -805,51 +645,16 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
             ? "选择一种导入方式。导入成功后会自动拉取邮箱、类型和额度。"
             : method === "token"
               ? "支持手动粘贴或从 TXT 文件导入，一行一个 Token。"
-              : method === "session"
-                ? "粘贴完整 Session JSON，系统会自动提取 accessToken。"
-                : method === "codex-auth"
-                  ? "粘贴 Codex 认证 JSON，系统会按 codex 来源导入。"
+            : method === "session"
+              ? "粘贴完整 Session JSON，系统会自动提取 accessToken。"
+              : method === "codex-auth"
+                ? "粘贴 Codex 认证 JSON，系统会按 codex 来源导入。"
                 : method === "oauth"
                   ? "用浏览器跑一遍 OpenAI 标准 OAuth，拿回 refresh_token 后系统会自动续期。"
-                  : "支持一次读取多个本地 JSON 文件，并在提交前做数量确认。"}
+                  : "选择一种导入方式。"}
         </div>
 
         {renderMethodBody()}
-      </Modal>
-
-      <Modal
-        title="确认导入 CPA Token"
-        open={confirmOpen}
-        onCancel={() => setConfirmOpen(false)}
-        footer={[
-          <AntButton key="back" onClick={() => setConfirmOpen(false)} disabled={isSubmitting}>
-            返回
-          </AntButton>,
-          <AntButton
-            key="confirm"
-            type="primary"
-            loading={isSubmitting}
-            onClick={() =>
-              void submitTokens(
-                pendingCpaImport?.tokens ?? [],
-                "CPA JSON 导入完成",
-                pendingCpaImport?.accounts ?? [],
-              )
-            }
-            disabled={!pendingCpaImport}
-          >
-            确认导入
-          </AntButton>,
-        ]}
-      >
-        <p className="text-sm leading-6 text-slate-500">
-          {pendingCpaImport
-            ? `确认识别到 ${pendingCpaImport.parsedFileCount} 个 Token，是否确认导入？`
-            : "尚未读取到可导入的 Token。"}
-          {pendingCpaImport?.errorCount
-            ? `，另有 ${pendingCpaImport.errorCount} 个文件未提取成功。`
-            : "。"}
-        </p>
       </Modal>
     </>
   );

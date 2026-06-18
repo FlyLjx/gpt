@@ -11,16 +11,14 @@ import {
   Form,
   Input,
   Row,
-  Select,
   Space,
   Switch,
   Tag,
   Typography,
 } from "antd";
-import { BellRing, Cloud, LoaderCircle, PlugZap, RefreshCw, Save, ShieldCheck } from "lucide-react";
+import { BellRing, LoaderCircle, PlugZap, Save, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 
-import type { ImageStorageMode } from "@/lib/api";
 import { testProxy, type ProxyTestResult } from "@/lib/api";
 
 import { useSettingsStore } from "../store";
@@ -104,12 +102,6 @@ export function ConfigCard() {
   const setRefreshAccountIntervalMinute = useSettingsStore((state) => state.setRefreshAccountIntervalMinute);
   const setRefreshAccountConcurrency = useSettingsStore((state) => state.setRefreshAccountConcurrency);
   const setImageRetentionDays = useSettingsStore((state) => state.setImageRetentionDays);
-  const setImagePollTimeoutSecs = useSettingsStore((state) => state.setImagePollTimeoutSecs);
-  const setImageAccountConcurrency = useSettingsStore((state) => state.setImageAccountConcurrency);
-  const setImageAccountPrecheckIntervalMinutes = useSettingsStore((state) => state.setImageAccountPrecheckIntervalMinutes);
-  const setImageSettleEnabled = useSettingsStore((state) => state.setImageSettleEnabled);
-  const setImageSettleSecs = useSettingsStore((state) => state.setImageSettleSecs);
-  const setImageTimeoutRetrySecs = useSettingsStore((state) => state.setImageTimeoutRetrySecs);
   const setAutoRemoveInvalidAccounts = useSettingsStore((state) => state.setAutoRemoveInvalidAccounts);
   const setAutoRemoveRateLimitedAccounts = useSettingsStore((state) => state.setAutoRemoveRateLimitedAccounts);
   const setAutoReloginAfterRefresh = useSettingsStore((state) => state.setAutoReloginAfterRefresh);
@@ -121,17 +113,9 @@ export function ConfigCard() {
   const setProxy = useSettingsStore((state) => state.setProxy);
   const setBaseUrl = useSettingsStore((state) => state.setBaseUrl);
   const setTimezone = useSettingsStore((state) => state.setTimezone);
-  const setGlobalSystemPrompt = useSettingsStore((state) => state.setGlobalSystemPrompt);
-  const setSensitiveWordsText = useSettingsStore((state) => state.setSensitiveWordsText);
-  const setAIReviewField = useSettingsStore((state) => state.setAIReviewField);
   const setBarkNotificationField = useSettingsStore((state) => state.setBarkNotificationField);
   const testBark = useSettingsStore((state) => state.testBark);
   const isTestingBarkNotification = useSettingsStore((state) => state.isTestingBarkNotification);
-  const setImageStorageField = useSettingsStore((state) => state.setImageStorageField);
-  const testImageStorage = useSettingsStore((state) => state.testImageStorage);
-  const syncImagesToWebDAV = useSettingsStore((state) => state.syncImagesToWebDAV);
-  const isTestingImageStorage = useSettingsStore((state) => state.isTestingImageStorage);
-  const isSyncingImageStorage = useSettingsStore((state) => state.isSyncingImageStorage);
   const saveConfig = useSettingsStore((state) => state.saveConfig);
 
   const handleTestProxy = async () => {
@@ -171,8 +155,6 @@ export function ConfigCard() {
     return null;
   }
 
-  const imageStorageEnabled = Boolean(config.image_storage?.enabled);
-  const aiReviewEnabled = Boolean(config.ai_review?.enabled);
   const barkEnabled = Boolean(config.notifications?.bark?.enabled);
 
   return (
@@ -207,15 +189,6 @@ export function ConfigCard() {
           </Col>
           <Col xs={24} md={12} xl={6}>
             <NumberInput label="图片自动清理" value={String(config.image_retention_days || "")} onChange={setImageRetentionDays} placeholder="30" help="自动删除多少天前的本地图片。" />
-          </Col>
-          <Col xs={24} md={12} xl={6}>
-            <NumberInput label="图片轮询超时" value={String(config.image_poll_timeout_secs || "")} onChange={setImagePollTimeoutSecs} placeholder="120" help="单位秒，等待上游图片结果的最长时间。" />
-          </Col>
-          <Col xs={24} md={12} xl={6}>
-            <NumberInput label="单账号图片并发" value={String(config.image_account_concurrency || "")} onChange={setImageAccountConcurrency} placeholder="1" help="每个账号同时处理的图片请求数量。" />
-          </Col>
-          <Col xs={24} md={12} xl={6}>
-            <NumberInput label="生图前预检间隔" value={String(config.image_account_precheck_interval_minutes || "")} onChange={setImageAccountPrecheckIntervalMinutes} placeholder="10" help="单位分钟，账号超过该时间未刷新时，生图前先刷新状态和额度。" />
           </Col>
           <Col xs={24} lg={12}>
             <Form.Item label="全局代理" extra="留空表示不使用代理。">
@@ -334,21 +307,7 @@ export function ConfigCard() {
         </Row>
 
         <Divider />
-        <SectionTitle title="图片任务" description="控制图片结果确认、超时后继续等待和控制台日志输出。" />
         <Row gutter={[16, 16]}>
-          <Col xs={24} lg={8}>
-            <Card size="small" className="h-full">
-              <Space direction="vertical" size={8} className="w-full">
-                <Switch checked={Boolean(config.image_settle_enabled !== false)} onChange={setImageSettleEnabled} />
-                <Typography.Text strong>图片二次确认机制</Typography.Text>
-                <Typography.Text type="secondary">找到图片后等待短时间再次确认，提升获取稳定性。</Typography.Text>
-                <Input value={String(config.image_settle_secs || "2.0")} onChange={(event) => setImageSettleSecs(event.target.value)} placeholder="2.0" disabled={!config.image_settle_enabled} addonAfter="秒" />
-              </Space>
-            </Card>
-          </Col>
-          <Col xs={24} lg={8}>
-            <NumberInput label="图片超时继续等待时间" value={String(config.image_timeout_retry_secs || "30")} onChange={setImageTimeoutRetrySecs} placeholder="30" help="单位秒，超时后点击继续等待的额外等待时间。" />
-          </Col>
           <Col xs={24} lg={8}>
             <Form.Item label="控制台日志级别" extra="不选择时使用默认 info / warning / error。">
               <Checkbox.Group value={config.log_levels || []} onChange={(values) => {
@@ -473,113 +432,6 @@ export function ConfigCard() {
           </Row>
         </Card>
 
-        <Divider />
-        <SectionTitle title="WebDAV 图片存储" description="可选择只保存在本机、只保存到 WebDAV，或两边都保留。" />
-        <Card size="small">
-          <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <Space>
-              <Switch checked={imageStorageEnabled} onChange={(checked) => setImageStorageField("enabled", checked)} />
-              <Typography.Text strong>启用 WebDAV 图片存储</Typography.Text>
-              <Tag color={imageStorageEnabled ? "blue" : "default"}>{imageStorageEnabled ? "已启用" : "仅本机"}</Tag>
-            </Space>
-            <Space wrap>
-              <Button icon={isTestingImageStorage ? <LoaderCircle className="size-4 animate-spin" /> : <Cloud className="size-4" />} onClick={() => void testImageStorage()} disabled={isTestingImageStorage || !imageStorageEnabled}>
-                测试 WebDAV
-              </Button>
-              <Button icon={isSyncingImageStorage ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />} onClick={() => void syncImagesToWebDAV()} disabled={isSyncingImageStorage || !imageStorageEnabled || config.image_storage?.mode === "local"}>
-                全量同步
-              </Button>
-            </Space>
-          </div>
-          <Row gutter={[16, 16]}>
-            <Col xs={24} md={8}>
-              <Form.Item label="保存模式">
-                <Select
-                  value={String(config.image_storage?.mode || "local")}
-                  onChange={(value) => setImageStorageField("mode", value as ImageStorageMode)}
-                  disabled={!imageStorageEnabled}
-                  options={[
-                    { value: "local", label: "仅本机" },
-                    { value: "webdav", label: "仅 WebDAV" },
-                    { value: "both", label: "本机 + WebDAV" },
-                  ]}
-                />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={16}>
-              <Form.Item label="WebDAV URL">
-                <Input value={String(config.image_storage?.webdav_url || "")} onChange={(event) => setImageStorageField("webdav_url", event.target.value)} placeholder="https://example.com/dav" disabled={!imageStorageEnabled} />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={8}>
-              <Form.Item label="用户名">
-                <Input value={String(config.image_storage?.webdav_username || "")} onChange={(event) => setImageStorageField("webdav_username", event.target.value)} disabled={!imageStorageEnabled} />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={8}>
-              <Form.Item label="密码">
-                <Input.Password value={String(config.image_storage?.webdav_password || "")} onChange={(event) => setImageStorageField("webdav_password", event.target.value)} disabled={!imageStorageEnabled} />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={8}>
-              <Form.Item label="远端目录">
-                <Input value={String(config.image_storage?.webdav_root_path || "")} onChange={(event) => setImageStorageField("webdav_root_path", event.target.value)} placeholder="chatgpt2api/images" disabled={!imageStorageEnabled} />
-              </Form.Item>
-            </Col>
-            <Col xs={24}>
-              <Form.Item label="公开访问前缀" extra="留空时返回本应用 /images/... 代理地址；填入后直接返回公开图片地址。">
-                <Input value={String(config.image_storage?.public_base_url || "")} onChange={(event) => setImageStorageField("public_base_url", event.target.value)} placeholder="https://cdn.example.com/chatgpt2api/images" disabled={!imageStorageEnabled} />
-              </Form.Item>
-            </Col>
-          </Row>
-        </Card>
-
-        <Divider />
-        <SectionTitle title="内容安全" description="在请求进入账号池前进行全局提示词约束、敏感词拦截或 AI 审核。" />
-        <Row gutter={[16, 16]}>
-          <Col xs={24}>
-            <Form.Item label="全局附加指令" extra="每次请求都会作为 system 消息注入。">
-              <Input.TextArea value={String(config.global_system_prompt || "")} onChange={(event) => setGlobalSystemPrompt(event.target.value)} autoSize={{ minRows: 4, maxRows: 8 }} placeholder="例如：遇到违法、色情、暴力、仇恨等请求时拒绝回答。" />
-            </Form.Item>
-          </Col>
-          <Col xs={24}>
-            <Form.Item label="敏感词" extra="一行一个，命中任意敏感词会直接拒绝请求。">
-              <Input.TextArea value={(config.sensitive_words || []).join("\n")} onChange={(event) => setSensitiveWordsText(event.target.value)} autoSize={{ minRows: 4, maxRows: 8 }} placeholder="一行一个，命中即拒绝" />
-            </Form.Item>
-          </Col>
-        </Row>
-
-        <Card size="small">
-          <div className="mb-4 flex items-center justify-between gap-3">
-            <Space>
-              <Switch checked={aiReviewEnabled} onChange={(checked) => setAIReviewField("enabled", checked)} />
-              <Typography.Text strong>启用 AI 审核</Typography.Text>
-              <Tag color={aiReviewEnabled ? "green" : "default"}>{aiReviewEnabled ? "审核开启" : "未开启"}</Tag>
-            </Space>
-          </div>
-          <Row gutter={[16, 16]}>
-            <Col xs={24} md={8}>
-              <Form.Item label="Base URL">
-                <Input value={String(config.ai_review?.base_url || "")} onChange={(event) => setAIReviewField("base_url", event.target.value)} placeholder="https://api.openai.com" />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={8}>
-              <Form.Item label="API Key">
-                <Input.Password value={String(config.ai_review?.api_key || "")} onChange={(event) => setAIReviewField("api_key", event.target.value)} placeholder="sk-..." />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={8}>
-              <Form.Item label="Model">
-                <Input value={String(config.ai_review?.model || "")} onChange={(event) => setAIReviewField("model", event.target.value)} placeholder="gpt-5.4-mini" />
-              </Form.Item>
-            </Col>
-            <Col xs={24}>
-              <Form.Item label="审核提示词">
-                <Input.TextArea value={String(config.ai_review?.prompt || "")} onChange={(event) => setAIReviewField("prompt", event.target.value)} autoSize={{ minRows: 3, maxRows: 6 }} placeholder="判断用户请求是否允许。只回答 ALLOW 或 REJECT。" />
-              </Form.Item>
-            </Col>
-          </Row>
-        </Card>
       </Form>
     </Card>
   );

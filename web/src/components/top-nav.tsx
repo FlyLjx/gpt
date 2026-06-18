@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
   Bug,
+  Images,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -24,6 +25,7 @@ import { clearStoredAuthSession, type StoredAuthSession } from "@/store/auth";
 const adminNavItems = [
   { href: "/dashboard", label: "系统总览", icon: LayoutDashboard },
   { href: "/accounts", label: "号池管理", icon: UsersRound },
+  { href: "/image-manager", label: "图片管理", icon: Images },
   { href: "/tasks", label: "任务队列", icon: TimerReset },
   { href: "/register", label: "注册机", icon: UserRound },
   { href: "/logs", label: "日志管理", icon: ScrollText },

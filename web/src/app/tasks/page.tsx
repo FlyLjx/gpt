@@ -130,7 +130,7 @@ function TasksContent() {
       <section className="flex flex-col gap-4 rounded-lg border border-slate-200 bg-white px-5 py-5 shadow-sm lg:flex-row lg:items-center lg:justify-between">
         <div>
           <Typography.Title level={2} className="!mb-1 !text-2xl">任务队列</Typography.Title>
-          <Typography.Text type="secondary">统一查看图片任务状态，并取消排队或运行中的任务。</Typography.Text>
+          <Typography.Text type="secondary">统一查看任务状态，并取消排队或运行中的任务。</Typography.Text>
         </div>
         <Button icon={<RefreshCw className="size-4" />} onClick={() => void load(true)}>
           刷新
@@ -153,7 +153,7 @@ function TasksContent() {
           size="small"
           pagination={{ pageSize: 20, showSizeChanger: true }}
           scroll={{ x: 980 }}
-          locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无图片任务" /> }}
+          locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无任务" /> }}
         />
       </Card>
     </div>

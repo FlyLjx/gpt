@@ -149,22 +149,12 @@ function DashboardContent() {
     void loadDashboard();
   }, []);
 
-  const taskColumns = useMemo<ColumnsType<DashboardSummary["tasks"]["recent"][number]>>(
-    () => [
-      { title: "任务", dataIndex: "id", ellipsis: true },
-      { title: "模式", dataIndex: "mode", width: 96, render: (value) => <Tag>{value === "edit" ? "图生图" : "文生图"}</Tag> },
-      { title: "状态", dataIndex: "status", width: 96, render: statusTag },
-      { title: "更新时间", dataIndex: "updated_at", width: 180 },
-    ],
-    [],
-  );
-
   const failedColumns = useMemo<ColumnsType<DashboardSummary["calls"]["recent_failed"][number]>>(
     () => [
-      { title: "时间", dataIndex: "time", width: 170 },
-      { title: "摘要", dataIndex: "summary", width: 130, ellipsis: true },
-      { title: "模型", dataIndex: "model", width: 130, ellipsis: true },
-      { title: "错误", dataIndex: "error", ellipsis: true },
+      { title: "时间", dataIndex: "time", width: "18%", align: "center" },
+      { title: "摘要", dataIndex: "summary", width: "16%", ellipsis: true },
+      { title: "模型", dataIndex: "model", width: "16%", ellipsis: true },
+      { title: "错误", dataIndex: "error", width: "50%", ellipsis: true },
     ],
     [],
   );
@@ -300,17 +290,7 @@ function DashboardContent() {
         </Card>
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-2">
-        <Card title="最近任务" styles={{ body: { padding: 0 } }}>
-          <Table
-            rowKey="id"
-            columns={taskColumns}
-            dataSource={data.tasks.recent}
-            pagination={false}
-            size="small"
-            locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无图片任务" /> }}
-          />
-        </Card>
+      <section>
         <Card title="最近失败" styles={{ body: { padding: 0 } }}>
           <Table
             rowKey={(record) => String(record.id || `${record.time}-${record.error}`)}
@@ -318,6 +298,7 @@ function DashboardContent() {
             dataSource={data.calls.recent_failed}
             pagination={false}
             size="small"
+            tableLayout="fixed"
             locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="今日暂无失败调用" /> }}
           />
         </Card>

@@ -13,6 +13,7 @@ data
 logs/
 postgres-data/
 postgres-data-local/
+warp-state-local/
 config.json
 edit
 

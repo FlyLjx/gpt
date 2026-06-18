@@ -27,7 +27,6 @@ class FakeConfig:
         self.data: dict[str, object] = {
             "proxy": "",
             "proxy_runtime": copy.deepcopy(DEFAULT_PROXY_RUNTIME),
-            "third_party_apps": {"infinite_canvas": {"enabled": False, "url": "https://canvas.best"}},
         }
 
     def get(self) -> dict[str, object]:
@@ -45,9 +44,6 @@ class FakeConfig:
 
     def get_public_proxy_runtime_settings(self) -> dict[str, object]:
         return self.get_proxy_runtime_settings()
-
-    def get_third_party_apps_settings(self) -> dict[str, object]:
-        return copy.deepcopy(self.data["third_party_apps"])  # type: ignore[index]
 
     def get_storage_backend(self) -> FakeStorage:
         return FakeStorage()
@@ -172,12 +168,6 @@ class ProxyRuntimeApiTests(unittest.TestCase):
         self.assertTrue(payload["has_cookies"])
         self.assertNotIn("cf_clearance", response.text)
         self.assertEqual(self.test_clearance_calls, ["https://chatgpt.com/backend-api/models"])
-
-    def test_third_party_apps_endpoint_uses_identity_auth(self) -> None:
-        response = self.client.get("/api/third-party-apps", headers=AUTH_HEADERS)
-
-        self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.json()["third_party_apps"]["infinite_canvas"]["url"], "https://canvas.best")
 
     def test_health_json_includes_proxy_runtime_status(self) -> None:
         response = self.client.get("/health?format=json")

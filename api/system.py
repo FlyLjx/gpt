@@ -84,11 +84,6 @@ def create_router(app_version: str) -> APIRouter:
         require_admin(authorization)
         return await run_in_threadpool(build_dashboard_summary, app_version)
 
-    @router.get("/api/third-party-apps")
-    async def get_third_party_apps(authorization: str | None = Header(default=None)):
-        require_identity(authorization)
-        return {"third_party_apps": config.get_third_party_apps_settings()}
-
     @router.post("/api/settings")
     async def save_settings(body: SettingsUpdateRequest, authorization: str | None = Header(default=None)):
         require_admin(authorization)

@@ -4,19 +4,8 @@ export type AccountType = string;
 export type AccountStatus = "正常" | "限流" | "异常" | "禁用";
 export type ImageModel = string;
 export type AuthRole = "admin" | "user";
-export type ImageStorageMode = "local" | "webdav" | "both";
 export type ProxyRuntimeEgressMode = "direct" | "single_proxy";
 export type ProxyRuntimeClearanceMode = "none" | "manual" | "flaresolverr";
-
-export type ImageStorageSettings = {
-  enabled: boolean;
-  mode: ImageStorageMode;
-  webdav_url: string;
-  webdav_username: string;
-  webdav_password: string;
-  webdav_root_path: string;
-  public_base_url: string;
-};
 
 export type BarkNotificationSettings = {
   enabled: boolean;
@@ -256,75 +245,7 @@ export type SettingsConfig = {
   log_levels?: string[];
   notifications?: NotificationSettings;
   proxy_runtime?: ProxyRuntimeSettings;
-  image_storage?: ImageStorageSettings;
-  backup?: BackupSettings;
-  backup_state?: BackupState;
   [key: string]: unknown;
-};
-
-export type BackupInclude = {
-  config: boolean;
-  register: boolean;
-  cpa: boolean;
-  sub2api: boolean;
-  logs: boolean;
-  image_tasks: boolean;
-  accounts_snapshot: boolean;
-  auth_keys_snapshot: boolean;
-  images: boolean;
-};
-
-export type BackupSettings = {
-  enabled: boolean;
-  provider: "cloudflare_r2" | string;
-  account_id: string;
-  access_key_id: string;
-  secret_access_key: string;
-  bucket: string;
-  prefix: string;
-  interval_minutes: number | string;
-  rotation_keep: number | string;
-  encrypt: boolean;
-  passphrase: string;
-  include: BackupInclude;
-};
-
-export type BackupState = {
-  running: boolean;
-  last_started_at?: string | null;
-  last_finished_at?: string | null;
-  last_status?: string;
-  last_error?: string | null;
-  last_object_key?: string | null;
-};
-
-export type BackupItem = {
-  key: string;
-  name: string;
-  size: number;
-  updated_at?: string | null;
-  encrypted: boolean;
-};
-
-export type BackupDetail = {
-  key: string;
-  name: string;
-  encrypted: boolean;
-  created_at?: string | null;
-  trigger?: string | null;
-  app_version?: string | null;
-  storage_backend?: Record<string, unknown> | null;
-  files: Array<{
-    name: string;
-    exists: boolean;
-    content_type?: string;
-    size: number;
-    sha256?: string;
-  }>;
-  snapshots: Array<{
-    name: string;
-    count: number;
-  }>;
 };
 
 export type ManagedImage = {
@@ -414,6 +335,7 @@ export type RegisterConfig = {
     providers: Array<Record<string, unknown>>;
   };
   proxy: string;
+  use_warp_proxy: boolean;
   total: number;
   threads: number;
   mode: "total" | "quota" | "available";
@@ -747,62 +669,11 @@ export async function updateSettingsConfig(settings: SettingsConfig) {
   });
 }
 
-export async function testBackupConnection() {
-  return httpRequest<{ result: { ok: boolean; status: number } }>("/api/backup/test", {
-    method: "POST",
-    body: {},
-  });
-}
-
-export async function testImageStorageConnection() {
-  return httpRequest<{ result: { ok: boolean; status: number; error?: string } }>("/api/image-storage/test", {
-    method: "POST",
-    body: {},
-  });
-}
-
 export async function testBarkNotification() {
   return httpRequest<{ result: { ok: boolean; status: number; latency_ms?: number; error?: string } }>("/api/notifications/bark/test", {
     method: "POST",
     body: {},
   });
-}
-
-export async function syncImageStorage() {
-  return httpRequest<{ result: { uploaded: number; skipped: number; failed: number } }>("/api/image-storage/sync", {
-    method: "POST",
-    body: {},
-  });
-}
-
-export async function fetchBackups() {
-  return httpRequest<{ items: BackupItem[]; state: BackupState; settings: BackupSettings }>("/api/backups");
-}
-
-export async function runBackupNow() {
-  return httpRequest<{ result: { key: string; size: number; encrypted: boolean } }>("/api/backups/run", {
-    method: "POST",
-    body: {},
-  });
-}
-
-export async function deleteBackup(key: string) {
-  return httpRequest<{ ok: boolean }>("/api/backups/delete", {
-    method: "POST",
-    body: { key },
-  });
-}
-
-export async function fetchBackupDetail(key: string) {
-  const params = new URLSearchParams();
-  params.set("key", key);
-  return httpRequest<{ item: BackupDetail }>(`/api/backups/detail?${params.toString()}`);
-}
-
-export function getBackupDownloadUrl(key: string) {
-  const params = new URLSearchParams();
-  params.set("key", key);
-  return `/api/backups/download?${params.toString()}`;
 }
 
 export async function fetchManagedImages(filters: { start_date?: string; end_date?: string }) {
@@ -951,179 +822,6 @@ export async function resetRegister() {
   return httpRequest<{ register: RegisterConfig }>("/api/register/reset", { method: "POST" });
 }
 
-// ── CPA (CLIProxyAPI) ──────────────────────────────────────────────
-
-export type CPAPool = {
-  id: string;
-  name: string;
-  base_url: string;
-  import_job?: CPAImportJob | null;
-};
-
-export type CPARemoteFile = {
-  name: string;
-  email: string;
-};
-
-export type CPAImportJob = {
-  job_id: string;
-  status: "pending" | "running" | "completed" | "failed";
-  created_at: string;
-  updated_at: string;
-  total: number;
-  completed: number;
-  added: number;
-  skipped: number;
-  refreshed: number;
-  failed: number;
-  errors: Array<{ name: string; error: string }>;
-};
-
-export async function fetchCPAPools() {
-  return httpRequest<{ pools: CPAPool[] }>("/api/cpa/pools");
-}
-
-export async function createCPAPool(pool: { name: string; base_url: string; secret_key: string }) {
-  return httpRequest<{ pool: CPAPool; pools: CPAPool[] }>("/api/cpa/pools", {
-    method: "POST",
-    body: pool,
-  });
-}
-
-export async function updateCPAPool(
-  poolId: string,
-  updates: { name?: string; base_url?: string; secret_key?: string },
-) {
-  return httpRequest<{ pool: CPAPool; pools: CPAPool[] }>(`/api/cpa/pools/${poolId}`, {
-    method: "POST",
-    body: updates,
-  });
-}
-
-export async function deleteCPAPool(poolId: string) {
-  return httpRequest<{ pools: CPAPool[] }>(`/api/cpa/pools/${poolId}`, {
-    method: "DELETE",
-  });
-}
-
-export async function fetchCPAPoolFiles(poolId: string) {
-  return httpRequest<{ pool_id: string; files: CPARemoteFile[] }>(`/api/cpa/pools/${poolId}/files`);
-}
-
-export async function startCPAImport(poolId: string, names: string[]) {
-  return httpRequest<{ import_job: CPAImportJob | null }>(`/api/cpa/pools/${poolId}/import`, {
-    method: "POST",
-    body: { names },
-  });
-}
-
-export async function fetchCPAPoolImportJob(poolId: string) {
-  return httpRequest<{ import_job: CPAImportJob | null }>(`/api/cpa/pools/${poolId}/import`);
-}
-
-// ── Sub2API ────────────────────────────────────────────────────────
-
-export type Sub2APIServer = {
-  id: string;
-  name: string;
-  base_url: string;
-  email: string;
-  has_api_key: boolean;
-  group_id: string;
-  import_job?: CPAImportJob | null;
-};
-
-export type Sub2APIRemoteAccount = {
-  id: string;
-  name: string;
-  email: string;
-  plan_type: string;
-  status: string;
-  expires_at: string;
-  has_refresh_token: boolean;
-};
-
-export type Sub2APIRemoteGroup = {
-  id: string;
-  name: string;
-  description: string;
-  platform: string;
-  status: string;
-  account_count: number;
-  active_account_count: number;
-};
-
-export async function fetchSub2APIServers() {
-  return httpRequest<{ servers: Sub2APIServer[] }>("/api/sub2api/servers");
-}
-
-export async function createSub2APIServer(server: {
-  name: string;
-  base_url: string;
-  email: string;
-  password: string;
-  api_key: string;
-  group_id: string;
-}) {
-  return httpRequest<{ server: Sub2APIServer; servers: Sub2APIServer[] }>("/api/sub2api/servers", {
-    method: "POST",
-    body: server,
-  });
-}
-
-export async function updateSub2APIServer(
-  serverId: string,
-  updates: {
-    name?: string;
-    base_url?: string;
-    email?: string;
-    password?: string;
-    api_key?: string;
-    group_id?: string;
-  },
-) {
-  return httpRequest<{ server: Sub2APIServer; servers: Sub2APIServer[] }>(`/api/sub2api/servers/${serverId}`, {
-    method: "POST",
-    body: updates,
-  });
-}
-
-export async function fetchSub2APIServerGroups(serverId: string) {
-  return httpRequest<{ server_id: string; groups: Sub2APIRemoteGroup[] }>(
-    `/api/sub2api/servers/${serverId}/groups`,
-  );
-}
-
-export async function deleteSub2APIServer(serverId: string) {
-  return httpRequest<{ servers: Sub2APIServer[] }>(`/api/sub2api/servers/${serverId}`, {
-    method: "DELETE",
-  });
-}
-
-export async function fetchSub2APIServerAccounts(serverId: string) {
-  return httpRequest<{ server_id: string; accounts: Sub2APIRemoteAccount[] }>(
-    `/api/sub2api/servers/${serverId}/accounts`,
-  );
-}
-
-export async function startSub2APIImport(serverId: string, accountIds: string[]) {
-  return httpRequest<{ import_job: CPAImportJob | null }>(`/api/sub2api/servers/${serverId}/import`, {
-    method: "POST",
-    body: { account_ids: accountIds },
-  });
-}
-
-export async function fetchSub2APIImportJob(serverId: string) {
-  return httpRequest<{ import_job: CPAImportJob | null }>(`/api/sub2api/servers/${serverId}/import`);
-}
-
-// ── Upstream proxy ────────────────────────────────────────────────
-
-export type ProxySettings = {
-  enabled: boolean;
-  url: string;
-};
-
 export type ProxyTestResult = {
   ok: boolean;
   status: number;
@@ -1154,17 +852,6 @@ export type ProxyTestResult = {
   };
   error: string | null;
 };
-
-export async function fetchProxy() {
-  return httpRequest<{ proxy: ProxySettings }>("/api/proxy");
-}
-
-export async function updateProxy(updates: { enabled?: boolean; url?: string }) {
-  return httpRequest<{ proxy: ProxySettings }>("/api/proxy", {
-    method: "POST",
-    body: updates,
-  });
-}
 
 export async function testProxy(url?: string) {
   return httpRequest<{ result: ProxyTestResult }>("/api/proxy/test", {

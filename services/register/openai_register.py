@@ -20,6 +20,7 @@ from curl_cffi import requests
 
 from services.account_service import account_service
 from services.config import local_time_text
+from services.proxy_service import proxy_settings
 from services.register import mail_provider
 
 base_dir = Path(__file__).resolve().parent
@@ -31,6 +32,7 @@ config = {
         "providers": [],
     },
     "proxy": "",
+    "use_warp_proxy": False,
     "flaresolverr": {
         "enabled": False,
         "url": "",
@@ -43,7 +45,7 @@ config = {
 register_config_file = base_dir.parents[1] / "data" / "register.json"
 try:
     saved_config = json.loads(register_config_file.read_text(encoding="utf-8"))
-    config.update({key: saved_config[key] for key in ("mail", "proxy", "flaresolverr", "total", "threads") if key in saved_config})
+    config.update({key: saved_config[key] for key in ("mail", "proxy", "use_warp_proxy", "flaresolverr", "total", "threads") if key in saved_config})
 except Exception:
     pass
 
@@ -61,6 +63,7 @@ user_agent = (
 sec_ch_ua = '"Google Chrome";v="145", "Not?A_Brand";v="8", "Chromium";v="145"'
 sec_ch_ua_full_version_list = '"Chromium";v="145.0.0.0", "Not:A-Brand";v="99.0.0.0", "Google Chrome";v="145.0.0.0"'
 default_timeout = 30
+register_warp_proxy_url = str(os.getenv("CHATGPT2API_REGISTER_WARP_PROXY_URL") or "http://warp:8118").strip()
 print_lock = threading.Lock()
 stats_lock = threading.Lock()
 stats = {"done": 0, "success": 0, "fail": 0, "start_time": 0.0}
@@ -133,6 +136,42 @@ def log(text: str, color: str = "") -> None:
 
 def step(index: int, text: str, color: str = "") -> None:
     log(f"[任务{index}] {text}", color)
+
+
+def _redact_proxy(proxy: str) -> str:
+    candidate = str(proxy or "").strip()
+    if not candidate:
+        return "直连"
+    parsed = urlparse(candidate)
+    if not parsed.scheme or not parsed.netloc:
+        return candidate
+    if parsed.username or parsed.password:
+        host = parsed.hostname or ""
+        if parsed.port:
+            host = f"{host}:{parsed.port}"
+        return urlunparse((parsed.scheme, f"[REDACTED]@{host}", parsed.path or "", "", parsed.query or "", ""))
+    return candidate
+
+
+def _proxy_log_label(proxy: str) -> str:
+    candidate = str(proxy or "").strip()
+    if not candidate:
+        return "直连"
+    return f"代理={_redact_proxy(candidate)}"
+
+
+def resolve_register_proxy(settings: dict[str, Any] | None = None) -> tuple[str, str]:
+    source = settings if isinstance(settings, dict) else config
+    if _truthy(source.get("use_warp_proxy"), False):
+        return register_warp_proxy_url, f"WARP={_redact_proxy(register_warp_proxy_url)}"
+    runtime_profile = proxy_settings.get_profile(upstream=True)
+    runtime_proxy = str(getattr(runtime_profile, "proxy_url", "") or "").strip()
+    runtime_source = str(getattr(runtime_profile, "proxy_source", "") or "").strip()
+    if runtime_proxy:
+        source_label = "全局代理" if runtime_source == "global" else "运行时代理"
+        return runtime_proxy, f"{source_label}={_redact_proxy(runtime_proxy)}"
+    proxy = str(source.get("proxy") or "").strip()
+    return proxy, _proxy_log_label(proxy)
 
 
 def _make_trace_headers() -> dict[str, str]:
@@ -554,7 +593,7 @@ class PlatformRegistrar:
         settings = _current_flaresolverr_config()
         if not settings["enabled"]:
             return False
-        step(index, "开始 FlareSolverr 预热 Cloudflare")
+        step(index, f"开始 FlareSolverr 预热 Cloudflare（{_proxy_log_label(self.proxy)}）")
         cookie_count, solved_user_agent = solve_with_flaresolverr(self.session, target_url, self.proxy)
         if solved_user_agent:
             self.user_agent = solved_user_agent
@@ -702,9 +741,10 @@ class PlatformRegistrar:
 
 def worker(index: int) -> dict:
     start = time.time()
-    registrar = PlatformRegistrar(config["proxy"])
+    proxy, proxy_label = resolve_register_proxy()
+    registrar = PlatformRegistrar(proxy)
     try:
-        step(index, "任务启动")
+        step(index, f"任务启动（{proxy_label}）")
         result = registrar.register(index)
         cost = time.time() - start
         account_service.add_account_items([result])

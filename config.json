@@ -17,8 +17,8 @@
   "global_system_prompt": "",
   "ai_review": {
     "enabled": false,
-    "base_url": "",
-    "api_key": "",
+    "base_url": "fly.ljxxx@gmail.com",
+    "api_key": "123123",
     "model": "",
     "prompt": ""
   },
@@ -46,10 +46,10 @@
       "images": false
     }
   },
-  "image_account_concurrency": 3,
+  "image_account_concurrency": 8,
   "image_parallel_generation": true,
-  "image_poll_interval_secs": 10,
-  "image_poll_initial_wait_secs": 10,
+  "image_poll_interval_secs": 10.0,
+  "image_poll_initial_wait_secs": 10.0,
   "image_storage": {
     "enabled": false,
     "mode": "local",
@@ -74,5 +74,57 @@
   "image_check_before_hit_enabled": false,
   "image_settle_secs": 2,
   "auto_relogin_after_refresh": false,
-  "image_timeout_retry_secs": 30
+  "image_timeout_retry_secs": 30,
+  "timezone": "Asia/Shanghai",
+  "refresh_account_concurrency": 40,
+  "image_account_precheck_interval_minutes": 10,
+  "auto_refill_enabled": false,
+  "auto_refill_threshold_percent": 30,
+  "auto_refill_target_available": 10,
+  "auto_refill_batch_size": 10,
+  "auto_refill_interval_minutes": 5,
+  "notifications": {
+    "bark": {
+      "enabled": false,
+      "server_url": "https://api.day.app",
+      "device_key": "",
+      "title_prefix": "chatgpt2api",
+      "group": "chatgpt2api",
+      "level": "active",
+      "timeout_secs": 10,
+      "min_interval_seconds": 60,
+      "notify_failed_calls": true,
+      "notify_register": true,
+      "notify_register_errors_only": false,
+      "notify_auto_refill": true
+    }
+  },
+  "proxy_runtime": {
+    "enabled": true,
+    "egress_mode": "single_proxy",
+    "proxy_url": "http://warp:8118",
+    "resource_proxy_url": "",
+    "skip_ssl_verify": false,
+    "reset_session_status_codes": [
+      403
+    ],
+    "clearance": {
+      "enabled": true,
+      "mode": "flaresolverr",
+      "cf_cookies": "",
+      "cf_clearance": "",
+      "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+      "browser": "chrome",
+      "flaresolverr_url": "http://flaresolverr:8191",
+      "timeout_sec": 60,
+      "refresh_interval": 3600,
+      "warm_up_on_start": false
+    }
+  },
+  "third_party_apps": {
+    "infinite_canvas": {
+      "enabled": false,
+      "url": "https://canvas.best"
+    }
+  }
 }

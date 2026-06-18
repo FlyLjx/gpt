@@ -15,29 +15,12 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = BASE_DIR / "data"
 CONFIG_FILE = BASE_DIR / "config.json"
 VERSION_FILE = BASE_DIR / "VERSION"
-BACKUP_STATE_FILE = DATA_DIR / "backup_state.json"
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 LOCAL_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
-
-DEFAULT_BACKUP_INCLUDE = {
-    "config": True,
-    "register": True,
-    "cpa": True,
-    "sub2api": True,
-    "logs": True,
-    "image_tasks": True,
-    "accounts_snapshot": True,
-    "auth_keys_snapshot": True,
-    "images": False,
-}
 
 DEFAULT_IMAGE_STORAGE = {
     "enabled": False,
     "mode": "local",
-    "webdav_url": "",
-    "webdav_username": "",
-    "webdav_password": "",
-    "webdav_root_path": "chatgpt2api/images",
     "public_base_url": "",
 }
 
@@ -76,13 +59,6 @@ DEFAULT_PROXY_RUNTIME = {
         "timeout_sec": 60,
         "refresh_interval": 3600,
         "warm_up_on_start": False,
-    },
-}
-
-DEFAULT_THIRD_PARTY_APPS = {
-    "infinite_canvas": {
-        "enabled": False,
-        "url": "https://canvas.best",
     },
 }
 
@@ -199,59 +175,11 @@ def _normalize_positive_int(value: object, default: int, minimum: int = 0) -> in
     return max(minimum, normalized)
 
 
-def _normalize_backup_include(value: object) -> dict[str, bool]:
-    source = value if isinstance(value, dict) else {}
-    normalized = dict(DEFAULT_BACKUP_INCLUDE)
-    for key in normalized:
-        normalized[key] = _normalize_bool(source.get(key), normalized[key])
-    return normalized
-
-
-def _normalize_backup_settings(value: object) -> dict[str, object]:
-    source = value if isinstance(value, dict) else {}
-    return {
-        "enabled": _normalize_bool(source.get("enabled"), False),
-        "provider": "cloudflare_r2",
-        "account_id": str(source.get("account_id") or "").strip(),
-        "access_key_id": str(source.get("access_key_id") or "").strip(),
-        "secret_access_key": str(source.get("secret_access_key") or "").strip(),
-        "bucket": str(source.get("bucket") or "").strip(),
-        "prefix": str(source.get("prefix") or "backups").strip().strip("/") or "backups",
-        "interval_minutes": _normalize_positive_int(source.get("interval_minutes"), 360, 1),
-        "rotation_keep": _normalize_positive_int(source.get("rotation_keep"), 10, 0),
-        "encrypt": _normalize_bool(source.get("encrypt"), False),
-        "passphrase": str(source.get("passphrase") or "").strip(),
-        "include": _normalize_backup_include(source.get("include")),
-    }
-
-
-def _normalize_backup_state(value: object) -> dict[str, object]:
-    source = value if isinstance(value, dict) else {}
-    return {
-        "last_started_at": str(source.get("last_started_at") or "").strip() or None,
-        "last_finished_at": str(source.get("last_finished_at") or "").strip() or None,
-        "last_status": str(source.get("last_status") or "idle").strip() or "idle",
-        "last_error": str(source.get("last_error") or "").strip() or None,
-        "last_object_key": str(source.get("last_object_key") or "").strip() or None,
-    }
-
-
 def _normalize_image_storage_settings(value: object) -> dict[str, object]:
     source = value if isinstance(value, dict) else {}
-    mode = str(source.get("mode") or "local").strip().lower()
-    if mode not in {"local", "webdav", "both"}:
-        mode = "local"
-    enabled = _normalize_bool(source.get("enabled"), False)
-    if not enabled:
-        mode = "local"
-    root_path = str(source.get("webdav_root_path") or DEFAULT_IMAGE_STORAGE["webdav_root_path"]).strip().strip("/")
     return {
-        "enabled": enabled,
-        "mode": mode,
-        "webdav_url": str(source.get("webdav_url") or "").strip().rstrip("/"),
-        "webdav_username": str(source.get("webdav_username") or "").strip(),
-        "webdav_password": str(source.get("webdav_password") or "").strip(),
-        "webdav_root_path": root_path or str(DEFAULT_IMAGE_STORAGE["webdav_root_path"]),
+        "enabled": False,
+        "mode": "local",
         "public_base_url": str(source.get("public_base_url") or "").strip().rstrip("/"),
     }
 
@@ -371,17 +299,6 @@ def _normalize_proxy_runtime_settings(value: object) -> dict[str, object]:
     }
 
 
-def _normalize_third_party_apps_settings(value: object) -> dict[str, object]:
-    source = value if isinstance(value, dict) else {}
-    canvas_source = source.get("infinite_canvas") if isinstance(source.get("infinite_canvas"), dict) else {}
-    return {
-        "infinite_canvas": {
-            "enabled": _normalize_bool(canvas_source.get("enabled"), False),
-            "url": str(canvas_source.get("url") or DEFAULT_THIRD_PARTY_APPS["infinite_canvas"]["url"]).strip(),
-        },
-    }
-
-
 def _normalize_bark_notification_settings(value: object) -> dict[str, object]:
     source = value if isinstance(value, dict) else {}
     server_url = str(source.get("server_url") or DEFAULT_BARK_NOTIFICATION["server_url"]).strip().rstrip("/")
@@ -434,12 +351,7 @@ def _normalize_notification_settings(value: object) -> dict[str, object]:
 
 
 def _validate_image_storage_settings(settings: dict[str, object]) -> None:
-    if not _normalize_bool(settings.get("enabled"), False):
-        return
-    if not str(settings.get("webdav_url") or "").strip():
-        raise ValueError("启用 WebDAV 图片存储后必须填写 WebDAV URL")
-    if not str(settings.get("webdav_password") or "").strip():
-        raise ValueError("启用 WebDAV 图片存储后必须填写 WebDAV 密码")
+    return
 
 
 def _validate_notification_settings(settings: dict[str, object]) -> None:
@@ -775,12 +687,9 @@ class ConfigStore:
         data["sensitive_words"] = self.sensitive_words
         data["ai_review"] = self.ai_review
         data["global_system_prompt"] = self.global_system_prompt
-        data["backup"] = self.get_backup_settings()
-        data["image_storage"] = self.get_image_storage_settings()
         data["chat_completion_cache"] = self.get_chat_completion_cache_settings()
         data["notifications"] = self.get_notification_settings()
         data["proxy_runtime"] = self.get_public_proxy_runtime_settings()
-        data["third_party_apps"] = self.get_third_party_apps_settings()
         data.pop("auth-key", None)
         return data
 
@@ -802,9 +711,6 @@ class ConfigStore:
             clearance["has_cf_clearance"] = bool(cf_clearance)
         return runtime
 
-    def get_third_party_apps_settings(self) -> dict[str, object]:
-        return _normalize_third_party_apps_settings(self.data.get("third_party_apps"))
-
     def update(self, data: dict[str, object]) -> dict[str, object]:
         next_data = dict(self.data)
         next_data.update(dict(data or {}))
@@ -812,11 +718,7 @@ class ConfigStore:
             next_data.pop(key, None)
         if "timezone" in next_data:
             next_data["timezone"] = _normalize_timezone(next_data.get("timezone"))
-        if "backup" in next_data:
-            next_data["backup"] = _normalize_backup_settings(next_data.get("backup"))
-        if "image_storage" in next_data:
-            next_data["image_storage"] = _normalize_image_storage_settings(next_data.get("image_storage"))
-            _validate_image_storage_settings(next_data["image_storage"])
+        next_data.pop("image_storage", None)
         if "chat_completion_cache" in next_data:
             next_data["chat_completion_cache"] = _normalize_chat_completion_cache_settings(
                 next_data.get("chat_completion_cache")
@@ -824,8 +726,6 @@ class ConfigStore:
         if "notifications" in next_data:
             next_data["notifications"] = _normalize_notification_settings(next_data.get("notifications"))
             _validate_notification_settings(next_data["notifications"])
-        if "third_party_apps" in next_data:
-            next_data["third_party_apps"] = _normalize_third_party_apps_settings(next_data.get("third_party_apps"))
         if "proxy_runtime" in next_data:
             incoming_runtime = next_data.get("proxy_runtime")
             if isinstance(incoming_runtime, dict):
@@ -835,17 +735,13 @@ class ConfigStore:
                     incoming_runtime["_existing_cf_cookies"] = previous_clearance.get("cf_cookies")
                     incoming_runtime["_existing_cf_clearance"] = previous_clearance.get("cf_clearance")
             next_data["proxy_runtime"] = _normalize_proxy_runtime_settings(incoming_runtime)
+        next_data.pop("backup", None)
         next_data.pop("backup_state", None)
+        next_data.pop("third_party_apps", None)
         self.data = next_data
         _apply_process_timezone(self.timezone)
         self._save()
         return self.get()
-
-    def get_backup_settings(self) -> dict[str, object]:
-        return _normalize_backup_settings(self.data.get("backup"))
-
-    def get_image_storage_settings(self) -> dict[str, object]:
-        return _normalize_image_storage_settings(self.data.get("image_storage"))
 
     def get_chat_completion_cache_settings(self) -> dict[str, object]:
         return _normalize_chat_completion_cache_settings(self.data.get("chat_completion_cache"))
@@ -859,17 +755,5 @@ class ConfigStore:
             from services.storage.factory import create_storage_backend
             self._storage_backend = create_storage_backend(DATA_DIR)
         return self._storage_backend
-
-
-def load_backup_state() -> dict[str, object]:
-    return _normalize_backup_state(_read_json_object(BACKUP_STATE_FILE, name="backup_state.json"))
-
-
-def save_backup_state(state: dict[str, object]) -> dict[str, object]:
-    normalized = _normalize_backup_state(state)
-    BACKUP_STATE_FILE.write_text(json.dumps(normalized, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return normalized
-
-
 config = ConfigStore(CONFIG_FILE)
 _apply_process_timezone(config.timezone)

@@ -8,7 +8,7 @@ export function SettingsHeader() {
       <div className="py-1">
         <Typography.Text type="secondary" className="text-xs font-semibold uppercase tracking-[0.18em]">Settings</Typography.Text>
         <Typography.Title level={3} className="!mb-0 !mt-1">设置</Typography.Title>
-        <Typography.Text type="secondary" className="block !mt-2">管理运行配置、备份、用户 Key、账号池和 Sub2API 连接。</Typography.Text>
+        <Typography.Text type="secondary" className="block !mt-2">管理运行配置、清障代理和用户 Key。</Typography.Text>
       </div>
     </Card>
   );

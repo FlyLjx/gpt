@@ -28,6 +28,30 @@ services:
       TZ: Asia/Shanghai
     shm_size: 2gb
 
+  warp:
+    build:
+      context: .
+      dockerfile: docker/warp/Dockerfile
+      args:
+        APT_MIRROR: https://mirrors.aliyun.com/debian
+    image: chatgpt2api-warp-local:latest
+    container_name: chatgpt2api-warp-local
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    environment:
+      TZ: Asia/Shanghai
+      WARP_SOCKS_PORT: "40000"
+      WARP_HTTP_PORT: "8118"
+    volumes:
+      - ./warp-state-local:/var/lib/cloudflare-warp
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -x http://127.0.0.1:8118 https://ipinfo.io/json >/dev/null || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 8
+
   app:
     image: ghcr.io/flyljx/chatgpt2api:latest
     container_name: chatgpt2api-local
@@ -36,6 +60,8 @@ services:
         condition: service_healthy
       flaresolverr:
         condition: service_started
+      warp:
+        condition: service_healthy
     ports:
       - "8000:80"
     volumes:

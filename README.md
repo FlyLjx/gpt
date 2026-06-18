@@ -122,8 +122,7 @@ environment:
 - 支持密码重新登录恢复异常账号，刷新后可自动重登
 - 支持网页端配置全局 HTTP / HTTPS / SOCKS5 / SOCKS5H 代理
 - 支持搜索、筛选、批量刷新、导出、手动编辑和清理账号
-- 支持四种导入方式：本地 CPA JSON 文件导入、远程 CPA 服务器导入、`sub2api` 服务器导入、`access_token` 导入
-- 支持在设置页配置 `sub2api` 服务器，筛选并批量导入其中的 OpenAI OAuth 账号
+- 支持多种导入方式：OAuth 登录已有账号、`access_token` 导入、Session JSON 导入、Codex 认证 JSON 导入
 
 ### 实验性 / 规划中
 

@@ -14,6 +14,7 @@ from services.register_service import register_service
 class RegisterConfigRequest(BaseModel):
     mail: dict | None = None
     proxy: str | None = None
+    use_warp_proxy: bool | None = None
     flaresolverr: dict | None = None
     total: int | None = None
     threads: int | None = None
