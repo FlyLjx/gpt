@@ -346,6 +346,126 @@ class ImageTaskService:
             "recent": tasks[:8],
         }
 
+    def begin_sync_task(
+        self,
+        identity: dict[str, object],
+        *,
+        mode: str,
+        model: str,
+        size: str | None = None,
+        quality: str = "auto",
+        request_preview: str = "",
+        request_params: dict[str, Any] | None = None,
+    ) -> tuple[str, dict[str, Any]]:
+        owner = _owner_id(identity)
+        task_id = f"sync-{int(time.time() * 1000)}-{threading.get_ident()}"
+        key = _task_key(owner, task_id)
+        now = _now_iso()
+        task = {
+            "id": task_id,
+            "owner_id": owner,
+            "status": TASK_STATUS_RUNNING,
+            "mode": "edit" if mode == "edit" else "generate",
+            "model": _clean(model, "gpt-image-2"),
+            "size": _clean(size),
+            "quality": _clean(quality, "auto"),
+            "created_at": now,
+            "updated_at": now,
+            "created_ts": time.time(),
+            "started_ts": time.time(),
+            "progress": "sync_request_started",
+        }
+        task["log_id"] = self._log_task_submit(
+            identity,
+            task["mode"],
+            task["model"],
+            float(task["created_ts"]),
+            request_preview=request_preview,
+            request_params=request_params,
+        )
+        with self._lock:
+            if self._cleanup_locked():
+                self._save_locked()
+            self._tasks[key] = task
+            self._save_locked()
+        return key, _public_task(task)
+
+    def update_sync_task_progress(self, key: str, progress: str) -> None:
+        self._update_task(key, progress=_clean(progress))
+
+    def finish_sync_task(
+        self,
+        key: str,
+        identity: dict[str, object],
+        *,
+        mode: str,
+        model: str,
+        started: float,
+        request_preview: str = "",
+        request_params: dict[str, Any] | None = None,
+        result_data: object = None,
+        error: str = "",
+        account_email: str = "",
+        conversation_id: str = "",
+        image_route: dict[str, Any] | None = None,
+        image_route_attempts: list[dict[str, Any]] | None = None,
+    ) -> None:
+        duration_ms = int((time.time() - started) * 1000)
+        if error:
+            self._update_task(
+                key,
+                status=TASK_STATUS_ERROR,
+                error=error,
+                data=[],
+                duration_ms=duration_ms,
+                **({"conversation_id": conversation_id} if conversation_id else {}),
+            )
+            self._log_call(
+                key,
+                identity,
+                mode,
+                model,
+                started,
+                "调用失败",
+                request_preview=request_preview,
+                request_params=request_params,
+                status="failed",
+                error=error,
+                account_email=account_email,
+                image_route=image_route,
+                image_route_attempts=image_route_attempts,
+            )
+            return
+
+        result = result_data if isinstance(result_data, dict) else {}
+        data = result.get("data")
+        usage = result.get("usage")
+        urls = _collect_image_urls(data) if isinstance(data, list) else []
+        self._update_task(
+            key,
+            status=TASK_STATUS_SUCCESS,
+            data=data if isinstance(data, list) else [],
+            usage=usage if isinstance(usage, dict) else None,
+            error="",
+            duration_ms=duration_ms,
+            **({"conversation_id": conversation_id} if conversation_id else {}),
+        )
+        self._log_call(
+            key,
+            identity,
+            mode,
+            model,
+            started,
+            "调用完成",
+            request_preview=request_preview,
+            request_params=request_params,
+            urls=urls,
+            account_email=account_email,
+            result_data=data,
+            image_route=image_route,
+            image_route_attempts=image_route_attempts,
+        )
+
     def _submit(
         self,
         identity: dict[str, object],
