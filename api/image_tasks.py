@@ -5,7 +5,7 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from api.image_inputs import parse_image_edit_request, read_image_sources
-from api.support import consume_identity_quota, require_identity, resolve_image_base_url
+from api.support import consume_identity_quota, require_identity, resolve_api_authorization, resolve_image_base_url
 from services.image_task_service import image_task_service
 
 
@@ -32,8 +32,10 @@ def create_router() -> APIRouter:
     async def list_image_tasks(
         ids: str = Query(default=""),
         authorization: str | None = Header(default=None),
+        x_api_key: str | None = Header(default=None, alias="x-api-key"),
+        api_key: str | None = Header(default=None, alias="api-key"),
     ):
-        identity = require_identity(authorization)
+        identity = require_identity(resolve_api_authorization(authorization, x_api_key, api_key))
         return await run_in_threadpool(image_task_service.list_tasks, identity, _parse_task_ids(ids))
 
     @router.post("/api/image-tasks/generations")
@@ -41,8 +43,10 @@ def create_router() -> APIRouter:
         body: ImageGenerationTaskRequest,
         request: Request,
         authorization: str | None = Header(default=None),
+        x_api_key: str | None = Header(default=None, alias="x-api-key"),
+        api_key: str | None = Header(default=None, alias="api-key"),
     ):
-        identity = require_identity(authorization)
+        identity = require_identity(resolve_api_authorization(authorization, x_api_key, api_key))
         consume_identity_quota(
             identity,
             endpoint="/api/image-tasks/generations",
@@ -67,8 +71,10 @@ def create_router() -> APIRouter:
     async def create_edit_task(
         request: Request,
         authorization: str | None = Header(default=None),
+        x_api_key: str | None = Header(default=None, alias="x-api-key"),
+        api_key: str | None = Header(default=None, alias="api-key"),
     ):
-        identity = require_identity(authorization)
+        identity = require_identity(resolve_api_authorization(authorization, x_api_key, api_key))
         payload, image_sources, mask_sources = await parse_image_edit_request(request)
         client_task_id = str(payload.get("client_task_id") or "").strip()
         if not client_task_id:
@@ -105,8 +111,10 @@ def create_router() -> APIRouter:
         body: ResumePollRequest,
         request: Request,
         authorization: str | None = Header(default=None),
+        x_api_key: str | None = Header(default=None, alias="x-api-key"),
+        api_key: str | None = Header(default=None, alias="api-key"),
     ):
-        identity = require_identity(authorization)
+        identity = require_identity(resolve_api_authorization(authorization, x_api_key, api_key))
         try:
             return await run_in_threadpool(
                 image_task_service.resume_poll,
@@ -121,8 +129,10 @@ def create_router() -> APIRouter:
     async def cancel_image_task(
         task_id: str,
         authorization: str | None = Header(default=None),
+        x_api_key: str | None = Header(default=None, alias="x-api-key"),
+        api_key: str | None = Header(default=None, alias="api-key"),
     ):
-        identity = require_identity(authorization)
+        identity = require_identity(resolve_api_authorization(authorization, x_api_key, api_key))
         try:
             return await run_in_threadpool(image_task_service.cancel_task, identity, task_id)
         except ValueError as exc:

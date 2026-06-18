@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.image_inputs import parse_image_edit_request, read_image_sources
-from api.support import consume_identity_quota, require_identity, resolve_image_base_url
+from api.support import consume_identity_quota, require_identity, resolve_api_authorization, resolve_image_base_url
 from services.content_filter import check_request, request_shape, request_text
 from services.editable_file_task_service import editable_file_task_service
 from services.log_service import LoggedCall, image_request_params
@@ -81,8 +81,12 @@ def create_router() -> APIRouter:
     router = APIRouter()
 
     @router.get("/v1/models")
-    async def list_models(authorization: str | None = Header(default=None)):
-        require_identity(authorization)
+    async def list_models(
+            authorization: str | None = Header(default=None),
+            x_api_key: str | None = Header(default=None, alias="x-api-key"),
+            api_key: str | None = Header(default=None, alias="api-key"),
+    ):
+        require_identity(resolve_api_authorization(authorization, x_api_key, api_key))
         try:
             return await run_in_threadpool(openai_v1_models.list_models)
         except Exception as exc:
@@ -93,8 +97,10 @@ def create_router() -> APIRouter:
             body: ImageGenerationRequest,
             request: Request,
             authorization: str | None = Header(default=None),
+            x_api_key: str | None = Header(default=None, alias="x-api-key"),
+            api_key: str | None = Header(default=None, alias="api-key"),
     ):
-        identity = require_identity(authorization)
+        identity = require_identity(resolve_api_authorization(authorization, x_api_key, api_key))
         payload = body.model_dump(mode="python")
         consume_identity_quota(
             identity,
@@ -117,8 +123,10 @@ def create_router() -> APIRouter:
     async def edit_images(
             request: Request,
             authorization: str | None = Header(default=None),
+            x_api_key: str | None = Header(default=None, alias="x-api-key"),
+            api_key: str | None = Header(default=None, alias="api-key"),
     ):
-        identity = require_identity(authorization)
+        identity = require_identity(resolve_api_authorization(authorization, x_api_key, api_key))
         payload, image_sources, mask_sources = await parse_image_edit_request(request)
         prompt = str(payload["prompt"])
         model = str(payload["model"])
@@ -143,8 +151,13 @@ def create_router() -> APIRouter:
         return await call.run(openai_v1_image_edit.handle, payload)
 
     @router.post("/v1/chat/completions")
-    async def create_chat_completion(body: ChatCompletionRequest, authorization: str | None = Header(default=None)):
-        identity = require_identity(authorization)
+    async def create_chat_completion(
+            body: ChatCompletionRequest,
+            authorization: str | None = Header(default=None),
+            x_api_key: str | None = Header(default=None, alias="x-api-key"),
+            api_key: str | None = Header(default=None, alias="api-key"),
+    ):
+        identity = require_identity(resolve_api_authorization(authorization, x_api_key, api_key))
         payload = body.model_dump(mode="python")
         model = str(payload.get("model") or "auto")
         consume_identity_quota(identity, endpoint="/v1/chat/completions", model=model)
@@ -161,8 +174,13 @@ def create_router() -> APIRouter:
         return await call.run(openai_v1_chat_complete.handle, payload)
 
     @router.post("/v1/responses")
-    async def create_response(body: ResponseCreateRequest, authorization: str | None = Header(default=None)):
-        identity = require_identity(authorization)
+    async def create_response(
+            body: ResponseCreateRequest,
+            authorization: str | None = Header(default=None),
+            x_api_key: str | None = Header(default=None, alias="x-api-key"),
+            api_key: str | None = Header(default=None, alias="api-key"),
+    ):
+        identity = require_identity(resolve_api_authorization(authorization, x_api_key, api_key))
         payload = body.model_dump(mode="python")
         model = str(payload.get("model") or "auto")
         consume_identity_quota(identity, endpoint="/v1/responses", model=model)
@@ -183,9 +201,10 @@ def create_router() -> APIRouter:
             body: AnthropicMessageRequest,
             authorization: str | None = Header(default=None),
             x_api_key: str | None = Header(default=None, alias="x-api-key"),
+            api_key: str | None = Header(default=None, alias="api-key"),
             anthropic_version: str | None = Header(default=None, alias="anthropic-version"),
     ):
-        identity = require_identity(authorization or (f"Bearer {x_api_key}" if x_api_key else None))
+        identity = require_identity(resolve_api_authorization(authorization, x_api_key, api_key))
         payload = body.model_dump(mode="python")
         model = str(payload.get("model") or "auto")
         consume_identity_quota(identity, endpoint="/v1/messages", model=model)
@@ -195,16 +214,26 @@ def create_router() -> APIRouter:
         return await call.run(anthropic_v1_messages.handle, payload, sse="anthropic")
 
     @router.post("/v1/search")
-    async def search(body: SearchRequest, authorization: str | None = Header(default=None)):
-        identity = require_identity(authorization)
+    async def search(
+            body: SearchRequest,
+            authorization: str | None = Header(default=None),
+            x_api_key: str | None = Header(default=None, alias="x-api-key"),
+            api_key: str | None = Header(default=None, alias="api-key"),
+    ):
+        identity = require_identity(resolve_api_authorization(authorization, x_api_key, api_key))
         consume_identity_quota(identity, endpoint="/v1/search", model=openai_search.MODEL)
         call = LoggedCall(identity, "/v1/search", openai_search.MODEL, "搜索", request_text=body.prompt)
         await filter_or_log(call, body.prompt)
         return await call.run(openai_search.handle, body.model_dump(mode="python"))
 
     @router.get("/v1/editable-file-tasks")
-    async def list_editable_file_tasks(ids: str = "", authorization: str | None = Header(default=None)):
-        identity = require_identity(authorization)
+    async def list_editable_file_tasks(
+            ids: str = "",
+            authorization: str | None = Header(default=None),
+            x_api_key: str | None = Header(default=None, alias="x-api-key"),
+            api_key: str | None = Header(default=None, alias="api-key"),
+    ):
+        identity = require_identity(resolve_api_authorization(authorization, x_api_key, api_key))
         consume_identity_quota(identity, endpoint="/v1/editable-file-tasks")
         task_ids = [item.strip() for item in ids.split(",") if item.strip()]
         return await run_in_threadpool(editable_file_task_service.list_tasks, identity, task_ids)
@@ -218,8 +247,14 @@ def create_router() -> APIRouter:
         return FileResponse(path, filename=path.name)
 
     @router.post("/v1/ppt/generations")
-    async def create_ppt_task(body: EditableFileTaskRequest, request: Request, authorization: str | None = Header(default=None)):
-        identity = require_identity(authorization)
+    async def create_ppt_task(
+            body: EditableFileTaskRequest,
+            request: Request,
+            authorization: str | None = Header(default=None),
+            x_api_key: str | None = Header(default=None, alias="x-api-key"),
+            api_key: str | None = Header(default=None, alias="api-key"),
+    ):
+        identity = require_identity(resolve_api_authorization(authorization, x_api_key, api_key))
         consume_identity_quota(identity, endpoint="/v1/ppt/generations", model="gpt-5-5-thinking")
         await filter_or_log(LoggedCall(identity, "/v1/ppt/generations", "gpt-5-5-thinking", "PPT生成任务", request_text=body.prompt), body.prompt)
         return await run_in_threadpool(
@@ -232,8 +267,14 @@ def create_router() -> APIRouter:
         )
 
     @router.post("/v1/psd/generations")
-    async def create_psd_task(body: EditableFileTaskRequest, request: Request, authorization: str | None = Header(default=None)):
-        identity = require_identity(authorization)
+    async def create_psd_task(
+            body: EditableFileTaskRequest,
+            request: Request,
+            authorization: str | None = Header(default=None),
+            x_api_key: str | None = Header(default=None, alias="x-api-key"),
+            api_key: str | None = Header(default=None, alias="api-key"),
+    ):
+        identity = require_identity(resolve_api_authorization(authorization, x_api_key, api_key))
         consume_identity_quota(identity, endpoint="/v1/psd/generations", model="gpt-5-5-thinking")
         await filter_or_log(LoggedCall(identity, "/v1/psd/generations", "gpt-5-5-thinking", "PSD生成任务", request_text=body.prompt), body.prompt)
         return await run_in_threadpool(

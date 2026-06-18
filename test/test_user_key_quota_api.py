@@ -42,6 +42,24 @@ class UserKeyQuotaApiTests(unittest.TestCase):
     def auth_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.raw_key}"}
 
+    def test_user_key_accepts_x_api_key_header(self) -> None:
+        response = self.client.post(
+            "/v1/images/generations",
+            headers={"x-api-key": self.raw_key},
+            json={"prompt": "cat", "model": "gpt-image-2", "n": 1},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+
+    def test_user_key_accepts_api_key_header(self) -> None:
+        response = self.client.post(
+            "/v1/images/generations",
+            headers={"api-key": self.raw_key},
+            json={"prompt": "cat", "model": "gpt-image-2", "n": 1},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+
     def test_user_key_image_quota_blocks_api_request(self) -> None:
         self.auth_service.update_key(self.item["id"], {"limits": {"daily_images": 1}}, role="user")
 

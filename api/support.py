@@ -20,6 +20,20 @@ def extract_bearer_token(authorization: str | None) -> str:
     return value.strip()
 
 
+def resolve_api_authorization(
+    authorization: str | None = None,
+    x_api_key: str | None = None,
+    api_key: str | None = None,
+) -> str | None:
+    if extract_bearer_token(authorization):
+        return authorization
+    for candidate in (x_api_key, api_key):
+        value = str(candidate or "").strip()
+        if value:
+            return f"Bearer {value}"
+    return authorization
+
+
 def _legacy_admin_identity(token: str) -> dict[str, object] | None:
     auth_key = str(config.auth_key or "").strip()
     if auth_key and token == auth_key:
