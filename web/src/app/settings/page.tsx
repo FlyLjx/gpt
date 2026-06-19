@@ -6,7 +6,6 @@ import { LoaderCircle } from "lucide-react";
 import { useAuthGuard } from "@/lib/use-auth-guard";
 
 import { ConfigCard } from "./components/config-card";
-import { ProxyRuntimeCard } from "./components/proxy-runtime-card";
 import { SettingsHeader } from "./components/settings-header";
 import { UserKeysCard } from "./components/user-keys-card";
 import { useSettingsStore } from "./store";
@@ -34,7 +33,6 @@ function SettingsPageContent() {
       <section className="settings-layout">
         <div className="settings-main-column">
           <ConfigCard />
-          <ProxyRuntimeCard />
         </div>
         <aside className="settings-side-column">
           <UserKeysCard />

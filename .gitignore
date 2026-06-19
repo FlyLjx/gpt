@@ -6,6 +6,9 @@ dist/
 wheels/
 *.egg-info
 web_dist
+register_console/frontend/dist
+register_console/frontend/node_modules
+register_console/reg-runtime
 # Virtual environments
 .venv
 .idea

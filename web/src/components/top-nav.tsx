@@ -11,7 +11,6 @@ import {
   ScrollText,
   Settings,
   TimerReset,
-  UserRound,
   UsersRound,
 } from "lucide-react";
 import { Button, Drawer, Layout, Menu as AntMenu } from "antd";
@@ -27,7 +26,6 @@ const adminNavItems = [
   { href: "/accounts", label: "号池管理", icon: UsersRound },
   { href: "/image-manager", label: "图片管理", icon: Images },
   { href: "/tasks", label: "任务队列", icon: TimerReset },
-  { href: "/register", label: "注册机", icon: UserRound },
   { href: "/logs", label: "日志管理", icon: ScrollText },
   { href: "/debug", label: "调试", icon: Bug },
   { href: "/settings", label: "设置", icon: Settings },
@@ -144,11 +142,7 @@ export function TopNav({ children }: { children?: React.ReactNode }) {
         }}
       />
       <div className="border-t border-slate-100 p-3">
-        <Button
-          block
-          icon={<LogOut className="size-4" />}
-          onClick={() => void handleLogout()}
-        >
+        <Button block icon={<LogOut className="size-4" />} onClick={() => void handleLogout()}>
           退出登录
         </Button>
       </div>
@@ -179,11 +173,7 @@ export function TopNav({ children }: { children?: React.ReactNode }) {
         >
           <div className="mx-auto flex h-full w-full max-w-[1600px] items-center justify-between px-3 sm:px-5">
             <div className="flex min-w-0 items-center gap-2 sm:gap-3">
-              <Button
-                className="lg:hidden"
-                icon={<Menu className="size-4" />}
-                onClick={() => setDrawerOpen(true)}
-              />
+              <Button className="lg:hidden" icon={<Menu className="size-4" />} onClick={() => setDrawerOpen(true)} />
               <div className="min-w-0">
                 <div className="truncate text-base font-semibold text-slate-900">{pathTitle(pathname, navItems)}</div>
                 <div className="hidden text-xs text-slate-400 sm:block">当前模块</div>

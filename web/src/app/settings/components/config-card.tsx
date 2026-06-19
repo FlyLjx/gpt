@@ -28,7 +28,9 @@ const logLevelOptions = ["debug", "info", "warning", "error"];
 function SectionTitle({ title, description }: { title: string; description: string }) {
   return (
     <div className="mb-4">
-      <Typography.Title level={5} className="!mb-1">{title}</Typography.Title>
+      <Typography.Title level={5} className="!mb-1">
+        {title}
+      </Typography.Title>
       <Typography.Text type="secondary">{description}</Typography.Text>
     </div>
   );
@@ -62,27 +64,21 @@ function formatProxyExit(result: ProxyTestResult) {
     return "出口信息未返回";
   }
   const location = [exit.city, exit.region, exit.country].filter(Boolean).join(" / ");
-  const parts = [`出口 IP：${exit.ip}`];
-  if (location) {
-    parts.push(`地区：${location}`);
-  }
-  if (exit.org) {
-    parts.push(`运营商：${exit.org}`);
-  }
-  if (exit.timezone) {
-    parts.push(`时区：${exit.timezone}`);
-  }
+  const parts = [`出口 IP: ${exit.ip}`];
+  if (location) parts.push(`地区: ${location}`);
+  if (exit.org) parts.push(`运营商: ${exit.org}`);
+  if (exit.timezone) parts.push(`时区: ${exit.timezone}`);
   return parts.join("，");
 }
 
 function formatProxyCheck(label: string, check?: ProxyTestResult["chatgpt"]) {
   if (!check) {
-    return `${label}：未检测`;
+    return `${label}: 未测试`;
   }
   const status = check.status ? `HTTP ${check.status}` : "无响应";
   return check.ok
-    ? `${label}：可连接（${status}，${check.latency_ms} ms）`
-    : `${label}：失败（${check.error || status}，${check.latency_ms} ms）`;
+    ? `${label}: 可连接，${status}，${check.latency_ms} ms`
+    : `${label}: 失败（${check.error || status}），${check.latency_ms} ms`;
 }
 
 function formatProxyTestDescription(result: ProxyTestResult) {
@@ -105,10 +101,6 @@ export function ConfigCard() {
   const setAutoRemoveInvalidAccounts = useSettingsStore((state) => state.setAutoRemoveInvalidAccounts);
   const setAutoRemoveRateLimitedAccounts = useSettingsStore((state) => state.setAutoRemoveRateLimitedAccounts);
   const setAutoReloginAfterRefresh = useSettingsStore((state) => state.setAutoReloginAfterRefresh);
-  const setAutoRefillEnabled = useSettingsStore((state) => state.setAutoRefillEnabled);
-  const setAutoRefillThresholdPercent = useSettingsStore((state) => state.setAutoRefillThresholdPercent);
-  const setAutoRefillTargetAvailable = useSettingsStore((state) => state.setAutoRefillTargetAvailable);
-  const setAutoRefillIntervalMinutes = useSettingsStore((state) => state.setAutoRefillIntervalMinutes);
   const setLogLevel = useSettingsStore((state) => state.setLogLevel);
   const setProxy = useSettingsStore((state) => state.setProxy);
   const setBaseUrl = useSettingsStore((state) => state.setBaseUrl);
@@ -130,9 +122,9 @@ export function ConfigCard() {
       const data = await testProxy(candidate);
       setProxyTestResult(data.result);
       if (data.result.ok) {
-        toast.success(`代理可连接 chatgpt.com（${data.result.latency_ms} ms）`);
+        toast.success(`代理可连接 chatgpt.com，${data.result.latency_ms} ms`);
       } else {
-        toast.error(`代理无法完整连接 chatgpt.com：${data.result.error ?? "未知错误"}`);
+        toast.error(`代理无法完整连接 chatgpt.com，${data.result.error ?? "未知错误"}`);
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "测试代理失败");
@@ -166,7 +158,12 @@ export function ConfigCard() {
         </Space>
       }
       extra={
-        <Button type="primary" icon={isSavingConfig ? <LoaderCircle className="size-4 animate-spin" /> : <Save className="size-4" />} onClick={() => void saveConfig()} disabled={isSavingConfig}>
+        <Button
+          type="primary"
+          icon={isSavingConfig ? <LoaderCircle className="size-4 animate-spin" /> : <Save className="size-4" />}
+          onClick={() => void saveConfig()}
+          disabled={isSavingConfig}
+        >
           保存配置
         </Button>
       }
@@ -176,19 +173,37 @@ export function ConfigCard() {
           type="info"
           showIcon
           className="mb-5"
-          title="管理员登录密钥继续从部署配置读取，不在页面展示。需要分发访问权限时，请在用户密钥管理里创建普通用户密钥。"
+          message="管理员登录密钥继续从部署配置读取，不在页面展示。需要分发访问权限时，请在用户密钥管理里创建普通用户密钥。"
         />
 
         <SectionTitle title="基础运行" description="控制账号刷新、代理、图片访问地址和本地图片保留策略。" />
         <Row gutter={[16, 16]}>
           <Col xs={24} md={12} xl={6}>
-            <NumberInput label="账号刷新间隔" value={String(config.refresh_account_interval_minute || "")} onChange={setRefreshAccountIntervalMinute} placeholder="60" help="单位分钟，控制账号自动刷新频率。" />
+            <NumberInput
+              label="账号刷新间隔"
+              value={String(config.refresh_account_interval_minute || "")}
+              onChange={setRefreshAccountIntervalMinute}
+              placeholder="60"
+              help="单位分钟，控制账号自动刷新的频率。"
+            />
           </Col>
           <Col xs={24} md={12} xl={6}>
-            <NumberInput label="账号刷新并发" value={String(config.refresh_account_concurrency || "")} onChange={setRefreshAccountConcurrency} placeholder="20" help="同时检测账号信息和额度的线程数，最高 100。过高可能触发代理或上游限流。" />
+            <NumberInput
+              label="账号刷新并发"
+              value={String(config.refresh_account_concurrency || "")}
+              onChange={setRefreshAccountConcurrency}
+              placeholder="20"
+              help="同时检测账号信息和额度的线程数，最高 100。"
+            />
           </Col>
           <Col xs={24} md={12} xl={6}>
-            <NumberInput label="图片自动清理" value={String(config.image_retention_days || "")} onChange={setImageRetentionDays} placeholder="30" help="自动删除多少天前的本地图片。" />
+            <NumberInput
+              label="图片自动清理"
+              value={String(config.image_retention_days || "")}
+              onChange={setImageRetentionDays}
+              placeholder="30"
+              help="自动删除多少天前的本地图片。"
+            />
           </Col>
           <Col xs={24} lg={12}>
             <Form.Item label="全局代理" extra="留空表示不使用代理。">
@@ -201,7 +216,11 @@ export function ConfigCard() {
                   }}
                   placeholder="http://127.0.0.1:7890"
                 />
-                <Button icon={isTestingProxy ? <LoaderCircle className="size-4 animate-spin" /> : <PlugZap className="size-4" />} onClick={() => void handleTestProxy()} disabled={isTestingProxy}>
+                <Button
+                  icon={isTestingProxy ? <LoaderCircle className="size-4 animate-spin" /> : <PlugZap className="size-4" />}
+                  onClick={() => void handleTestProxy()}
+                  disabled={isTestingProxy}
+                >
                   测试
                 </Button>
               </Space.Compact>
@@ -210,7 +229,11 @@ export function ConfigCard() {
               <Alert
                 type={proxyTestResult.ok ? "success" : "error"}
                 showIcon
-                title={proxyTestResult.ok ? `代理可连接 chatgpt.com，用时 ${proxyTestResult.latency_ms} ms` : `代理无法完整连接 chatgpt.com：${proxyTestResult.error ?? "未知错误"}（用时 ${proxyTestResult.latency_ms} ms）`}
+                message={
+                  proxyTestResult.ok
+                    ? `代理可连接 chatgpt.com，用时 ${proxyTestResult.latency_ms} ms`
+                    : `代理无法完整连接 chatgpt.com，${proxyTestResult.error ?? "未知错误"}`
+                }
                 description={formatProxyTestDescription(proxyTestResult)}
               />
             ) : null}
@@ -221,21 +244,21 @@ export function ConfigCard() {
             </Form.Item>
           </Col>
           <Col xs={24} md={12} xl={6}>
-            <Form.Item label="运行时区" extra="影响后台日志、任务时间和本地文件日期。保存后立即生效，Docker 重启后建议也保留环境变量。">
+            <Form.Item label="运行时区" extra="影响后台日志、任务时间和本地文件日期。">
               <Input value={String(config.timezone || "Asia/Shanghai")} onChange={(event) => setTimezone(event.target.value)} placeholder="Asia/Shanghai" />
             </Form.Item>
           </Col>
         </Row>
 
         <Divider />
-        <SectionTitle title="账号策略" description="控制异常账号、限流账号、刷新后的恢复行为。谨慎开启自动删除，避免刷新时误删账号。" />
+        <SectionTitle title="账号策略" description="控制异常账号、限流账号、刷新后的恢复行为。" />
         <Row gutter={[16, 16]}>
           <Col xs={24} lg={8}>
             <Card size="small" className="h-full">
               <Space direction="vertical" size={8}>
                 <Switch checked={Boolean(config.auto_remove_invalid_accounts)} onChange={setAutoRemoveInvalidAccounts} />
                 <Typography.Text strong>自动移除异常账号</Typography.Text>
-                <Typography.Text type="secondary">刷新检测到 token 无效时会直接删除账号。一般建议关闭，只标记异常。</Typography.Text>
+                <Typography.Text type="secondary">刷新检测到 token 无效时会直接删除账号。</Typography.Text>
               </Space>
             </Card>
           </Col>
@@ -244,7 +267,7 @@ export function ConfigCard() {
               <Space direction="vertical" size={8}>
                 <Switch checked={Boolean(config.auto_remove_rate_limited_accounts)} onChange={setAutoRemoveRateLimitedAccounts} />
                 <Typography.Text strong>自动移除限流账号</Typography.Text>
-                <Typography.Text type="secondary">账号额度为 0 时直接移除。建议关闭，等待额度恢复。</Typography.Text>
+                <Typography.Text type="secondary">账号额度为 0 时直接移除，建议谨慎开启。</Typography.Text>
               </Space>
             </Card>
           </Col>
@@ -253,55 +276,8 @@ export function ConfigCard() {
               <Space direction="vertical" size={8}>
                 <Switch checked={Boolean(config.auto_relogin_after_refresh)} onChange={setAutoReloginAfterRefresh} />
                 <Typography.Text strong>刷新后自动尝试恢复异常状态</Typography.Text>
-                <Typography.Text type="secondary">刷新后对包含邮箱密码的异常账号尝试重新登录。</Typography.Text>
+                <Typography.Text type="secondary">对包含邮箱密码的异常账号尝试重新登录。</Typography.Text>
               </Space>
-            </Card>
-          </Col>
-        </Row>
-
-        <Row gutter={[16, 16]} className="mt-4">
-          <Col xs={24}>
-            <Card size="small">
-              <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                <Space>
-                  <Switch checked={Boolean(config.auto_refill_enabled)} onChange={setAutoRefillEnabled} />
-                  <Typography.Text strong>自动补池</Typography.Text>
-                  <Tag color={config.auto_refill_enabled ? "green" : "default"}>{config.auto_refill_enabled ? "已启用" : "未启用"}</Tag>
-                </Space>
-                <Typography.Text type="secondary">低于阈值后自动启动注册机，邮箱、代理、线程等配置仍在注册机页面维护。</Typography.Text>
-              </div>
-              <Row gutter={[16, 16]}>
-                <Col xs={24} md={8}>
-                  <NumberInput
-                    label="低于正常号比例"
-                    value={String(config.auto_refill_threshold_percent || "")}
-                    onChange={setAutoRefillThresholdPercent}
-                    placeholder="30"
-                    help="单位百分比，例如 30 表示正常号少于总号池 30% 时触发。"
-                    disabled={!config.auto_refill_enabled}
-                  />
-                </Col>
-                <Col xs={24} md={8}>
-                  <NumberInput
-                    label="补到正常账号数"
-                    value={String(config.auto_refill_target_available || "")}
-                    onChange={setAutoRefillTargetAvailable}
-                    placeholder="10"
-                    help="触发后注册机会使用“正常账号数达到该值”为目标。"
-                    disabled={!config.auto_refill_enabled}
-                  />
-                </Col>
-                <Col xs={24} md={8}>
-                  <NumberInput
-                    label="检查间隔"
-                    value={String(config.auto_refill_interval_minutes || "")}
-                    onChange={setAutoRefillIntervalMinutes}
-                    placeholder="5"
-                    help="单位分钟，服务启动后按这个间隔检查号池。"
-                    disabled={!config.auto_refill_enabled}
-                  />
-                </Col>
-              </Row>
             </Card>
           </Col>
         </Row>
@@ -309,12 +285,15 @@ export function ConfigCard() {
         <Divider />
         <Row gutter={[16, 16]}>
           <Col xs={24} lg={8}>
-            <Form.Item label="控制台日志级别" extra="不选择时使用默认 info / warning / error。">
-              <Checkbox.Group value={config.log_levels || []} onChange={(values) => {
-                for (const level of logLevelOptions) {
-                  setLogLevel(level, values.includes(level));
-                }
-              }}>
+            <Form.Item label="控制台日志级别" extra="不选时使用默认 info / warning / error。">
+              <Checkbox.Group
+                value={config.log_levels || []}
+                onChange={(values) => {
+                  for (const level of logLevelOptions) {
+                    setLogLevel(level, values.includes(level));
+                  }
+                }}
+              >
                 <Space wrap>
                   {logLevelOptions.map((level) => (
                     <Checkbox key={level} value={level}>
@@ -328,7 +307,7 @@ export function ConfigCard() {
         </Row>
 
         <Divider />
-        <SectionTitle title="Bark 推送通知" description="把异常调用日志、注册机最终统计和自动补池关键事件推送到手机，方便第一时间排障。" />
+        <SectionTitle title="Bark 推送通知" description="把异常调用日志和注册机最终统计推送到手机，方便第一时间排障。" />
         <Card size="small">
           <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <Space>
@@ -346,7 +325,7 @@ export function ConfigCard() {
           </div>
           <Row gutter={[16, 16]}>
             <Col xs={24} md={12}>
-              <Form.Item label="Bark Server URL" extra="官方 Bark 可用 https://api.day.app，自建服务填写自己的地址。">
+              <Form.Item label="Bark Server URL" extra="官方 Bark 可用 https://api.day.app，自建服务填你自己的地址。">
                 <Input
                   value={String(config.notifications?.bark?.server_url || "")}
                   onChange={(event) => setBarkNotificationField("server_url", event.target.value)}
@@ -360,7 +339,7 @@ export function ConfigCard() {
                 <Input.Password
                   value={String(config.notifications?.bark?.device_key || "")}
                   onChange={(event) => setBarkNotificationField("device_key", event.target.value)}
-                  placeholder="从 Bark App 里复制的 key"
+                  placeholder="Bark App 里的 key"
                   disabled={!barkEnabled}
                 />
               </Form.Item>
@@ -391,7 +370,7 @@ export function ConfigCard() {
                 value={String(config.notifications?.bark?.min_interval_seconds ?? "")}
                 onChange={(value) => setBarkNotificationField("min_interval_seconds", value)}
                 placeholder="60"
-                help="单位秒。同一类错误短时间内只推一次，0 表示不去重。"
+                help="单位秒。"
                 disabled={!barkEnabled}
               />
             </Col>
@@ -419,19 +398,11 @@ export function ConfigCard() {
                   >
                     注册机仅推失败统计
                   </Checkbox>
-                  <Checkbox
-                    checked={Boolean(config.notifications?.bark?.notify_auto_refill !== false)}
-                    onChange={(event) => setBarkNotificationField("notify_auto_refill", event.target.checked)}
-                    disabled={!barkEnabled}
-                  >
-                    自动补池关键事件
-                  </Checkbox>
                 </Space>
               </Form.Item>
             </Col>
           </Row>
         </Card>
-
       </Form>
     </Card>
   );

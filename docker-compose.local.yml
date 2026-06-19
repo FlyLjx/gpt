@@ -41,6 +41,12 @@ services:
     volumes:
       - ./data:/app/data
       - ./config.json:/app/config.json
+      - ./main.py:/app/main.py:ro
+      - ./VERSION:/app/VERSION:ro
+      - ./api:/app/api:ro
+      - ./services:/app/services:ro
+      - ./utils:/app/utils:ro
+      - ./web/out:/app/web_dist:ro
     environment:
       TZ: Asia/Shanghai
       STORAGE_BACKEND: postgres
