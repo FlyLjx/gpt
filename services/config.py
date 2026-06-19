@@ -11,10 +11,10 @@ import time
 
 from services.storage.base import StorageBackend
 
-BASE_DIR = Path(__file__).resolve().parents[1]
-DATA_DIR = BASE_DIR / "data"
-CONFIG_FILE = BASE_DIR / "config.json"
-VERSION_FILE = BASE_DIR / "VERSION"
+BASE_DIR = Path(os.getenv("CHATGPT2API_BASE_DIR") or Path(__file__).resolve().parents[1]).expanduser()
+DATA_DIR = Path(os.getenv("CHATGPT2API_DATA_DIR") or (BASE_DIR / "data")).expanduser()
+CONFIG_FILE = Path(os.getenv("CHATGPT2API_CONFIG_FILE") or (BASE_DIR / "config.json")).expanduser()
+VERSION_FILE = Path(os.getenv("CHATGPT2API_VERSION_FILE") or (BASE_DIR / "VERSION")).expanduser()
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 LOCAL_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 

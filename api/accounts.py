@@ -222,6 +222,17 @@ def create_router() -> APIRouter:
         require_admin(authorization)
         return {"items": account_service.list_accounts()}
 
+    @router.get("/api/accounts/summary")
+    async def get_accounts_summary(authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        summary = account_service.account_health()
+        return {
+            "summary": summary,
+            "valid_account_count": int(summary.get("active") or 0),
+            "healthy": bool(summary.get("healthy")),
+            "status": str(summary.get("status") or ""),
+        }
+
     @router.post("/api/accounts")
     async def create_accounts(body: AccountCreateRequest, authorization: str | None = Header(default=None)):
         require_admin(authorization)

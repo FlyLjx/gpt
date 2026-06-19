@@ -42,6 +42,7 @@ config = {
     "threads": 3,
 }
 register_config_file = base_dir.parents[1] / "data" / "register.json"
+register_config_file = Path(os.getenv("CHATGPT2API_REGISTER_CONFIG_FILE") or register_config_file).expanduser()
 try:
     saved_config = json.loads(register_config_file.read_text(encoding="utf-8"))
     config.update({key: saved_config[key] for key in ("mail", "proxy", "flaresolverr", "total", "threads") if key in saved_config})
@@ -68,6 +69,7 @@ stats = {"done": 0, "success": 0, "fail": 0, "start_time": 0.0}
 register_log_sink = None
 _flaresolverr_autodetect_lock = threading.Lock()
 _flaresolverr_autodetect_cache: dict[str, Any] | None = None
+_flaresolverr_runtime_override: dict[str, Any] | None = None
 
 common_headers = {
     "accept": "application/json",
@@ -276,6 +278,11 @@ def _normalize_flaresolverr_config(value: Any) -> dict[str, Any]:
     }
 
 
+def set_flaresolverr_runtime_override(value: dict[str, Any] | None) -> None:
+    global _flaresolverr_runtime_override
+    _flaresolverr_runtime_override = dict(value) if isinstance(value, dict) else None
+
+
 def _env_flaresolverr_config() -> dict[str, Any]:
     enabled = os.getenv("CHATGPT2API_FLARESOLVERR_ENABLED")
     url = os.getenv("CHATGPT2API_FLARESOLVERR_URL") or os.getenv("FLARESOLVERR_URL")
@@ -326,6 +333,8 @@ def _auto_flaresolverr_config() -> dict[str, Any]:
 
 
 def _current_flaresolverr_config() -> dict[str, Any]:
+    if isinstance(_flaresolverr_runtime_override, dict):
+        return _normalize_flaresolverr_config(_flaresolverr_runtime_override)
     raw = config.get("flaresolverr")
     explicit = False
     try:
