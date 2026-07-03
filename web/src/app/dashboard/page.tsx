@@ -1,8 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { Alert, Button, Card, Empty, Progress, Skeleton, Space, Table, Tag, Typography } from "antd";
-import type { ColumnsType } from "antd/es/table";
+import { useEffect, useState } from "react";
+import { Alert, Button, Card, Empty, Progress, Skeleton, Tag, Typography } from "antd";
 import {
   Activity,
   AlertCircle,
@@ -124,6 +123,78 @@ function EntryBars({ items, emptyText = "暂无数据" }: { items: Array<[string
   );
 }
 
+function splitTime(value?: string) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return { date: "-", time: "--:--:--" };
+  }
+  const [date, time] = text.split(/\s+/, 2);
+  return { date: date || text, time: time || "" };
+}
+
+function RecentFailures({ items }: { items: DashboardSummary["calls"]["recent_failed"] }) {
+  if (!items.length) {
+    return (
+      <div className="py-10">
+        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="今日暂无失败调用" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="divide-y divide-slate-100">
+      {items.map((record) => {
+        const time = splitTime(record.time);
+        const summary = String(record.summary || "调用失败");
+        const model = String(record.model || "-");
+        const endpoint = String(record.endpoint || "").trim();
+        const accountEmail = String(record.account_email || "").trim();
+        const error = String(record.error || "-");
+
+        return (
+          <div
+            key={String(record.id || `${record.time}-${record.error}`)}
+            className="grid gap-4 px-5 py-4 transition-colors hover:bg-slate-50/80 md:grid-cols-[150px_minmax(0,1fr)_minmax(260px,36%)] md:items-center"
+          >
+            <div className="flex items-baseline gap-2 md:block">
+              <div className="font-mono text-sm font-semibold text-slate-900">{time.time || time.date}</div>
+              <div className="font-mono text-xs text-slate-400 md:mt-1">{time.time ? time.date : ""}</div>
+            </div>
+
+            <div className="min-w-0">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-rose-50 text-rose-600">
+                  <AlertCircle className="size-4" />
+                </span>
+                <span className="min-w-0 truncate font-medium text-slate-900" title={summary}>
+                  {summary}
+                </span>
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <Tag color="red" className="m-0">失败</Tag>
+                <Tag className="m-0 font-mono">{model}</Tag>
+                {endpoint ? <Tag color="blue" className="m-0 font-mono">{endpoint}</Tag> : null}
+                {accountEmail ? (
+                  <span className="max-w-full truncate rounded-md bg-slate-100 px-2 py-0.5 font-mono text-xs text-slate-500" title={accountEmail}>
+                    {accountEmail}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="min-w-0 rounded-md border border-rose-100 bg-rose-50 px-3 py-2">
+              <div className="text-xs font-medium text-rose-500">错误</div>
+              <div className="mt-1 truncate font-mono text-sm text-rose-700" title={error}>
+                {error}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function DashboardContent() {
   const [data, setData] = useState<DashboardSummary | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -148,16 +219,6 @@ function DashboardContent() {
   useEffect(() => {
     void loadDashboard();
   }, []);
-
-  const failedColumns = useMemo<ColumnsType<DashboardSummary["calls"]["recent_failed"][number]>>(
-    () => [
-      { title: "时间", dataIndex: "time", width: "18%", align: "center" },
-      { title: "摘要", dataIndex: "summary", width: "16%", ellipsis: true },
-      { title: "模型", dataIndex: "model", width: "16%", ellipsis: true },
-      { title: "错误", dataIndex: "error", width: "50%", ellipsis: true },
-    ],
-    [],
-  );
 
   if (isLoading && !data) {
     return (
@@ -291,16 +352,16 @@ function DashboardContent() {
       </section>
 
       <section>
-        <Card title="最近失败" styles={{ body: { padding: 0 } }}>
-          <Table
-            rowKey={(record) => String(record.id || `${record.time}-${record.error}`)}
-            columns={failedColumns}
-            dataSource={data.calls.recent_failed}
-            pagination={false}
-            size="small"
-            tableLayout="fixed"
-            locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="今日暂无失败调用" /> }}
-          />
+        <Card
+          title={
+            <div className="flex items-center gap-2">
+              <span>最近失败</span>
+              <Tag color="red" className="m-0">{data.calls.recent_failed.length}</Tag>
+            </div>
+          }
+          styles={{ body: { padding: 0 } }}
+        >
+          <RecentFailures items={data.calls.recent_failed} />
         </Card>
       </section>
     </div>

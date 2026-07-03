@@ -249,6 +249,14 @@ function errorTypeLabel(value?: string | null) {
   return labels[key] || key;
 }
 
+function reloginResultSummary(results: NonNullable<RefreshProgressResponse["results"]>) {
+  const success = results.filter((item) => item.status === "成功").length;
+  const disabled = results.filter((item) => item.status === "禁用").length;
+  const skipped = results.filter((item) => item.status === "跳过").length;
+  const failed = results.filter((item) => item.status === "异常" || (Boolean(item.error) && item.status !== "跳过" && item.status !== "禁用")).length;
+  return { success, disabled, skipped, failed };
+}
+
 function healthColor(score?: number) {
   const value = typeof score === "number" ? score : 0;
   if (value >= 80) return "#10b981";
@@ -336,6 +344,8 @@ function AccountsPageContent() {
   const [pageSize, setPageSize] = useState("10");
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
   const [editStatus, setEditStatus] = useState<AccountStatus>("正常");
+  const [editEmail, setEditEmail] = useState("");
+  const [editPassword, setEditPassword] = useState("");
   const [editProxy, setEditProxy] = useState("");
   const [isTestingProxy, setIsTestingProxy] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -777,31 +787,38 @@ function AccountsPageContent() {
     // 显示进度条（真实进度）
     const total = abnormalTokens.length;
     setProgress({ visible: true, current: 0, total, message: "正在尝试恢复异常账号...", email: "" });
+    setProgressResults([]);
 
     try {
       const { progress_id } = await reLoginAccounts(abnormalTokens);
+      let finalResults: NonNullable<RefreshProgressResponse["results"]> = [];
 
       // 轮询进度到完成
       await new Promise<void>((resolve, reject) => {
         const pollTimer = setInterval(async () => {
           try {
             const p = await fetchReLoginProgress(progress_id);
+            const results = p.results ?? [];
+            finalResults = results;
+            setProgressResults(results);
+
             if (p.done) {
               clearInterval(pollTimer);
               if (p.error) {
                 reject(new Error(p.error));
                 return;
               }
-              setProgress((prev) => ({ ...prev, current: prev.total, message: "恢复流程已完成" }));
+              const summary = reloginResultSummary(results);
+              const message = `恢复完成：成功 ${summary.success}，失败 ${summary.failed}，禁用 ${summary.disabled}，跳过 ${summary.skipped}`;
+              setProgress((prev) => ({ ...prev, current: prev.total, message, email: "" }));
               setRefreshSummary(null);
               resolve();
             } else {
               // 实时更新进度
-              const results = p.results ?? [];
               // 找到最新一条有错误的结果
               const lastErrorResult = [...results].reverse().find((r) => r.error);
               const emailHint = lastErrorResult
-                ? `失败: ${lastErrorResult.token} ${lastErrorResult.error ?? ""}`
+                ? `失败: ${lastErrorResult.email || lastErrorResult.token} ${lastErrorResult.error ?? ""}`
                 : `已处理 ${p.processed}/${p.total}`;
               setProgress((prev) => ({
                 ...prev,
@@ -852,12 +869,21 @@ function AccountsPageContent() {
         visible: true,
         current: total,
         total,
-        message: "恢复完成",
+        message: (() => {
+          const resultSummary = reloginResultSummary(finalResults);
+          return `恢复完成：成功 ${resultSummary.success}，失败 ${resultSummary.failed}，禁用 ${resultSummary.disabled}，跳过 ${resultSummary.skipped}`;
+        })(),
         email: "",
       });
-      setTimeout(resetProgress, 800);
+      setProgressResults(finalResults);
+      setTimeout(resetProgress, 8000);
 
-      toast.success(`恢复流程已全部完成`);
+      const resultSummary = reloginResultSummary(finalResults);
+      if (resultSummary.failed > 0 || resultSummary.skipped > 0 || resultSummary.disabled > 0) {
+        toast.warning(`恢复完成：成功 ${resultSummary.success}，失败 ${resultSummary.failed}，禁用 ${resultSummary.disabled}，跳过 ${resultSummary.skipped}`);
+      } else {
+        toast.success(`恢复成功 ${resultSummary.success} 个账号`);
+      }
     } catch (error) {
       resetProgress();
       setRefreshSummary(null);
@@ -871,6 +897,8 @@ function AccountsPageContent() {
   const openEditDialog = (account: Account) => {
     setEditingAccount(account);
     setEditStatus(account.status);
+    setEditEmail(account.email ?? "");
+    setEditPassword("");
     setEditProxy(account.proxy ?? "");
   };
 
@@ -922,9 +950,14 @@ function AccountsPageContent() {
 
     setIsUpdating(true);
     try {
-      const data = await updateAccount(editingAccount.access_token, {
+      const updates = {
         status: editStatus,
+        email: editEmail.trim(),
         proxy: editProxy.trim(),
+        ...(editPassword.trim() ? { password: editPassword } : {}),
+      };
+      const data = await updateAccount(editingAccount.access_token, {
+        ...updates,
       });
       setAccounts(data.items);
       setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.access_token === id)));
@@ -981,7 +1014,16 @@ function AccountsPageContent() {
       dataIndex: "email",
       width: 240,
       fixed: isCompactTable ? undefined : "left",
-      render: (email?: string | null) => <span className="text-xs text-slate-500">{email ?? "—"}</span>,
+      render: (email: string | null | undefined, account) => (
+        <div className="min-w-0 space-y-1">
+          <div className="truncate text-xs text-slate-600">{email ?? "—"}</div>
+          {account.has_password ? (
+            <Tag color="green" className="m-0 text-[11px]">已保存密码</Tag>
+          ) : (
+            <Tag color={account.status === "异常" ? "warning" : "default"} className="m-0 text-[11px]">缺少密码</Tag>
+          )}
+        </div>
+      ),
     },
     {
       title: "分组",
@@ -1248,12 +1290,26 @@ function AccountsPageContent() {
               />
             </div>
             {progressResults.length > 0 ? (
-              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                {progressResults.slice(-6).reverse().map((item, index) => (
-                  <div key={`${item.token}-${index}`} className="flex items-center justify-between gap-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs">
-                    <span className="min-w-0 truncate text-slate-600">{item.email || item.token}</span>
-                    <Tag color={item.error ? "error" : statusMeta[(item.status as AccountStatus) || "正常"]?.tagColor || "default"} className="m-0 shrink-0">
-                      {item.error ? "失败" : item.status}
+              <div className="grid max-h-64 gap-2 overflow-y-auto pr-1 sm:grid-cols-2 lg:grid-cols-3">
+                {[...progressResults].reverse().map((item, index) => (
+                  <div key={`${item.token}-${index}`} className="flex items-start justify-between gap-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs">
+                    <div className="min-w-0">
+                      <div className="truncate font-medium text-slate-700">{item.email || item.token}</div>
+                      {item.error ? <div className="mt-1 truncate text-rose-500">{item.error}</div> : null}
+                    </div>
+                    <Tag
+                      color={
+                        item.status === "成功"
+                          ? "success"
+                          : item.status === "跳过"
+                            ? "default"
+                            : item.status === "禁用" || item.status === "异常" || item.error
+                              ? "error"
+                              : statusMeta[(item.status as AccountStatus) || "正常"]?.tagColor || "default"
+                      }
+                      className="m-0 shrink-0"
+                    >
+                      {item.status === "成功" ? "恢复成功" : item.status === "异常" ? "恢复失败" : item.status}
                     </Tag>
                   </div>
                 ))}
@@ -1277,7 +1333,7 @@ function AccountsPageContent() {
         ]}
       >
         <div className="pt-2">
-          <p className="mb-4 text-sm text-slate-500">手动修改账号状态和专属代理。</p>
+          <p className="mb-4 text-sm text-slate-500">手动修改账号状态、恢复凭据和专属代理。</p>
           <div className="space-y-4">
             <div className="space-y-2">
               <label className="text-sm font-medium text-slate-700">状态</label>
@@ -1289,6 +1345,35 @@ function AccountsPageContent() {
                   .filter((option) => option.value !== "all")
                   .map((option) => ({ label: option.label, value: option.value }))}
               />
+            </div>
+            <div className="rounded-lg border border-slate-100 bg-slate-50 p-3">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium text-slate-700">恢复凭据</div>
+                  <div className="mt-1 text-xs text-slate-500">用于“恢复异常”重新登录。密码不会回显，留空表示不修改已保存密码。</div>
+                </div>
+                <Tag color={editingAccount?.has_password ? "green" : "warning"} className="m-0 shrink-0">
+                  {editingAccount?.has_password ? "已有密码" : "缺少密码"}
+                </Tag>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-slate-700">登录邮箱</label>
+                  <AntInput
+                    value={editEmail}
+                    onChange={(event) => setEditEmail(event.target.value)}
+                    placeholder="you@example.com"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-slate-700">新密码</label>
+                  <AntInput.Password
+                    value={editPassword}
+                    onChange={(event) => setEditPassword(event.target.value)}
+                    placeholder={editingAccount?.has_password ? "留空不修改" : "填写后可恢复异常"}
+                  />
+                </div>
+              </div>
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium text-slate-700">账号代理</label>

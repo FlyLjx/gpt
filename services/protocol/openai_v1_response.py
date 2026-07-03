@@ -413,6 +413,7 @@ def response_events(body: dict[str, Any]) -> Iterator[dict[str, Any]]:
         images = None
     input_image_tokens = count_image_content_tokens(_input_image_parts(body.get("input")), model)
     tool = response_image_tool(body)
+    progress_callback = body.get("progress_callback")
     image_outputs = stream_image_outputs_with_pool(ConversationRequest(
         prompt=prompt,
         model=model,
@@ -420,6 +421,7 @@ def response_events(body: dict[str, Any]) -> Iterator[dict[str, Any]]:
         quality=str(tool.get("quality") or "auto"),
         response_format="url",
         images=images,
+        progress_callback=progress_callback,
     ))
     yield from stream_image_response(image_outputs, prompt, model, input_image_tokens, tool.get("size"), str(tool.get("quality") or "auto"))
 

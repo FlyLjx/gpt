@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.image_inputs import parse_image_edit_request, read_image_sources
@@ -20,6 +22,7 @@ from services.protocol import (
     openai_v1_response,
     openai_search,
 )
+from utils.helper import extract_response_prompt, has_response_image_generation_tool, is_image_chat_request
 
 
 class ImageGenerationRequest(BaseModel):
@@ -78,6 +81,144 @@ async def filter_or_log(call: LoggedCall, text: str) -> None:
         raise
 
 
+def _response_error_text(result: object) -> str:
+    if not isinstance(result, Response):
+        return ""
+    status_code = int(getattr(result, "status_code", 200) or 200)
+    if status_code < 400:
+        return ""
+    body = getattr(result, "body", b"")
+    if isinstance(body, bytes) and body:
+        try:
+            payload = json.loads(body.decode("utf-8", errors="replace"))
+        except Exception:
+            payload = None
+        if isinstance(payload, dict):
+            detail = payload.get("detail")
+            error = payload.get("error")
+            for item in (detail, error, payload):
+                if isinstance(item, str) and item:
+                    return item
+                if isinstance(item, dict):
+                    message = item.get("message") or item.get("error")
+                    if isinstance(message, str) and message:
+                        return message
+        text = body.decode("utf-8", errors="replace").strip()
+        if text:
+            return text[:500]
+    return f"HTTP {status_code}"
+
+
+def _finish_sync_image_task(
+    task_key: str,
+    identity: dict[str, object],
+    *,
+    mode: str,
+    model: str,
+    started: float,
+    request_preview: str = "",
+    request_params: dict[str, object] | None = None,
+    result: object = None,
+    error: str = "",
+) -> None:
+    if not task_key:
+        return
+    error_text = error or _response_error_text(result)
+    if error_text:
+        image_task_service.finish_sync_task(
+            task_key,
+            identity,
+            mode=mode,
+            model=model,
+            started=started,
+            request_preview=request_preview,
+            request_params=request_params,
+            error=error_text,
+            account_email=str(getattr(result, "account_email", "") or ""),
+            conversation_id=str(getattr(result, "conversation_id", "") or ""),
+        )
+        return
+    if isinstance(result, dict):
+        image_task_service.finish_sync_task(
+            task_key,
+            identity,
+            mode=mode,
+            model=model,
+            started=started,
+            request_preview=request_preview,
+            request_params=request_params,
+            result_data=result,
+            account_email=str(result.get("_account_email") or result.get("account_email") or ""),
+            conversation_id=str(result.get("_conversation_id") or result.get("conversation_id") or ""),
+        )
+        return
+    image_task_service.finish_sync_task(
+        task_key,
+        identity,
+        mode=mode,
+        model=model,
+        started=started,
+        request_preview=request_preview,
+        request_params=request_params,
+        result_data={},
+    )
+
+
+async def _run_with_sync_image_task(
+    call: LoggedCall,
+    handler,
+    payload: dict[str, object],
+    identity: dict[str, object],
+    *,
+    mode: str,
+    model: str,
+    request_preview: str,
+    request_params: dict[str, object] | None,
+    size: object = None,
+    quality: object = "auto",
+    stream: bool = False,
+):
+    task_started = __import__("time").time()
+    task_key = ""
+    if not stream:
+        task_key, _ = image_task_service.begin_sync_task(
+            identity,
+            mode=mode,
+            model=model,
+            size=str(size or "").strip() or None,
+            quality=str(quality or "auto"),
+            request_preview=request_preview,
+            request_params=request_params,
+        )
+        payload["progress_callback"] = lambda step: image_task_service.update_sync_task_progress(task_key, step)
+    try:
+        result = await call.run(handler, payload)
+    except Exception as exc:
+        _finish_sync_image_task(
+            task_key,
+            identity,
+            mode=mode,
+            model=model,
+            started=task_started,
+            request_preview=request_preview,
+            request_params=request_params,
+            error=str(exc),
+        )
+        raise
+    if not isinstance(result, StreamingResponse):
+        _finish_sync_image_task(
+            task_key,
+            identity,
+            mode=mode,
+            model=model,
+            started=task_started,
+            request_preview=request_preview,
+            request_params=request_params,
+            result=result,
+        )
+    return result
+
+
 def create_router() -> APIRouter:
     router = APIRouter()
 
@@ -112,17 +253,6 @@ def create_router() -> APIRouter:
         payload["base_url"] = resolve_image_base_url(request)
         request_preview = body.prompt
         request_params = image_request_params(payload)
-        task_started = __import__("time").time()
-        task_key, _ = image_task_service.begin_sync_task(
-            identity,
-            mode="generate",
-            model=body.model,
-            size=body.size,
-            quality=body.quality,
-            request_preview=request_preview,
-            request_params=request_params,
-        )
-        payload["progress_callback"] = lambda step: image_task_service.update_sync_task_progress(task_key, step)
         call = LoggedCall(
             identity,
             "/v1/images/generations",
@@ -131,36 +261,19 @@ def create_router() -> APIRouter:
             request_text=request_preview,
             request_params=request_params,
         )
-        try:
-            result = await call.run(openai_v1_image_generations.handle, payload)
-        except Exception as exc:
-            image_task_service.finish_sync_task(
-                task_key,
-                identity,
-                mode="generate",
-                model=body.model,
-                started=task_started,
-                request_preview=request_preview,
-                request_params=request_params,
-                error=str(exc),
-                account_email=str(getattr(exc, "account_email", "") or ""),
-                conversation_id=str(getattr(exc, "conversation_id", "") or ""),
-            )
-            raise
-        if isinstance(result, dict):
-            image_task_service.finish_sync_task(
-                task_key,
-                identity,
-                mode="generate",
-                model=body.model,
-                started=task_started,
-                request_preview=request_preview,
-                request_params=request_params,
-                result_data=result,
-                account_email=str(result.get("_account_email") or result.get("account_email") or ""),
-                conversation_id=str(result.get("_conversation_id") or result.get("conversation_id") or ""),
-            )
-        return result
+        return await _run_with_sync_image_task(
+            call,
+            openai_v1_image_generations.handle,
+            payload,
+            identity,
+            mode="generate",
+            model=body.model,
+            request_preview=request_preview,
+            request_params=request_params,
+            size=body.size,
+            quality=body.quality,
+            stream=bool(body.stream),
+        )
 
     @router.post("/v1/images/edits")
     async def edit_images(
@@ -192,47 +305,19 @@ def create_router() -> APIRouter:
             payload["mask"] = await read_image_sources(mask_sources)
         payload["base_url"] = resolve_image_base_url(request)
         request_params = image_request_params(payload)
-        task_started = __import__("time").time()
-        task_key, _ = image_task_service.begin_sync_task(
+        return await _run_with_sync_image_task(
+            call,
+            openai_v1_image_edit.handle,
+            payload,
             identity,
             mode="edit",
             model=model,
-            size=payload.get("size"),
-            quality=str(payload.get("quality") or "auto"),
             request_preview=prompt,
             request_params=request_params,
+            size=payload.get("size"),
+            quality=payload.get("quality"),
+            stream=bool(payload.get("stream")),
         )
-        payload["progress_callback"] = lambda step: image_task_service.update_sync_task_progress(task_key, step)
-        try:
-            result = await call.run(openai_v1_image_edit.handle, payload)
-        except Exception as exc:
-            image_task_service.finish_sync_task(
-                task_key,
-                identity,
-                mode="edit",
-                model=model,
-                started=task_started,
-                request_preview=prompt,
-                request_params=request_params,
-                error=str(exc),
-                account_email=str(getattr(exc, "account_email", "") or ""),
-                conversation_id=str(getattr(exc, "conversation_id", "") or ""),
-            )
-            raise
-        if isinstance(result, dict):
-            image_task_service.finish_sync_task(
-                task_key,
-                identity,
-                mode="edit",
-                model=model,
-                started=task_started,
-                request_preview=prompt,
-                request_params=request_params,
-                result_data=result,
-                account_email=str(result.get("_account_email") or result.get("account_email") or ""),
-                conversation_id=str(result.get("_conversation_id") or result.get("conversation_id") or ""),
-            )
-        return result
 
     @router.post("/v1/chat/completions")
     async def create_chat_completion(
@@ -255,6 +340,20 @@ def create_router() -> APIRouter:
             request_shape=request_shape(payload.get("messages")),
         )
         await filter_or_log(call, request_preview)
+        if is_image_chat_request(payload):
+            return await _run_with_sync_image_task(
+                call,
+                openai_v1_chat_complete.handle,
+                payload,
+                identity,
+                mode="edit" if any(openai_v1_chat_complete.chat_image_args(payload)[3]) else "generate",
+                model=model,
+                request_preview=request_preview,
+                request_params=image_request_params(payload),
+                size=payload.get("size"),
+                quality=payload.get("quality"),
+                stream=bool(payload.get("stream")),
+            )
         return await call.run(openai_v1_chat_complete.handle, payload)
 
     @router.post("/v1/responses")
@@ -278,6 +377,21 @@ def create_router() -> APIRouter:
             request_shape=request_shape(payload.get("input")),
         )
         await filter_or_log(call, request_preview)
+        if has_response_image_generation_tool(payload):
+            tool = openai_v1_response.response_image_tool(payload)
+            return await _run_with_sync_image_task(
+                call,
+                openai_v1_response.handle,
+                payload,
+                identity,
+                mode="edit" if openai_v1_response.extract_response_image(payload.get("input")) else "generate",
+                model=model,
+                request_preview=request_preview or extract_response_prompt(payload.get("input")),
+                request_params=image_request_params({"size": tool.get("size"), "quality": tool.get("quality"), "stream": payload.get("stream")}),
+                size=tool.get("size"),
+                quality=tool.get("quality"),
+                stream=bool(payload.get("stream")),
+            )
         return await call.run(openai_v1_response.handle, payload)
 
     @router.post("/v1/messages")

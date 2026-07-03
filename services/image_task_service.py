@@ -19,6 +19,33 @@ TASK_STATUS_SUCCESS = "success"
 TASK_STATUS_ERROR = "error"
 TERMINAL_STATUSES = {TASK_STATUS_SUCCESS, TASK_STATUS_ERROR}
 UNFINISHED_STATUSES = {TASK_STATUS_QUEUED, TASK_STATUS_RUNNING}
+LEGACY_SYNC_TASK_PREFIX = "sync-"
+STALE_TASK_MIN_SECONDS = 30 * 60
+STALE_TASK_POLL_TIMEOUT_MULTIPLIER = 10
+PROGRESS_LABELS = {
+    "sync_request_started": "请求已提交",
+    "uploading": "正在上传图片",
+    "bootstrapping": "正在初始化会话",
+    "getting_token": "正在获取令牌",
+    "preparing_conversation": "正在准备对话",
+    "starting_generation": "正在启动生成",
+    "generating": "正在生成图片",
+    "getting_account": "正在分配账号",
+    "image_stream_resolve_start": "正在解析图片结果",
+    "receiving_image": "正在接收图片",
+}
+PROGRESS_PERCENT = {
+    "sync_request_started": 5,
+    "getting_account": 10,
+    "uploading": 20,
+    "bootstrapping": 30,
+    "getting_token": 40,
+    "preparing_conversation": 50,
+    "starting_generation": 60,
+    "generating": 75,
+    "image_stream_resolve_start": 88,
+    "receiving_image": 95,
+}
 
 
 def _now_iso() -> str:
@@ -43,6 +70,23 @@ def _clean(value: object, default: str = "") -> str:
     return str(value or default).strip()
 
 
+def _progress_label(value: object) -> str:
+    text = _clean(value)
+    return PROGRESS_LABELS.get(text, text)
+
+
+def _progress_percent(task: dict[str, Any]) -> int:
+    status = _clean(task.get("status"))
+    if status == TASK_STATUS_SUCCESS:
+        return 100
+    progress = _clean(task.get("progress"))
+    if progress in PROGRESS_PERCENT:
+        return PROGRESS_PERCENT[progress]
+    if status == TASK_STATUS_RUNNING:
+        return 10
+    return 0
+
+
 def _owner_id(identity: dict[str, object]) -> str:
     return _clean(identity.get("id")) or "anonymous"
 
@@ -53,6 +97,22 @@ def _is_admin(identity: dict[str, object]) -> bool:
 
 def _task_key(owner_id: str, task_id: str) -> str:
     return f"{owner_id}:{task_id}"
+
+
+def _task_activity_ts(task: dict[str, Any]) -> float:
+    for key in ("updated_ts", "started_ts", "created_ts"):
+        value = task.get(key)
+        if isinstance(value, int | float) and value > 0:
+            return float(value)
+    return _timestamp(task.get("updated_at")) or _timestamp(task.get("created_at"))
+
+
+def _stale_task_seconds() -> float:
+    try:
+        poll_timeout = float(config.image_poll_timeout_secs)
+    except Exception:
+        poll_timeout = 120.0
+    return max(float(STALE_TASK_MIN_SECONDS), poll_timeout * STALE_TASK_POLL_TIMEOUT_MULTIPLIER)
 
 
 def _collect_image_urls(data: list[Any]) -> list[str]:
@@ -201,6 +261,7 @@ def _public_task(task: dict[str, Any]) -> dict[str, Any]:
         "quality": task.get("quality"),
         "created_at": task.get("created_at"),
         "updated_at": task.get("updated_at"),
+        "progress_percent": _progress_percent(task),
     }
     if task.get("conversation_id"):
         item["conversation_id"] = task.get("conversation_id")
@@ -210,8 +271,8 @@ def _public_task(task: dict[str, Any]) -> dict[str, Any]:
         item["usage"] = task.get("usage")
     if task.get("error"):
         item["error"] = task.get("error")
-    if task.get("progress"):
-        item["progress"] = task.get("progress")
+    if task.get("progress") and task.get("status") in UNFINISHED_STATUSES:
+        item["progress"] = _progress_label(task.get("progress"))
     if task.get("duration_ms") is not None:
         item["duration_ms"] = task.get("duration_ms")
     if task.get("cancelled"):
@@ -780,6 +841,9 @@ class ImageTaskService:
             error = _clean(item.get("error"))
             if error:
                 task["error"] = error
+            progress = _clean(item.get("progress"))
+            if progress:
+                task["progress"] = progress
             tasks[_task_key(owner, task_id)] = task
         return tasks
 
@@ -796,10 +860,21 @@ class ImageTaskService:
                 task["status"] = TASK_STATUS_ERROR
                 task["error"] = "服务已重启，未完成的图片任务已中断"
                 task["updated_at"] = _now_iso()
+                task["updated_ts"] = time.time()
                 changed = True
         return changed
 
     def _cleanup_locked(self) -> bool:
+        changed = False
+        stale_cutoff = time.time() - _stale_task_seconds()
+        for task in self._tasks.values():
+            if task.get("status") in UNFINISHED_STATUSES and _task_activity_ts(task) < stale_cutoff:
+                task["status"] = TASK_STATUS_ERROR
+                task["error"] = "图片任务长时间未更新，已自动标记为中断"
+                task["updated_at"] = _now_iso()
+                task["updated_ts"] = time.time()
+                changed = True
+
         try:
             retention_days = max(1, int(self.retention_days_getter()))
         except Exception:
@@ -812,7 +887,8 @@ class ImageTaskService:
         ]
         for key in removed_keys:
             self._tasks.pop(key, None)
-        return bool(removed_keys)
+            changed = True
+        return changed
 
     def resume_poll(
         self,

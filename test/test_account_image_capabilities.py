@@ -537,6 +537,47 @@ class AuthServiceTests(unittest.TestCase):
             with self.assertRaisesRegex(AuthQuotaError, "没有使用该模型"):
                 service.consume_quota(identity, endpoint="/v1/images/generations", model="codex-gpt-image-2")
 
+    def test_relogin_progress_result_includes_email(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service.init_relogin_progress("progress-1", 1)
+
+            service.update_relogin_progress("progress-1", "token-1", "成功", email="user@example.com")
+            progress = service.get_relogin_progress("progress-1")
+
+            self.assertIsNotNone(progress)
+            self.assertTrue(progress["done"])
+            self.assertEqual(progress["results"][0]["email"], "user@example.com")
+            self.assertEqual(progress["results"][0]["status"], "成功")
+
+    def test_public_account_masks_saved_password(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service.add_account_items([
+                {"access_token": "token-1", "email": "user@example.com", "password": "secret-password"},
+            ])
+
+            account = service.get_account("token-1")
+
+            self.assertIsNotNone(account)
+            self.assertTrue(account["has_password"])
+            self.assertNotIn("password", account)
+
+    def test_relogin_uses_internal_saved_password(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service.add_account_items([
+                {"access_token": "token-1", "email": "user@example.com", "password": "secret-password", "status": "异常"},
+            ])
+
+            with mock.patch("services.account_service.Thread") as thread_cls:
+                result = service.re_login_accounts(["token-1"], "progress-1")
+
+            self.assertEqual(result["relogined"], 1)
+            thread_cls.assert_called_once()
+            args = thread_cls.call_args.kwargs["args"]
+            self.assertEqual(args[:3], ("token-1", "user@example.com", "secret-password"))
+
 
 if __name__ == "__main__":
     unittest.main()

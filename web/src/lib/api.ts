@@ -79,6 +79,7 @@ export type Account = {
   usage?: unknown;
   image_quota_unknown?: boolean;
   email?: string | null;
+  has_password?: boolean;
   user_id?: string | null;
   limits_progress?: Array<{
     feature_name?: string;
@@ -289,6 +290,7 @@ export type ImageTask = {
   data?: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>;
   error?: string;
   progress?: string;
+  progress_percent?: number;
   elapsed_secs?: number;
   duration_ms?: number;
 };
@@ -536,6 +538,8 @@ export async function updateAccount(
     status?: AccountStatus;
     quota?: number;
     proxy?: string;
+    email?: string;
+    password?: string;
   },
 ) {
   return httpRequest<AccountUpdateResponse>("/api/accounts/update", {

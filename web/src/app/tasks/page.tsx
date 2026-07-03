@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Button, Card, Empty, Modal, Space, Table, Tag, Typography } from "antd";
+import { Button, Card, Empty, Modal, Progress, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { Ban, LoaderCircle, RefreshCw, TimerReset } from "lucide-react";
 import { toast } from "sonner";
@@ -27,6 +27,20 @@ function statusTag(status: ImageTask["status"]) {
 
 function modeTag(mode: ImageTask["mode"]) {
   return <Tag>{mode === "edit" ? "图生图" : "文生图"}</Tag>;
+}
+
+function taskProgress(item: ImageTask) {
+  const percent = typeof item.progress_percent === "number" ? item.progress_percent : item.status === "success" ? 100 : 0;
+  const progressStatus = item.status === "error" ? "exception" : item.status === "success" ? "success" : "active";
+
+  return (
+    <div className="min-w-[180px]">
+      <Progress percent={percent} size="small" status={progressStatus} />
+      <Typography.Text type="secondary" className="block text-xs">
+        {item.status === "success" ? "已完成" : item.progress || (item.status === "queued" ? "排队中" : item.status === "error" ? "失败" : "处理中")}
+      </Typography.Text>
+    </div>
+  );
 }
 
 function TasksContent() {
@@ -100,7 +114,7 @@ function TasksContent() {
       { title: "模式", dataIndex: "mode", width: 96, render: modeTag },
       { title: "状态", dataIndex: "status", width: 96, render: statusTag },
       { title: "模型", dataIndex: "model", width: 150, ellipsis: true },
-      { title: "进度", dataIndex: "progress", width: 150, ellipsis: true, render: (value) => value || "-" },
+      { title: "进度", dataIndex: "progress_percent", width: 230, render: (_, item) => taskProgress(item) },
       { title: "耗时", dataIndex: "duration_ms", width: 110, render: (value) => typeof value === "number" ? `${(value / 1000).toFixed(1)}s` : "-" },
       { title: "更新时间", dataIndex: "updated_at", width: 180 },
       {
@@ -152,7 +166,7 @@ function TasksContent() {
           loading={isLoading}
           size="small"
           pagination={{ pageSize: 20, showSizeChanger: true }}
-          scroll={{ x: 980 }}
+          scroll={{ x: 1060 }}
           locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无任务" /> }}
         />
       </Card>

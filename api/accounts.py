@@ -108,6 +108,8 @@ class AccountUpdateRequest(BaseModel):
     status: str | None = None
     quota: int | None = None
     proxy: str | None = None
+    email: str | None = None
+    password: str | None = None
 
 
 class AccountImageTestRequest(BaseModel):
@@ -357,7 +359,18 @@ def create_router() -> APIRouter:
         access_token = str(body.access_token or "").strip()
         if not access_token:
             raise HTTPException(status_code=400, detail={"error": "access_token is required"})
-        updates = {key: value for key, value in {"type": body.type, "status": body.status, "quota": body.quota, "proxy": body.proxy}.items() if value is not None}
+        updates = {
+            key: value
+            for key, value in {
+                "type": body.type,
+                "status": body.status,
+                "quota": body.quota,
+                "proxy": body.proxy,
+                "email": body.email,
+                "password": body.password,
+            }.items()
+            if value is not None and not (key == "password" and str(value).strip() == "")
+        }
         if not updates:
             raise HTTPException(status_code=400, detail={"error": "还没有检测到改动，请修改后再保存"})
         account = account_service.update_account(access_token, updates)

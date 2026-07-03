@@ -527,6 +527,8 @@ class AccountService:
     def _export_account(self, account: dict, *, now: datetime | None = None) -> dict:
         now = now or datetime.now(timezone.utc)
         item = dict(account)
+        item["has_password"] = bool(str(item.get("password") or "").strip())
+        item.pop("password", None)
         raw_score = self._account_dispatch_score(account, now=now, image=True)
         health_score = round(max(0.0, min(100.0, raw_score)), 1)
         item["dispatch_score"] = health_score
@@ -808,7 +810,7 @@ class AccountService:
                     },
                 )
                 if progress_id:
-                    self.update_relogin_progress(progress_id, access_token, "成功")
+                    self.update_relogin_progress(progress_id, access_token, "成功", email=email)
             else:
                 # 登录失败
                 error_type = result.get("error", "")
@@ -841,12 +843,12 @@ class AccountService:
                             },
                         )
                         if progress_id:
-                            self.update_relogin_progress(progress_id, access_token, "禁用")
+                            self.update_relogin_progress(progress_id, access_token, "禁用", email=email)
                     else:
                         # 永久故障：将账号标记为异常（或自动移除）
                         self.remove_invalid_token(access_token, f"{event}:password_relogin_failed", quiet=True)
                         if progress_id:
-                            self.update_relogin_progress(progress_id, access_token, "异常", error_type)
+                            self.update_relogin_progress(progress_id, access_token, "异常", error_type, email=email)
                 else:
                     log_service.add(
                         LOG_TYPE_ACCOUNT,
@@ -863,7 +865,7 @@ class AccountService:
                     # 永久故障：将账号标记为异常（或自动移除）
                     self.remove_invalid_token(access_token, f"{event}:password_relogin_failed", quiet=True)
                     if progress_id:
-                        self.update_relogin_progress(progress_id, access_token, "异常", error_type)
+                        self.update_relogin_progress(progress_id, access_token, "异常", error_type, email=email)
         except Exception as exc:
             log_service.add(
                 LOG_TYPE_ACCOUNT,
@@ -879,7 +881,7 @@ class AccountService:
             # 将账号标记为异常（或自动移除）
             self.remove_invalid_token(access_token, f"{event}:password_relogin_exception", quiet=True)
             if progress_id:
-                self.update_relogin_progress(progress_id, access_token, "异常", str(exc))
+                self.update_relogin_progress(progress_id, access_token, "异常", str(exc), email=email)
 
     def _login_with_password(self, email: str, password: str) -> dict:
         """通过邮箱+密码登录，返回 {access_token, refresh_token, id_token, ...}"""
@@ -2000,7 +2002,7 @@ class AccountService:
                 "results": [],
             }
 
-    def update_relogin_progress(self, progress_id: str, token: str, status: str, error: str | None = None) -> None:
+    def update_relogin_progress(self, progress_id: str, token: str, status: str, error: str | None = None, email: str | None = None) -> None:
         """更新单个重新登录进度。当所有账号处理完毕时自动标记完成。"""
         with self._relogin_progress_lock:
             progress = self._relogin_progress.get(progress_id)
@@ -2009,6 +2011,7 @@ class AccountService:
             progress["processed"] += 1
             progress["results"].append({
                 "token": anonymize_token(token),
+                "email": str(email or "").strip(),
                 "status": status,
                 "error": error,
             })
@@ -2092,7 +2095,7 @@ class AccountService:
         relogined = 0
         if config.auto_relogin_after_refresh:
             for token in access_tokens:
-                account = self.get_account(token)
+                _, account = self._get_account_for_token(token)
                 if not account:
                     continue
                 status = str(account.get("status") or "").strip()
@@ -2143,7 +2146,7 @@ class AccountService:
         errors = []
 
         for token in access_tokens:
-            account = self.get_account(token)
+            _, account = self._get_account_for_token(token)
             if not account:
                 errors.append({"token": anonymize_token(token), "error": "账号不存在"})
                 if progress_id:
@@ -2155,7 +2158,7 @@ class AccountService:
             if not email or not password:
                 skipped += 1
                 if progress_id:
-                    self.update_relogin_progress(progress_id, token, "跳过", "无邮箱密码")
+                    self.update_relogin_progress(progress_id, token, "跳过", "无邮箱密码", email=email)
                 continue
 
             # 在新线程中执行密码重新登录

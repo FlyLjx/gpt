@@ -185,6 +185,146 @@ class ImageTaskServiceTests(unittest.TestCase):
             self.assertEqual([item["status"] for item in result["items"]], ["error", "error"])
             self.assertTrue(all("已中断" in item.get("error", "") for item in result["items"]))
 
+    def test_sync_tasks_remain_visible_until_retention_cleanup(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "image_tasks.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "tasks": [
+                            {
+                                "id": "sync-123",
+                                "owner_id": "owner-1",
+                                "status": "running",
+                                "mode": "generate",
+                                "model": "gpt-image-2",
+                                "created_at": "2099-01-01 00:00:00",
+                                "updated_at": "2099-01-01 00:00:00",
+                            },
+                            {
+                                "id": "real-task",
+                                "owner_id": "owner-1",
+                                "status": "success",
+                                "mode": "generate",
+                                "model": "gpt-image-2",
+                                "created_at": "2099-01-01 00:00:00",
+                                "updated_at": "2099-01-01 00:00:00",
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            service = self.make_service(path)
+            result = service.list_tasks(ADMIN_OWNER, [])
+
+            self.assertEqual({item["id"] for item in result["items"]}, {"sync-123", "real-task"})
+
+    def test_cleanup_marks_stale_unfinished_tasks_as_error(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            old_ts = time.time() - 7200
+            path = Path(tmp_dir) / "image_tasks.json"
+            service = self.make_service(path)
+            with service._lock:
+                service._tasks["owner-1:stale-running"] = {
+                    "id": "stale-running",
+                    "owner_id": "owner-1",
+                    "status": "running",
+                    "mode": "generate",
+                    "model": "gpt-image-2",
+                    "created_at": "2026-01-01 00:00:00",
+                    "updated_at": "2026-01-01 00:00:00",
+                    "updated_ts": old_ts,
+                }
+                service._save_locked()
+            result = service.list_tasks(ADMIN_OWNER, ["stale-running"])
+
+            self.assertEqual(result["items"][0]["status"], "error")
+            self.assertIn("长时间未更新", result["items"][0]["error"])
+
+    def test_public_progress_uses_chinese_label(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "image_tasks.json"
+            service = self.make_service(path)
+            with service._lock:
+                service._tasks["owner-1:running-task"] = {
+                    "id": "running-task",
+                    "owner_id": "owner-1",
+                    "status": "running",
+                    "mode": "generate",
+                    "model": "gpt-image-2",
+                    "created_at": "2026-01-01 00:00:00",
+                    "updated_at": "2026-01-01 00:00:00",
+                    "updated_ts": time.time(),
+                    "progress": "generating",
+                }
+                service._save_locked()
+            result = service.list_tasks(ADMIN_OWNER, ["running-task"])
+
+            self.assertEqual(result["items"][0]["progress"], "正在生成图片")
+            self.assertEqual(result["items"][0]["progress_percent"], 75)
+
+    def test_public_progress_falls_back_to_raw_value(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "image_tasks.json"
+            service = self.make_service(path)
+            with service._lock:
+                service._tasks["owner-1:running-task"] = {
+                    "id": "running-task",
+                    "owner_id": "owner-1",
+                    "status": "running",
+                    "mode": "generate",
+                    "model": "gpt-image-2",
+                    "created_at": "2026-01-01 00:00:00",
+                    "updated_at": "2026-01-01 00:00:00",
+                    "updated_ts": time.time(),
+                    "progress": "custom_progress",
+                }
+                service._save_locked()
+            result = service.list_tasks(ADMIN_OWNER, ["running-task"])
+
+            self.assertEqual(result["items"][0]["progress"], "custom_progress")
+            self.assertEqual(result["items"][0]["progress_percent"], 10)
+
+    def test_public_progress_percent_is_100_when_success(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "image_tasks.json"
+            service = self.make_service(path)
+            service.submit_generation(
+                ADMIN_OWNER,
+                client_task_id="done-task",
+                prompt="cat",
+                model="gpt-image-2",
+                size=None,
+                base_url="http://local.test",
+            )
+            task = wait_for_task(service, ADMIN_OWNER, "done-task", "success")
+
+            self.assertEqual(task["progress_percent"], 100)
+
+    def test_public_progress_percent_keeps_last_step_when_error(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "image_tasks.json"
+            service = self.make_service(path)
+            with service._lock:
+                service._tasks["owner-1:failed-task"] = {
+                    "id": "failed-task",
+                    "owner_id": "owner-1",
+                    "status": "error",
+                    "mode": "generate",
+                    "model": "gpt-image-2",
+                    "created_at": "2099-01-01 00:00:00",
+                    "updated_at": "2099-01-01 00:00:00",
+                    "updated_ts": time.time(),
+                    "progress": "receiving_image",
+                    "error": "failed",
+                }
+                service._save_locked()
+            result = service.list_tasks(ADMIN_OWNER, ["failed-task"])
+
+            self.assertEqual(result["items"][0]["progress_percent"], 95)
+
 
 if __name__ == "__main__":
     unittest.main()

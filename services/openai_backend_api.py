@@ -263,6 +263,31 @@ class OpenAIBackendAPI:
             raise InvalidAccessTokenError(f"token invalidated ({path})")
         raise RuntimeError(f"{path} failed: HTTP {response.status_code}")
 
+    @staticmethod
+    def _is_invalid_token_response(exc: Exception) -> bool:
+        if isinstance(exc, InvalidAccessTokenError):
+            return True
+        if not isinstance(exc, UpstreamHTTPError):
+            return False
+        if int(getattr(exc, "status_code", 0) or 0) != 401:
+            return False
+        body = getattr(exc, "body", None)
+        text = ""
+        if isinstance(body, (dict, list)):
+            try:
+                text = json.dumps(body, ensure_ascii=False)
+            except Exception:
+                text = str(body)
+        else:
+            text = str(body or "")
+        lower = text.lower()
+        return (
+            "token_revoked" in lower
+            or "token_invalidated" in lower
+            or "invalidated oauth token" in lower
+            or "authentication token has been invalidated" in lower
+        )
+
     def _get_me(self) -> Dict[str, Any]:
         path = "/backend-api/me"
         response = self.session.get(self.base_url + path, headers=self._headers(path), timeout=20)
@@ -2695,8 +2720,13 @@ class OpenAIBackendAPI:
             json={"p": p_token},
             timeout=30,
         )
-        ensure_ok(response, "chat_requirements_prepare")
-        prepare_data = response.json()
+        try:
+            ensure_ok(response, "chat_requirements_prepare")
+            prepare_data = response.json()
+        except UpstreamHTTPError as exc:
+            if self.access_token and self._is_invalid_token_response(exc):
+                raise InvalidAccessTokenError(f"token invalidated ({prepare_path})") from exc
+            raise
 
         if (prepare_data.get("arkose") or {}).get("required"):
             raise RuntimeError("chat requirements requires arkose token, which is not implemented")
