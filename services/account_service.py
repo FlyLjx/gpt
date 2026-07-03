@@ -54,6 +54,17 @@ class AccountService:
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/145.0.0.0 Safari/537.36"
     )
+    _RELOGIN_NEEDS_VERIFICATION_STATUS = "需验证码"
+    _RELOGIN_ERROR_MESSAGES = {
+        "need_verification_code": "需要邮箱验证码，自动恢复无法继续",
+        "invalid_password": "邮箱或密码错误",
+        "rate_limit_exceeded": "登录请求过于频繁，请稍后重试",
+        "unsupported_country_region_territory": "当前网络地区不支持登录",
+        "invalid_state": "登录状态失效，请稍后重试",
+        "password_verify_failed_403": "密码校验失败或账号被限制",
+        "no_auth_code": "登录未返回授权码",
+        "token_exchange_failed": "登录成功但换取 token 失败",
+    }
 
     # 刷新进度追踪
     _refresh_progress: dict[str, dict] = {}
@@ -617,6 +628,11 @@ class AccountService:
             return False
         return (datetime.now(timezone.utc) - last_error_at).total_seconds() < self._TOKEN_REFRESH_ERROR_BACKOFF_SECONDS
 
+    @classmethod
+    def _relogin_error_message(cls, error_type: object) -> str:
+        text = str(error_type or "").strip()
+        return cls._RELOGIN_ERROR_MESSAGES.get(text, text or "重新登录失败")
+
     def _recent_refresh_token_keepalive_error(self, account: dict, now: datetime) -> bool:
         last_error_at = self._parse_time(account.get("last_token_refresh_error_at"))
         if last_error_at is None:
@@ -814,6 +830,30 @@ class AccountService:
             else:
                 # 登录失败
                 error_type = result.get("error", "")
+                error_message = self._relogin_error_message(error_type)
+                if error_type == "need_verification_code":
+                    log_service.add(
+                        LOG_TYPE_ACCOUNT,
+                        "更新账号",
+                        {
+                            "source": event,
+                            "token": anonymize_token(access_token),
+                            "email": email,
+                            "status": self._RELOGIN_NEEDS_VERIFICATION_STATUS,
+                            "error": error_type,
+                            "detail": result.get("detail", {}),
+                        },
+                    )
+                    self.update_account(access_token, {"status": "异常", "quota": 0}, quiet=True)
+                    if progress_id:
+                        self.update_relogin_progress(
+                            progress_id,
+                            access_token,
+                            self._RELOGIN_NEEDS_VERIFICATION_STATUS,
+                            error_message,
+                            email=email,
+                        )
+                    return
                 if error_type == "password_verify_failed_403" and isinstance(result.get("detail"), dict):
                     log_service.add(
                         LOG_TYPE_ACCOUNT,
@@ -848,7 +888,7 @@ class AccountService:
                         # 永久故障：将账号标记为异常（或自动移除）
                         self.remove_invalid_token(access_token, f"{event}:password_relogin_failed", quiet=True)
                         if progress_id:
-                            self.update_relogin_progress(progress_id, access_token, "异常", error_type, email=email)
+                            self.update_relogin_progress(progress_id, access_token, "异常", error_message, email=email)
                 else:
                     log_service.add(
                         LOG_TYPE_ACCOUNT,
@@ -865,7 +905,7 @@ class AccountService:
                     # 永久故障：将账号标记为异常（或自动移除）
                     self.remove_invalid_token(access_token, f"{event}:password_relogin_failed", quiet=True)
                     if progress_id:
-                        self.update_relogin_progress(progress_id, access_token, "异常", error_type, email=email)
+                        self.update_relogin_progress(progress_id, access_token, "异常", error_message, email=email)
         except Exception as exc:
             log_service.add(
                 LOG_TYPE_ACCOUNT,

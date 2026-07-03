@@ -578,6 +578,45 @@ class AuthServiceTests(unittest.TestCase):
             args = thread_cls.call_args.kwargs["args"]
             self.assertEqual(args[:3], ("token-1", "user@example.com", "secret-password"))
 
+    def test_relogin_verification_required_keeps_account_and_reports_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service.add_account_items([
+                {"access_token": "token-1", "email": "user@example.com", "password": "secret-password", "status": "异常"},
+            ])
+            service.init_relogin_progress("progress-1", 1)
+
+            with (
+                mock.patch.object(
+                    service,
+                    "_login_with_password",
+                    return_value={
+                        "ok": False,
+                        "error": "need_verification_code",
+                        "detail": {"page": {"type": "email_otp_verification"}},
+                    },
+                ),
+                mock.patch.object(service, "remove_invalid_token") as remove_invalid_token,
+            ):
+                service._password_re_login_thread(
+                    "token-1",
+                    "user@example.com",
+                    "secret-password",
+                    "manual_relogin",
+                    "progress-1",
+                )
+
+            remove_invalid_token.assert_not_called()
+            account = service.get_account("token-1")
+            progress = service.get_relogin_progress("progress-1")
+
+            self.assertIsNotNone(account)
+            self.assertEqual(account["status"], "异常")
+            self.assertIsNotNone(progress)
+            self.assertTrue(progress["done"])
+            self.assertEqual(progress["results"][0]["status"], "需验证码")
+            self.assertIn("邮箱验证码", progress["results"][0]["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

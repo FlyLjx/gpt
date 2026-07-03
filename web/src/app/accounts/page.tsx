@@ -249,12 +249,36 @@ function errorTypeLabel(value?: string | null) {
   return labels[key] || key;
 }
 
+type ReloginResult = NonNullable<RefreshProgressResponse["results"]>[number];
+
+function isReloginVerificationRequired(item: ReloginResult) {
+  return item.status === "需验证码" || item.error === "need_verification_code" || String(item.error || "").includes("验证码");
+}
+
 function reloginResultSummary(results: NonNullable<RefreshProgressResponse["results"]>) {
   const success = results.filter((item) => item.status === "成功").length;
   const disabled = results.filter((item) => item.status === "禁用").length;
   const skipped = results.filter((item) => item.status === "跳过").length;
-  const failed = results.filter((item) => item.status === "异常" || (Boolean(item.error) && item.status !== "跳过" && item.status !== "禁用")).length;
-  return { success, disabled, skipped, failed };
+  const verification = results.filter(isReloginVerificationRequired).length;
+  const failed = results.filter(
+    (item) => !isReloginVerificationRequired(item) && (item.status === "异常" || (Boolean(item.error) && item.status !== "跳过" && item.status !== "禁用")),
+  ).length;
+  return { success, disabled, skipped, verification, failed };
+}
+
+function reloginResultTagColor(item: ReloginResult) {
+  if (item.status === "成功") return "success";
+  if (isReloginVerificationRequired(item)) return "warning";
+  if (item.status === "跳过") return "default";
+  if (item.status === "禁用" || item.status === "异常" || item.error) return "error";
+  return statusMeta[(item.status as AccountStatus) || "正常"]?.tagColor || "default";
+}
+
+function reloginResultLabel(item: ReloginResult) {
+  if (item.status === "成功") return "恢复成功";
+  if (isReloginVerificationRequired(item)) return "需验证码";
+  if (item.status === "异常") return "恢复失败";
+  return item.status;
 }
 
 function healthColor(score?: number) {
@@ -809,7 +833,7 @@ function AccountsPageContent() {
                 return;
               }
               const summary = reloginResultSummary(results);
-              const message = `恢复完成：成功 ${summary.success}，失败 ${summary.failed}，禁用 ${summary.disabled}，跳过 ${summary.skipped}`;
+              const message = `恢复完成：成功 ${summary.success}，失败 ${summary.failed}，需验证码 ${summary.verification}，禁用 ${summary.disabled}，跳过 ${summary.skipped}`;
               setProgress((prev) => ({ ...prev, current: prev.total, message, email: "" }));
               setRefreshSummary(null);
               resolve();
@@ -818,7 +842,7 @@ function AccountsPageContent() {
               // 找到最新一条有错误的结果
               const lastErrorResult = [...results].reverse().find((r) => r.error);
               const emailHint = lastErrorResult
-                ? `失败: ${lastErrorResult.email || lastErrorResult.token} ${lastErrorResult.error ?? ""}`
+                ? `${isReloginVerificationRequired(lastErrorResult) ? "需验证码" : "失败"}: ${lastErrorResult.email || lastErrorResult.token} ${lastErrorResult.error ?? ""}`
                 : `已处理 ${p.processed}/${p.total}`;
               setProgress((prev) => ({
                 ...prev,
@@ -839,7 +863,7 @@ function AccountsPageContent() {
                   runningDisabled += 1;
                   runningAbnormal -= 1;
                 }
-                // "异常"或"跳过"：保持异常状态不变
+                // "异常"、"需验证码"或"跳过"：保持异常状态不变
               }
               setRefreshSummary({
                 total: accounts.length,
@@ -871,7 +895,7 @@ function AccountsPageContent() {
         total,
         message: (() => {
           const resultSummary = reloginResultSummary(finalResults);
-          return `恢复完成：成功 ${resultSummary.success}，失败 ${resultSummary.failed}，禁用 ${resultSummary.disabled}，跳过 ${resultSummary.skipped}`;
+          return `恢复完成：成功 ${resultSummary.success}，失败 ${resultSummary.failed}，需验证码 ${resultSummary.verification}，禁用 ${resultSummary.disabled}，跳过 ${resultSummary.skipped}`;
         })(),
         email: "",
       });
@@ -879,8 +903,8 @@ function AccountsPageContent() {
       setTimeout(resetProgress, 8000);
 
       const resultSummary = reloginResultSummary(finalResults);
-      if (resultSummary.failed > 0 || resultSummary.skipped > 0 || resultSummary.disabled > 0) {
-        toast.warning(`恢复完成：成功 ${resultSummary.success}，失败 ${resultSummary.failed}，禁用 ${resultSummary.disabled}，跳过 ${resultSummary.skipped}`);
+      if (resultSummary.failed > 0 || resultSummary.verification > 0 || resultSummary.skipped > 0 || resultSummary.disabled > 0) {
+        toast.warning(`恢复完成：成功 ${resultSummary.success}，失败 ${resultSummary.failed}，需验证码 ${resultSummary.verification}，禁用 ${resultSummary.disabled}，跳过 ${resultSummary.skipped}`);
       } else {
         toast.success(`恢复成功 ${resultSummary.success} 个账号`);
       }
@@ -1295,21 +1319,14 @@ function AccountsPageContent() {
                   <div key={`${item.token}-${index}`} className="flex items-start justify-between gap-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs">
                     <div className="min-w-0">
                       <div className="truncate font-medium text-slate-700">{item.email || item.token}</div>
-                      {item.error ? <div className="mt-1 truncate text-rose-500">{item.error}</div> : null}
+                      {item.error ? (
+                        <div className={`mt-1 truncate ${isReloginVerificationRequired(item) ? "text-amber-600" : "text-rose-500"}`}>
+                          {item.error}
+                        </div>
+                      ) : null}
                     </div>
-                    <Tag
-                      color={
-                        item.status === "成功"
-                          ? "success"
-                          : item.status === "跳过"
-                            ? "default"
-                            : item.status === "禁用" || item.status === "异常" || item.error
-                              ? "error"
-                              : statusMeta[(item.status as AccountStatus) || "正常"]?.tagColor || "default"
-                      }
-                      className="m-0 shrink-0"
-                    >
-                      {item.status === "成功" ? "恢复成功" : item.status === "异常" ? "恢复失败" : item.status}
+                    <Tag color={reloginResultTagColor(item)} className="m-0 shrink-0">
+                      {reloginResultLabel(item)}
                     </Tag>
                   </div>
                 ))}
