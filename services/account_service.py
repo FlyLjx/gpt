@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Condition, Lock, Thread
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from services.config import config, local_time_text
 from services.log_service import (
@@ -57,6 +57,11 @@ class AccountService:
     _RELOGIN_NEEDS_VERIFICATION_STATUS = "需验证码"
     _RELOGIN_ERROR_MESSAGES = {
         "need_verification_code": "需要邮箱验证码，自动恢复无法继续",
+        "verification_mailbox_unavailable": "需要邮箱验证码，但没有找到可用邮箱 API",
+        "verification_code_send_failed": "邮箱验证码发送失败",
+        "verification_code_timeout": "等待邮箱验证码超时",
+        "verification_code_failed": "邮箱验证码校验失败",
+        "verification_no_auth_code": "邮箱验证码已提交，但未返回授权码",
         "invalid_password": "邮箱或密码错误",
         "rate_limit_exceeded": "登录请求过于频繁，请稍后重试",
         "unsupported_country_region_territory": "当前网络地区不支持登录",
@@ -633,6 +638,11 @@ class AccountService:
         text = str(error_type or "").strip()
         return cls._RELOGIN_ERROR_MESSAGES.get(text, text or "重新登录失败")
 
+    @classmethod
+    def _is_relogin_verification_error(cls, error_type: object) -> bool:
+        text = str(error_type or "").strip()
+        return text == "need_verification_code" or text.startswith("verification_")
+
     def _recent_refresh_token_keepalive_error(self, account: dict, now: datetime) -> bool:
         last_error_at = self._parse_time(account.get("last_token_refresh_error_at"))
         if last_error_at is None:
@@ -831,7 +841,7 @@ class AccountService:
                 # 登录失败
                 error_type = result.get("error", "")
                 error_message = self._relogin_error_message(error_type)
-                if error_type == "need_verification_code":
+                if self._is_relogin_verification_error(error_type):
                     log_service.add(
                         LOG_TYPE_ACCOUNT,
                         "更新账号",
@@ -922,6 +932,127 @@ class AccountService:
             self.remove_invalid_token(access_token, f"{event}:password_relogin_exception", quiet=True)
             if progress_id:
                 self.update_relogin_progress(progress_id, access_token, "异常", str(exc), email=email)
+
+    @staticmethod
+    def _auth_code_from_url(url: object) -> str:
+        text = str(url or "").strip()
+        if not text:
+            return ""
+        try:
+            parsed_params = parse_qs(urlparse(text).query)
+        except Exception:
+            return ""
+        return str((parsed_params.get("code") or [""])[0]).strip()
+
+    def _load_relogin_mail_config(self) -> dict:
+        try:
+            from services.register import openai_register
+
+            mail_config = openai_register.config.get("mail")
+            if isinstance(mail_config, dict):
+                return mail_config
+        except Exception:
+            pass
+        try:
+            from services.config import DATA_DIR
+
+            data = json.loads((DATA_DIR / "register.json").read_text(encoding="utf-8"))
+            mail_config = data.get("mail")
+            if isinstance(mail_config, dict):
+                return mail_config
+        except Exception:
+            pass
+        return {"providers": []}
+
+    def _send_relogin_otp(self, session, auth_base: str, device_id: str, user_agent: str) -> dict[str, Any]:
+        headers = {
+            "accept": "application/json,text/html,*/*",
+            "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "referer": f"{auth_base}/email-verification",
+            "user-agent": user_agent,
+            "sec-ch-ua": '"Chromium";v="145", "Google Chrome";v="145", "Not/A)Brand";v="99"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-origin",
+            "oai-device-id": device_id,
+        }
+        resp = session.get(
+            f"{auth_base}/api/accounts/email-otp/send",
+            headers=headers,
+            allow_redirects=True,
+            timeout=30,
+        )
+        return {
+            "status_code": int(getattr(resp, "status_code", 0) or 0),
+            "body": self._safe_response_text(resp),
+        }
+
+    def _wait_for_relogin_otp_code(self, email: str, code_after_ts: float) -> tuple[str, dict[str, Any]]:
+        from services.register import mail_provider
+
+        mail_config = self._load_relogin_mail_config()
+        mailbox = mail_provider.get_existing_mailbox(mail_config, email)
+        mailbox["_code_after_ts"] = code_after_ts
+        code = mail_provider.wait_for_code(mail_config, mailbox)
+        return str(code or "").strip(), {
+            "provider": str(mailbox.get("provider") or ""),
+            "provider_ref": str(mailbox.get("provider_ref") or ""),
+            "address": str(mailbox.get("address") or ""),
+        }
+
+    def _validate_relogin_otp(self, session, auth_base: str, device_id: str, code: str, user_agent: str) -> dict[str, Any]:
+        headers = {
+            "accept": "application/json",
+            "accept-language": "zh-CN,zh;q=0.9",
+            "content-type": "application/json",
+            "origin": auth_base,
+            "priority": "u=1, i",
+            "referer": f"{auth_base}/email-verification",
+            "user-agent": user_agent,
+            "sec-ch-ua": '"Chromium";v="145", "Google Chrome";v="145", "Not/A)Brand";v="99"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-origin",
+            "oai-device-id": device_id,
+        }
+        try:
+            from utils.sentinel import build_sentinel_token
+
+            sentinel_val, oai_sc_val = build_sentinel_token(
+                session,
+                device_id,
+                "authorize_continue",
+                user_agent=user_agent,
+                sec_ch_ua=str(headers["sec-ch-ua"]),
+            )
+            headers["openai-sentinel-token"] = sentinel_val
+            if oai_sc_val:
+                session.cookies.set("oai-sc", oai_sc_val, domain=".openai.com")
+        except Exception:
+            pass
+        resp = session.post(
+            f"{auth_base}/api/accounts/email-otp/validate",
+            headers=headers,
+            json={"code": code},
+            timeout=30,
+        )
+        data: dict[str, Any] = {}
+        try:
+            data = resp.json() if getattr(resp, "text", "") else {}
+        except Exception:
+            data = {}
+        auth_code = self._auth_code_from_url(data.get("continue_url")) or self._auth_code_from_url(getattr(resp, "url", ""))
+        return {
+            "ok": int(getattr(resp, "status_code", 0) or 0) == 200,
+            "status_code": int(getattr(resp, "status_code", 0) or 0),
+            "auth_code": auth_code,
+            "data": data,
+            "body": self._safe_response_text(resp),
+        }
 
     def _login_with_password(self, email: str, password: str) -> dict:
         """通过邮箱+密码登录，返回 {access_token, refresh_token, id_token, ...}"""
@@ -1069,9 +1200,7 @@ class AccountService:
             continue_url = str(login_data.get("continue_url") or "").strip()
             auth_code = ""
             if continue_url:
-                from urllib.parse import parse_qs, urlparse
-                parsed_params = parse_qs(urlparse(continue_url).query)
-                auth_code = str((parsed_params.get("code") or [""])[0]).strip()
+                auth_code = self._auth_code_from_url(continue_url)
             
             # ─── 处理邮箱 OTP 验证 ──────────────────────────
             if not auth_code:
@@ -1081,8 +1210,40 @@ class AccountService:
                     page_type = str(page_info.get("type") or "")
                 
                 if page_type == "email_otp_verification":
-                    # 需要验证码才能登录，直接标记为账号异常
-                    return {"ok": False, "error": "need_verification_code", "detail": login_data}
+                    otp_started_at = time.time() - 10
+                    send_result: dict[str, Any] = {}
+                    try:
+                        send_result = self._send_relogin_otp(session, auth_base, device_id, user_agent)
+                    except Exception as exc:
+                        send_result = {"error": str(exc)}
+                    try:
+                        otp_code, mailbox_info = self._wait_for_relogin_otp_code(email, otp_started_at)
+                    except Exception as exc:
+                        return {
+                            "ok": False,
+                            "error": "verification_mailbox_unavailable",
+                            "detail": {"login": login_data, "send": send_result, "error": str(exc)},
+                        }
+                    if not otp_code:
+                        return {
+                            "ok": False,
+                            "error": "verification_code_timeout",
+                            "detail": {"login": login_data, "send": send_result, "mailbox": mailbox_info},
+                        }
+                    validate_result = self._validate_relogin_otp(session, auth_base, device_id, otp_code, user_agent)
+                    if not validate_result.get("ok"):
+                        return {
+                            "ok": False,
+                            "error": "verification_code_failed",
+                            "detail": {"login": login_data, "send": send_result, "mailbox": mailbox_info, "validate": validate_result},
+                        }
+                    auth_code = str(validate_result.get("auth_code") or "").strip()
+                    if not auth_code:
+                        return {
+                            "ok": False,
+                            "error": "verification_no_auth_code",
+                            "detail": {"login": login_data, "send": send_result, "mailbox": mailbox_info, "validate": validate_result},
+                        }
                 else:
                     return {"ok": False, "error": "no_auth_code", "detail": login_data}
             

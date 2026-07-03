@@ -139,6 +139,30 @@ class RegisterServiceTests(unittest.TestCase):
                 self.assertNotIn("user1@hotmail.com", state)
                 self.assertEqual(state["user2@hotmail.com"]["state"], "used")
 
+    def test_get_existing_outlook_mailbox_does_not_mark_pool_used(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_file = Path(tmp_dir) / "outlook_token_used.json"
+            mail_config = {
+                "request_timeout": 1,
+                "wait_timeout": 1,
+                "wait_interval": 0.2,
+                "providers": [
+                    {
+                        "type": "outlook_token",
+                        "enable": True,
+                        "mailboxes": "user1@hotmail.com----pass1----client1----refresh1",
+                    }
+                ],
+            }
+
+            with mock.patch.object(mail_provider, "OUTLOOK_TOKEN_USED_FILE", state_file):
+                mailbox = mail_provider.get_existing_mailbox(mail_config, "user1@hotmail.com")
+
+                self.assertEqual(mailbox["address"], "user1@hotmail.com")
+                self.assertEqual(mailbox["client_id"], "client1")
+                self.assertEqual(mailbox["refresh_token"], "refresh1")
+                self.assertFalse(state_file.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -385,6 +385,17 @@ def _message_tracking_ref(message: dict[str, Any]) -> str:
     return f"content:{provider}:{mailbox}:{received_value}:{digest}"
 
 
+def _message_is_after_threshold(message: dict[str, Any], mailbox: dict[str, Any]) -> bool:
+    threshold = mailbox.get("_code_after_ts")
+    if not isinstance(threshold, (int, float)) or threshold <= 0:
+        return True
+    received_at = message.get("received_at")
+    if not isinstance(received_at, datetime):
+        return True
+    current = received_at if received_at.tzinfo else received_at.replace(tzinfo=timezone.utc)
+    return current.timestamp() >= float(threshold)
+
+
 class BaseMailProvider:
     name = "unknown"
 
@@ -413,6 +424,10 @@ class BaseMailProvider:
         def extract_unseen_code(message: dict[str, Any]) -> str | None:
             ref = _message_tracking_ref(message)
             if ref in seen_refs:
+                return None
+            if not _message_is_after_threshold(message, mailbox):
+                seen_value.append(ref)
+                seen_refs.add(ref)
                 return None
             code = _extract_code(message)
             if code:
@@ -548,6 +563,14 @@ class DDGMailProvider(BaseMailProvider):
 
         return {"provider": self.name, "provider_ref": self.provider_ref, "address": ddg_address, "token": self.cf_inbox_jwt, "label": self.label}
 
+    def get_existing_mailbox(self, email: str) -> dict[str, Any]:
+        address = str(email or "").strip()
+        if not address.lower().endswith("@duck.com"):
+            raise RuntimeError(f"DDGMail 不匹配邮箱 {email}")
+        if not self.cf_inbox_jwt:
+            raise RuntimeError("DDGMail 需要 cf_inbox_jwt 才能查询已有邮箱")
+        return {"provider": self.name, "provider_ref": self.provider_ref, "address": address, "token": self.cf_inbox_jwt, "label": self.label}
+
     def _parse_raw_recipient(self, raw_text: str) -> str:
         if not raw_text:
             return ""
@@ -679,6 +702,14 @@ class CloudMailGenProvider(BaseMailProvider):
         if not self.domain:
             raise RuntimeError("CloudMailGen 需要至少配置一个 domain")
         address = self._resolve_address(username)
+        return {"provider": self.name, "provider_ref": self.provider_ref, "address": address}
+
+    def get_existing_mailbox(self, email: str) -> dict[str, Any]:
+        address = str(email or "").strip()
+        domain = address.rsplit("@", 1)[-1].lower() if "@" in address else ""
+        domains = [item.lower() for item in self.domain]
+        if domains and not any(domain == item or domain.endswith(f".{item}") for item in domains):
+            raise RuntimeError(f"CloudMailGen 不匹配邮箱 {email}")
         return {"provider": self.name, "provider_ref": self.provider_ref, "address": address}
 
     def fetch_latest_message(self, mailbox: dict[str, Any]) -> dict[str, Any] | None:
@@ -848,6 +879,12 @@ class GptMailProvider(BaseMailProvider):
         data = self._request("POST" if payload else "GET", "/api/generate-email", payload=payload or None)
         return {"provider": self.name, "provider_ref": self.provider_ref, "address": str(data["email"])}
 
+    def get_existing_mailbox(self, email: str) -> dict[str, Any]:
+        address = str(email or "").strip()
+        if self.default_domain and not address.lower().endswith(f"@{self.default_domain.lower()}"):
+            raise RuntimeError(f"GPTMail 不匹配邮箱 {email}")
+        return {"provider": self.name, "provider_ref": self.provider_ref, "address": address}
+
     def fetch_latest_message(self, mailbox: dict[str, Any]) -> dict[str, Any] | None:
         data = self._request("GET", "/api/emails", params={"email": mailbox["address"]})
         emails = data if isinstance(data, list) else data.get("emails") or []
@@ -972,6 +1009,19 @@ class InbucketMailProvider(BaseMailProvider):
             "address": address,
             "base_domain": base_domain,
             "mailbox_name": mailbox_name,
+        }
+
+    def get_existing_mailbox(self, email: str) -> dict[str, Any]:
+        address = str(email or "").strip()
+        domain = address.rsplit("@", 1)[-1].lower() if "@" in address else ""
+        domains = [item.lower() for item in self.domain]
+        if domains and not any(domain == item or domain.endswith(f".{item}") for item in domains):
+            raise RuntimeError(f"Inbucket 不匹配邮箱 {email}")
+        return {
+            "provider": self.name,
+            "provider_ref": self.provider_ref,
+            "address": address,
+            "mailbox_name": self._mailbox_name(address),
         }
 
     def fetch_latest_message(self, mailbox: dict[str, Any]) -> dict[str, Any] | None:
@@ -1235,6 +1285,20 @@ class OutlookTokenProvider(BaseMailProvider):
             "refresh_token": credential["refresh_token"],
         }
 
+    def get_existing_mailbox(self, email: str) -> dict[str, Any]:
+        target = str(email or "").strip().lower()
+        credential = next((item for item in self.pool if item["email"].strip().lower() == target), None)
+        if credential is None:
+            raise RuntimeError(f"[{self.label}] OutlookToken 邮箱池未找到 {email}")
+        return {
+            "provider": self.name,
+            "provider_ref": self.provider_ref,
+            "address": credential["email"],
+            "label": self.label,
+            "client_id": credential["client_id"],
+            "refresh_token": credential["refresh_token"],
+        }
+
     def _read_graph(self, access_token: str) -> list[dict[str, Any]]:
         resp = self.session.get(
             OUTLOOK_GRAPH_MESSAGES_URL,
@@ -1406,6 +1470,10 @@ class OutlookTokenProvider(BaseMailProvider):
                 ref = _message_tracking_ref(message)
                 if ref in seen_refs:
                     continue
+                if not _message_is_after_threshold(message, mailbox):
+                    seen_value.append(ref)
+                    seen_refs.add(ref)
+                    continue
                 code = _extract_code(message)
                 if code:
                     seen_value.append(ref)
@@ -1530,22 +1598,20 @@ def get_existing_mailbox(mail_config: dict, email: str) -> dict:
     enabled = _enabled_entries(mail_config)
     tried: set[str] = set()
     last_error = ""
-    for _ in range(len(enabled)):
-        provider = _create_provider(mail_config)
+    for entry in enabled:
+        provider = _create_provider(mail_config, provider_ref=str(entry.get("provider_ref") or ""))
         provider_key = f"{provider.name}#{provider.provider_ref}"
         try:
             if provider_key in tried:
                 continue
             tried.add(provider_key)
-            if hasattr(provider, "get_existing_mailbox"):
-                mailbox = provider.get_existing_mailbox(email)
+            getter = getattr(provider, "get_existing_mailbox", None)
+            if callable(getter):
+                mailbox = getter(email)
                 return mailbox
-            else:
-                raise RuntimeError(f"邮箱提供商 {provider.name} 不支持查询已有邮箱")
+            last_error = f"邮箱提供商 {provider.name} 不支持查询已有邮箱"
         except RuntimeError as error:
             last_error = str(error)
-            if "DDG日上限已达" not in last_error:
-                raise
         finally:
             provider.close()
     raise RuntimeError(last_error or "所有启用的邮箱提供商均无法查询已有邮箱")

@@ -617,6 +617,65 @@ class AuthServiceTests(unittest.TestCase):
             self.assertEqual(progress["results"][0]["status"], "需验证码")
             self.assertIn("邮箱验证码", progress["results"][0]["error"])
 
+    def test_password_login_handles_email_otp_and_exchanges_token(self) -> None:
+        class FakeCookies:
+            def set(self, *_args, **_kwargs):
+                return None
+
+        class FakeResponse:
+            def __init__(self, status_code: int, payload: dict | None = None, url: str = "https://example.test") -> None:
+                self.status_code = status_code
+                self._payload = payload or {}
+                self.url = url
+                self.text = "{}"
+
+            def json(self):
+                return self._payload
+
+        class FakeSession:
+            def __init__(self, **_kwargs) -> None:
+                self.cookies = FakeCookies()
+                self.post_urls: list[str] = []
+                self.get_urls: list[str] = []
+
+            def get(self, url: str, **_kwargs):
+                self.get_urls.append(url)
+                if "email-otp/send" in url:
+                    return FakeResponse(200, {})
+                if "backend-api/me" in url:
+                    return FakeResponse(200, {"account": {"account_id": "account-1"}})
+                return FakeResponse(200, {}, url=url)
+
+            def post(self, url: str, **_kwargs):
+                self.post_urls.append(url)
+                if "password/verify" in url:
+                    return FakeResponse(200, {"page": {"type": "email_otp_verification"}})
+                if "email-otp/validate" in url:
+                    return FakeResponse(200, {"continue_url": "https://platform.openai.com/auth/callback?code=auth-code"})
+                if "oauth/token" in url:
+                    return FakeResponse(200, {"access_token": "access-token", "refresh_token": "refresh-token", "id_token": "id-token"})
+                return FakeResponse(200, {"token": "sentinel-token"})
+
+            def close(self):
+                return None
+
+        fake_session = FakeSession()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+
+            with (
+                mock.patch("curl_cffi.requests.Session", return_value=fake_session),
+                mock.patch("utils.sentinel.build_sentinel_token", return_value=("sentinel-header", "sentinel-cookie")),
+                mock.patch.object(service, "_wait_for_relogin_otp_code", return_value=("123456", {"provider": "outlook_token"})),
+            ):
+                result = service._login_with_password("user@example.com", "secret-password")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["access_token"], "access-token")
+        self.assertTrue(any("email-otp/send" in url for url in fake_session.get_urls))
+        self.assertTrue(any("email-otp/validate" in url for url in fake_session.post_urls))
+        self.assertTrue(any("oauth/token" in url for url in fake_session.post_urls))
+
 
 if __name__ == "__main__":
     unittest.main()
