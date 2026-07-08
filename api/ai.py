@@ -12,7 +12,14 @@ from api.support import consume_identity_quota, require_identity, resolve_api_au
 from services.content_filter import check_request, request_shape, request_text
 from services.editable_file_task_service import editable_file_task_service
 from services.image_task_service import image_task_service
-from services.log_service import LoggedCall, image_request_params
+from services.log_service import (
+    LoggedCall,
+    _image_error_response,
+    _image_route_attempts_from_exception,
+    _image_route_from_exception,
+    _strip_internal_response_fields,
+    image_request_params,
+)
 from services.protocol import (
     anthropic_v1_messages,
     openai_v1_chat_complete,
@@ -178,22 +185,27 @@ async def _run_with_sync_image_task(
     quality: object = "auto",
     stream: bool = False,
 ):
+    # Streaming responses still depend on LoggedCall.stream() to update the
+    # outer log while chunks are consumed. Non-streaming image calls already
+    # create a task-level log below; do not wrap them in LoggedCall.run(),
+    # otherwise the call-log page shows two rows for one image request.
+    if stream:
+        return await call.run(handler, payload)
+
     task_started = __import__("time").time()
-    task_key = ""
-    if not stream:
-        task_key, _ = image_task_service.begin_sync_task(
-            identity,
-            mode=mode,
-            model=model,
-            size=str(size or "").strip() or None,
-            quality=str(quality or "auto"),
-            request_preview=request_preview,
-            request_params=request_params,
-        )
-        payload["progress_callback"] = lambda step: image_task_service.update_sync_task_progress(task_key, step)
+    task_key, _ = image_task_service.begin_sync_task(
+        identity,
+        mode=mode,
+        model=model,
+        size=str(size or "").strip() or None,
+        quality=str(quality or "auto"),
+        request_preview=request_preview,
+        request_params=request_params,
+    )
+    payload["progress_callback"] = lambda step: image_task_service.update_sync_task_progress(task_key, step)
     try:
-        result = await call.run(handler, payload)
-    except Exception as exc:
+        result = await run_in_threadpool(handler, payload)
+    except HTTPException as exc:
         _finish_sync_image_task(
             task_key,
             identity,
@@ -202,10 +214,46 @@ async def _run_with_sync_image_task(
             started=task_started,
             request_preview=request_preview,
             request_params=request_params,
-            error=str(exc),
+            error=str(exc.detail),
         )
         raise
+    except Exception as exc:
+        image_task_service.finish_sync_task(
+            task_key,
+            identity,
+            mode=mode,
+            model=model,
+            started=task_started,
+            request_preview=request_preview,
+            request_params=request_params,
+            error=str(exc) or "image generation failed",
+            account_email=str(getattr(exc, "account_email", "") or ""),
+            conversation_id=str(getattr(exc, "conversation_id", "") or ""),
+            image_route=_image_route_from_exception(exc) or None,
+            image_route_attempts=_image_route_attempts_from_exception(exc) or None,
+        )
+        return _image_error_response(exc)
     if not isinstance(result, StreamingResponse):
+        if isinstance(result, dict):
+            image_task_service.finish_sync_task(
+                task_key,
+                identity,
+                mode=mode,
+                model=model,
+                started=task_started,
+                request_preview=request_preview,
+                request_params=request_params,
+                result_data=result,
+                account_email=str(result.get("_account_email") or result.get("account_email") or ""),
+                conversation_id=str(result.get("_conversation_id") or result.get("conversation_id") or ""),
+                image_route=(result.get("_image_route") if isinstance(result.get("_image_route"), dict) else None),
+                image_route_attempts=(
+                    result.get("_image_route_attempts")
+                    if isinstance(result.get("_image_route_attempts"), list)
+                    else None
+                ),
+            )
+            return _strip_internal_response_fields(result)
         _finish_sync_image_task(
             task_key,
             identity,
