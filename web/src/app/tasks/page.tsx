@@ -299,14 +299,21 @@ function TasksContent() {
         open={statusModalOpen}
         onCancel={() => setStatusModalOpen(false)}
         width={820}
-        footer={[
-          <Button key="refresh" icon={<RefreshCw className="size-4" />} loading={statusLoading} onClick={() => void loadTaskStatus(statusTaskId)}>
-            刷新
-          </Button>,
-          <Button key="close" type="primary" onClick={() => setStatusModalOpen(false)}>
-            关闭
-          </Button>,
-        ]}
+        footer={
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              className="inline-flex items-center justify-center"
+              icon={<RefreshCw className="size-4" />}
+              loading={statusLoading}
+              onClick={() => void loadTaskStatus(statusTaskId)}
+            >
+              刷新
+            </Button>
+            <Button className="inline-flex items-center justify-center" type="primary" onClick={() => setStatusModalOpen(false)}>
+              关闭
+            </Button>
+          </div>
+        }
       >
         <div className="space-y-4">
           <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
