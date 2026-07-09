@@ -135,6 +135,7 @@ IMAGE_ROUTE_LABELS = {
     "auto_premium_codex": "4K 自动 Codex 线路",
     "free_image2_fallback": "Free 账号普通 Image-2 线路",
     "requested_image2": "指定普通 Image-2 线路",
+    "account_selection": "账号选择阶段",
 }
 FOUR_K_ROUTE_PATTERN = re.compile(r"\b4k\b", re.IGNORECASE)
 
@@ -239,6 +240,56 @@ def _mark_latest_route_attempt(attempts: list[dict[str, Any]], status: str, erro
         latest["error"] = text[:300]
 
 
+def _account_selection_route_attempts(
+        exc: Exception,
+        request: "ConversationRequest",
+        index: int,
+        total: int,
+        *,
+        start_attempt: int = 0,
+) -> list[dict[str, Any]]:
+    attempted_accounts = getattr(exc, "attempted_accounts", None)
+    if not isinstance(attempted_accounts, list) or not attempted_accounts:
+        return []
+    base_meta = _image_route_meta(request, request, "account_selection")
+    attempts: list[dict[str, Any]] = []
+    for offset, item in enumerate(attempted_accounts, start=1):
+        if not isinstance(item, dict):
+            continue
+        attempt = dict(base_meta)
+        for source_key, target_key in (
+            ("account_email", "account_email"),
+            ("email", "account_email"),
+            ("account_token", "account_token"),
+            ("token", "account_token"),
+            ("account_type", "account_type"),
+            ("type", "account_type"),
+            ("account_source_type", "account_source_type"),
+            ("source_type", "account_source_type"),
+            ("account_default_model_slug", "account_default_model_slug"),
+            ("default_model_slug", "account_default_model_slug"),
+            ("quota", "quota"),
+            ("image_quota_unknown", "image_quota_unknown"),
+            ("account_status", "account_status"),
+            ("removed", "removed"),
+            ("selection_plan_type", "selection_plan_type"),
+            ("selection_source_type", "selection_source_type"),
+            ("selection_plan_types", "selection_plan_types"),
+        ):
+            value = item.get(source_key)
+            if value not in (None, "") and target_key not in attempt:
+                attempt[target_key] = value
+        attempt.update({
+            "index": index,
+            "total": total,
+            "attempt": start_attempt + offset,
+            "status": "failed",
+            "error": str(item.get("error") or exc or "no available image quota")[:300],
+        })
+        attempts.append(attempt)
+    return attempts
+
+
 def _attach_route_attempts_to_outputs(
         outputs: list["ImageOutput"],
         route_meta: dict[str, Any],
@@ -279,6 +330,11 @@ def _select_image_request_route(request: ConversationRequest) -> tuple[str, Conv
                 plan_types=AUTO_CODEX_PLAN_TYPES,
             )
         except RuntimeError as codex_error:
+            codex_attempted_accounts = [
+                dict(item)
+                for item in getattr(codex_error, "attempted_accounts", [])
+                if isinstance(item, dict)
+            ]
             logger.info({
                 "event": "image_auto_route_codex_unavailable",
                 "model": request.model,
@@ -288,7 +344,19 @@ def _select_image_request_route(request: ConversationRequest) -> tuple[str, Conv
             routed_request = replace(request, model=CODEX_IMAGE_MODEL)
             return token, routed_request, _image_route_meta(request, routed_request, "auto_premium_codex")
 
-        token = account_service.get_available_access_token(plan_type="free")
+        try:
+            token = account_service.get_available_access_token(plan_type="free")
+        except RuntimeError as free_error:
+            if codex_attempted_accounts:
+                free_attempted_accounts = [
+                    dict(item)
+                    for item in getattr(free_error, "attempted_accounts", [])
+                    if isinstance(item, dict)
+                ]
+                combined = [*codex_attempted_accounts, *free_attempted_accounts]
+                setattr(free_error, "attempted_accounts", combined)
+                setattr(free_error, "attempted_count", len(combined))
+            raise
         return token, request, _image_route_meta(request, request, "free_image2_fallback")
 
     token = account_service.get_available_access_token(plan_type=plan_type)
@@ -1379,6 +1447,13 @@ def _generate_single_image(
                 request.progress_callback("getting_account")
             token, routed_request, route_meta = _select_image_request_route(request)
         except RuntimeError as exc:
+            route_attempts.extend(_account_selection_route_attempts(
+                exc,
+                request,
+                index,
+                total,
+                start_attempt=len(route_attempts),
+            ))
             raise ImageGenerationError(
                 str(exc) or "image generation failed",
                 account_email=account_email,

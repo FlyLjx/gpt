@@ -336,6 +336,7 @@ def _account_summary(item: dict[str, Any]) -> dict[str, Any]:
     summary: dict[str, Any] = {}
     mapping = {
         "email": "account_email",
+        "token": "account_token",
         "type": "account_type",
         "source_type": "account_source_type",
         "backend_model": "backend_model",
@@ -417,8 +418,14 @@ def apply_image_log_detail(
         retry_count = max(0, len(attempts) - request_count)
         final_accounts = [_account_summary(item) for item in successful_attempts]
         failed_account_details = [_account_summary(item) for item in failed_attempts]
-        failed_accounts = _unique_texts([item.get("account_email") for item in failed_attempts])
-        used_accounts = _unique_texts([item.get("account_email") for item in attempts])
+        failed_accounts = _unique_texts([
+            item.get("account_email") or item.get("account_token") or item.get("token")
+            for item in failed_attempts
+        ])
+        used_accounts = _unique_texts([
+            item.get("account_email") or item.get("account_token") or item.get("token")
+            for item in attempts
+        ])
         detail["image_route_attempts"] = attempts
         detail["image_route_attempt_count"] = len(attempts)
         detail["retry_count"] = retry_count
@@ -427,7 +434,10 @@ def apply_image_log_detail(
         if final_accounts:
             detail["final_accounts"] = final_accounts
             detail["final_account_count"] = len(final_accounts)
-            detail["final_account_emails"] = _unique_texts([item.get("account_email") for item in successful_attempts])
+            detail["final_account_emails"] = _unique_texts([
+                item.get("account_email") or item.get("account_token") or item.get("token")
+                for item in successful_attempts
+            ])
         if failed_account_details:
             detail["failed_account_details"] = failed_account_details
         if failed_accounts:
@@ -484,7 +494,8 @@ def _image_error_response(exc: Exception) -> JSONResponse:
     from services.protocol.conversation import public_image_error_message
 
     message = public_image_error_message(str(exc))
-    if "no available image quota" in message.lower():
+    lower_message = message.lower()
+    if "no available image quota" in lower_message or ("no available" in lower_message and "image quota" in lower_message):
         return openai_error_response(
             {
                 "error": {

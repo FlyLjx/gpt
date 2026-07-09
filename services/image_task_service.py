@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 import time
@@ -22,6 +23,8 @@ UNFINISHED_STATUSES = {TASK_STATUS_QUEUED, TASK_STATUS_RUNNING}
 LEGACY_SYNC_TASK_PREFIX = "sync-"
 STALE_TASK_MIN_SECONDS = 30 * 60
 STALE_TASK_POLL_TIMEOUT_MULTIPLIER = 10
+SYNC_TASK_TERMINAL_REUSE_SECONDS = 5 * 60
+UPSTREAM_STARTED_PROGRESS = {"generating", "image_stream_resolve_start", "receiving_image"}
 PROGRESS_LABELS = {
     "sync_request_started": "请求已提交",
     "uploading": "正在上传图片",
@@ -107,6 +110,14 @@ def _task_activity_ts(task: dict[str, Any]) -> float:
     return _timestamp(task.get("updated_at")) or _timestamp(task.get("created_at"))
 
 
+def _sync_terminal_reuse_seconds() -> float:
+    try:
+        poll_timeout = float(config.image_poll_timeout_secs)
+    except Exception:
+        poll_timeout = 120.0
+    return max(float(SYNC_TASK_TERMINAL_REUSE_SECONDS), min(30 * 60.0, poll_timeout + 60.0))
+
+
 def _stale_task_seconds() -> float:
     try:
         poll_timeout = float(config.image_poll_timeout_secs)
@@ -167,6 +178,59 @@ def _dedupe_image_route_attempts(attempts: list[dict[str, Any]]) -> list[dict[st
         seen[marker] = item
         deduped.append(item)
     return deduped
+
+
+def _unique_attempt_accounts(attempts: list[dict[str, Any]]) -> list[str]:
+    return list(dict.fromkeys(
+        _clean(item.get("account_email")) or _clean(item.get("account_token")) or _clean(item.get("token"))
+        for item in attempts
+        if _clean(item.get("account_email")) or _clean(item.get("account_token")) or _clean(item.get("token"))
+    ))
+
+
+def _build_sync_fingerprint(
+    identity: dict[str, object],
+    *,
+    mode: str,
+    model: str,
+    size: str | None = None,
+    quality: str = "auto",
+    request_preview: str = "",
+    request_params: dict[str, Any] | None = None,
+) -> str:
+    payload = {
+        "owner_id": _owner_id(identity),
+        "mode": "edit" if mode == "edit" else "generate",
+        "model": _clean(model, "gpt-image-2"),
+        "size": _clean(size),
+        "quality": _clean(quality, "auto"),
+        "request_preview": request_preview,
+        "request_params": request_params or {},
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _sync_error_can_restart(task: dict[str, Any]) -> bool:
+    error = _clean(task.get("error")).lower()
+    if not error:
+        return True
+    if any(item in error for item in ("content_policy", "content policy", "policy_violation", "内容政策", "防护限制")):
+        return False
+    progress = _clean(task.get("progress"))
+    if (_clean(task.get("conversation_id")) or progress in UPSTREAM_STARTED_PROGRESS) and any(
+        item in error
+        for item in (
+            "timeout",
+            "timed out",
+            "超时",
+            "poll",
+            "still processing",
+            "result could not be retrieved",
+        )
+    ):
+        return False
+    return True
 
 
 def _apply_image_route_detail(
@@ -275,6 +339,22 @@ def _public_task(task: dict[str, Any]) -> dict[str, Any]:
         item["progress"] = _progress_label(task.get("progress"))
     if task.get("duration_ms") is not None:
         item["duration_ms"] = task.get("duration_ms")
+    attempts = task.get("image_route_attempts")
+    if isinstance(attempts, list) and attempts:
+        attempt_items = [dict(attempt) for attempt in attempts if isinstance(attempt, dict)]
+        item["image_route_attempt_count"] = len(attempt_items)
+        item["used_account_count"] = len(_unique_attempt_accounts(attempt_items))
+        failed_accounts = _unique_attempt_accounts([
+            attempt
+            for attempt in attempt_items
+            if _clean(attempt.get("status")).lower() in {"failed", "error"} or _clean(attempt.get("error"))
+        ])
+        if failed_accounts:
+            item["failed_account_count"] = len(failed_accounts)
+    if task.get("client_retry_count"):
+        item["client_retry_count"] = int(task.get("client_retry_count") or 0)
+    if task.get("run_count"):
+        item["run_count"] = int(task.get("run_count") or 0)
     if task.get("cancelled"):
         item["cancelled"] = True
     if task.get("status") in (TASK_STATUS_RUNNING, TASK_STATUS_QUEUED):
@@ -303,6 +383,7 @@ class ImageTaskService:
         self.edit_handler = edit_handler
         self.retention_days_getter = retention_days_getter or (lambda: config.image_retention_days)
         self._lock = threading.RLock()
+        self._sync_condition = threading.Condition(self._lock)
         self._tasks: dict[str, dict[str, Any]] = {}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._lock:
@@ -424,42 +505,105 @@ class ImageTaskService:
         quality: str = "auto",
         request_preview: str = "",
         request_params: dict[str, Any] | None = None,
-    ) -> tuple[str, dict[str, Any]]:
+        request_fingerprint: str = "",
+    ) -> tuple[str, dict[str, Any], str]:
         owner = _owner_id(identity)
-        task_id = f"sync-{int(time.time() * 1000)}-{threading.get_ident()}"
-        key = _task_key(owner, task_id)
-        now = _now_iso()
-        task = {
-            "id": task_id,
-            "owner_id": owner,
-            "status": TASK_STATUS_RUNNING,
-            "mode": "edit" if mode == "edit" else "generate",
-            "model": _clean(model, "gpt-image-2"),
-            "size": _clean(size),
-            "quality": _clean(quality, "auto"),
-            "created_at": now,
-            "updated_at": now,
-            "created_ts": time.time(),
-            "started_ts": time.time(),
-            "progress": "sync_request_started",
-        }
-        task["log_id"] = self._log_task_submit(
+        mode_value = "edit" if mode == "edit" else "generate"
+        model_value = _clean(model, "gpt-image-2")
+        fingerprint = _clean(request_fingerprint) or _build_sync_fingerprint(
             identity,
-            task["mode"],
-            task["model"],
-            float(task["created_ts"]),
+            mode=mode_value,
+            model=model_value,
+            size=size,
+            quality=quality,
             request_preview=request_preview,
             request_params=request_params,
         )
-        with self._lock:
+        now_ts = time.time()
+        now = _now_iso()
+        with self._sync_condition:
             if self._cleanup_locked():
                 self._save_locked()
+            reusable = self._find_reusable_sync_task_locked(owner, fingerprint, mode_value, now_ts)
+            if reusable is not None:
+                key, task = reusable
+                task["client_retry_count"] = int(task.get("client_retry_count") or 0) + 1
+                task["updated_at"] = now
+                task["updated_ts"] = now_ts
+                status = _clean(task.get("status"))
+                if status in UNFINISHED_STATUSES:
+                    self._save_locked()
+                    return key, _public_task(task), "wait"
+                if status == TASK_STATUS_SUCCESS:
+                    self._save_locked()
+                    return key, _public_task(task), "cached"
+                if status == TASK_STATUS_ERROR and _sync_error_can_restart(task):
+                    task.update({
+                        "status": TASK_STATUS_RUNNING,
+                        "error": "",
+                        "data": [],
+                        "usage": None,
+                        "duration_ms": None,
+                        "progress": "sync_request_started",
+                        "started_ts": now_ts,
+                        "run_started_ts": now_ts,
+                        "run_count": int(task.get("run_count") or 1) + 1,
+                        "request_preview": request_preview,
+                        "request_params": request_params or {},
+                    })
+                    self._save_locked()
+                    self._sync_condition.notify_all()
+                    return key, _public_task(task), "start"
+                self._save_locked()
+                return key, _public_task(task), "cached_error"
+
+            task_id = f"sync-{int(now_ts * 1000)}-{threading.get_ident()}"
+            key = _task_key(owner, task_id)
+            task = {
+                "id": task_id,
+                "owner_id": owner,
+                "status": TASK_STATUS_RUNNING,
+                "mode": mode_value,
+                "model": model_value,
+                "size": _clean(size),
+                "quality": _clean(quality, "auto"),
+                "created_at": now,
+                "updated_at": now,
+                "created_ts": now_ts,
+                "updated_ts": now_ts,
+                "started_ts": now_ts,
+                "run_started_ts": now_ts,
+                "run_count": 1,
+                "client_retry_count": 0,
+                "quota_consumed": False,
+                "sync_fingerprint": fingerprint,
+                "request_preview": request_preview,
+                "request_params": request_params or {},
+                "image_route_attempts": [],
+                "progress": "sync_request_started",
+            }
+            task["log_id"] = self._log_task_submit(
+                identity,
+                task["mode"],
+                task["model"],
+                float(task["created_ts"]),
+                request_preview=request_preview,
+                request_params=request_params,
+            )
             self._tasks[key] = task
             self._save_locked()
-        return key, _public_task(task)
+            self._sync_condition.notify_all()
+        return key, _public_task(task), "start"
 
     def update_sync_task_progress(self, key: str, progress: str) -> None:
         self._update_task(key, progress=_clean(progress))
+
+    def mark_sync_task_quota_consumed(self, key: str) -> None:
+        self._update_task(key, quota_consumed=True)
+
+    def is_sync_task_quota_consumed(self, key: str) -> bool:
+        with self._lock:
+            return bool((self._tasks.get(key) or {}).get("quota_consumed"))
 
     def finish_sync_task(
         self,
@@ -479,6 +623,7 @@ class ImageTaskService:
         image_route_attempts: list[dict[str, Any]] | None = None,
     ) -> None:
         duration_ms = int((time.time() - started) * 1000)
+        merged_attempts = self._merge_task_route_attempts(key, image_route_attempts)
         if error:
             self._update_task(
                 key,
@@ -486,6 +631,7 @@ class ImageTaskService:
                 error=error,
                 data=[],
                 duration_ms=duration_ms,
+                image_route_attempts=merged_attempts,
                 **({"conversation_id": conversation_id} if conversation_id else {}),
             )
             self._log_call(
@@ -501,7 +647,7 @@ class ImageTaskService:
                 error=error,
                 account_email=account_email,
                 image_route=image_route,
-                image_route_attempts=image_route_attempts,
+                image_route_attempts=merged_attempts,
             )
             return
 
@@ -516,6 +662,7 @@ class ImageTaskService:
             usage=usage if isinstance(usage, dict) else None,
             error="",
             duration_ms=duration_ms,
+            image_route_attempts=merged_attempts,
             **({"conversation_id": conversation_id} if conversation_id else {}),
         )
         self._log_call(
@@ -531,7 +678,7 @@ class ImageTaskService:
             account_email=account_email,
             result_data=data,
             image_route=image_route,
-            image_route_attempts=image_route_attempts,
+            image_route_attempts=merged_attempts,
         )
 
     def _submit(
@@ -632,7 +779,16 @@ class ImageTaskService:
                 raise error
             usage = result.get("usage")
             duration_ms = int((time.time() - started) * 1000)
-            self._update_task(key, status=TASK_STATUS_SUCCESS, data=data, usage=usage, error="", duration_ms=duration_ms)
+            route_attempts = self._merge_task_route_attempts(key, _image_route_attempts_from_result(result))
+            self._update_task(
+                key,
+                status=TASK_STATUS_SUCCESS,
+                data=data,
+                usage=usage,
+                error="",
+                duration_ms=duration_ms,
+                image_route_attempts=route_attempts,
+            )
             self._log_call(
                 key,
                 identity,
@@ -646,15 +802,17 @@ class ImageTaskService:
                 account_email=account_email,
                 result_data=data,
                 image_route=_image_route_from_result(result),
-                image_route_attempts=_image_route_attempts_from_result(result),
+                image_route_attempts=route_attempts,
             )
         except Exception as exc:
             error_message = str(exc) or "image task failed"
             account_email = _clean(getattr(exc, "account_email", ""))
             conversation_id = _clean(getattr(exc, "conversation_id", ""))
             duration_ms = int((time.time() - started) * 1000)
+            route_attempts = self._merge_task_route_attempts(key, _image_route_attempts_from_exception(exc))
             self._update_task(key, status=TASK_STATUS_ERROR, error=error_message, data=[],
                               duration_ms=duration_ms,
+                              image_route_attempts=route_attempts,
                               **({"conversation_id": conversation_id} if conversation_id else {}))
             self._log_call(
                 key,
@@ -669,7 +827,7 @@ class ImageTaskService:
                 error=error_message,
                 account_email=account_email,
                 image_route=_image_route_from_exception(exc),
-                image_route_attempts=_image_route_attempts_from_exception(exc),
+                image_route_attempts=route_attempts,
             )
 
     def _log_call(
@@ -710,7 +868,14 @@ class ImageTaskService:
         detail.update(_image_result_meta(result_data))
         try:
             with self._lock:
-                log_id = _clean((self._tasks.get(key) or {}).get("log_id"))
+                task_snapshot = dict(self._tasks.get(key) or {})
+                log_id = _clean(task_snapshot.get("log_id"))
+            if task_snapshot.get("id"):
+                detail["task_id"] = task_snapshot.get("id")
+            if task_snapshot.get("client_retry_count"):
+                detail["client_retry_count"] = int(task_snapshot.get("client_retry_count") or 0)
+            if task_snapshot.get("run_count"):
+                detail["run_count"] = int(task_snapshot.get("run_count") or 0)
             summary = f"{summary_prefix}{suffix}"
             if log_id and log_service.update(log_id, summary, detail):
                 return
@@ -745,7 +910,7 @@ class ImageTaskService:
             return ""
 
     def _update_task(self, key: str, **updates: Any) -> None:
-        with self._lock:
+        with self._sync_condition:
             task = self._tasks.get(key)
             if task is None:
                 return
@@ -755,6 +920,61 @@ class ImageTaskService:
             task["updated_at"] = _now_iso()
             task["updated_ts"] = time.time()
             self._save_locked()
+            self._sync_condition.notify_all()
+
+    def _find_reusable_sync_task_locked(
+        self,
+        owner: str,
+        fingerprint: str,
+        mode: str,
+        now_ts: float,
+    ) -> tuple[str, dict[str, Any]] | None:
+        if not fingerprint:
+            return None
+        candidates: list[tuple[str, dict[str, Any]]] = []
+        terminal_cutoff = now_ts - _sync_terminal_reuse_seconds()
+        for key, task in self._tasks.items():
+            if task.get("owner_id") != owner:
+                continue
+            if _clean(task.get("sync_fingerprint")) != fingerprint:
+                continue
+            if _clean(task.get("mode")) != mode:
+                continue
+            status = _clean(task.get("status"))
+            if status in UNFINISHED_STATUSES:
+                candidates.append((key, task))
+                continue
+            if status in TERMINAL_STATUSES and _task_activity_ts(task) >= terminal_cutoff:
+                candidates.append((key, task))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda entry: _task_activity_ts(entry[1]), reverse=True)
+        return candidates[0]
+
+    def _merge_task_route_attempts(
+        self,
+        key: str,
+        attempts: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            existing = self._tasks.get(key, {}).get("image_route_attempts")
+        existing_items = [dict(item) for item in existing if isinstance(item, dict)] if isinstance(existing, list) else []
+        new_items = [dict(item) for item in attempts if isinstance(item, dict)] if isinstance(attempts, list) else []
+        return _dedupe_image_route_attempts([*existing_items, *new_items])
+
+    def wait_sync_task(self, key: str, timeout_secs: float = 180.0) -> dict[str, Any]:
+        deadline = time.time() + max(0.0, float(timeout_secs or 0.0))
+        with self._sync_condition:
+            while True:
+                task = self._tasks.get(key)
+                if task is None:
+                    return {}
+                if task.get("status") in TERMINAL_STATUSES:
+                    return dict(task)
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return dict(task)
+                self._sync_condition.wait(timeout=min(1.0, remaining))
 
     def _find_task_locked(self, identity: dict[str, object], task_id: str) -> tuple[str, dict[str, Any] | None]:
         normalized_id = _clean(task_id)
@@ -827,9 +1047,25 @@ class ImageTaskService:
                 "created_ts": item.get("created_ts"),
                 "updated_ts": item.get("updated_ts"),
                 "started_ts": item.get("started_ts"),
+                "run_started_ts": item.get("run_started_ts"),
+                "run_count": item.get("run_count"),
+                "client_retry_count": item.get("client_retry_count"),
+                "quota_consumed": bool(item.get("quota_consumed")),
                 "duration_ms": item.get("duration_ms"),
                 "log_id": _clean(item.get("log_id")),
+                "sync_fingerprint": _clean(item.get("sync_fingerprint")),
+                "request_preview": _clean(item.get("request_preview")),
             }
+            request_params = item.get("request_params")
+            if isinstance(request_params, dict):
+                task["request_params"] = request_params
+            attempts = item.get("image_route_attempts")
+            if isinstance(attempts, list):
+                task["image_route_attempts"] = [
+                    dict(attempt)
+                    for attempt in attempts
+                    if isinstance(attempt, dict)
+                ]
             if item.get("cancelled"):
                 task["cancelled"] = True
             data = item.get("data")

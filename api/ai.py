@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -10,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from api.image_inputs import parse_image_edit_request, read_image_sources
 from api.support import consume_identity_quota, require_identity, resolve_api_authorization, resolve_image_base_url
 from services.content_filter import check_request, request_shape, request_text
+from services.config import config
 from services.editable_file_task_service import editable_file_task_service
 from services.image_task_service import image_task_service
 from services.log_service import (
@@ -116,6 +118,66 @@ def _response_error_text(result: object) -> str:
     return f"HTTP {status_code}"
 
 
+def _fingerprint_value(value: object) -> object:
+    if isinstance(value, (bytes, bytearray)):
+        data = bytes(value)
+        return {"__bytes_sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+    if isinstance(value, tuple):
+        return [_fingerprint_value(item) for item in value]
+    if isinstance(value, list):
+        return [_fingerprint_value(item) for item in value]
+    if isinstance(value, dict):
+        ignored_keys = {"base_url", "progress_callback"}
+        return {
+            str(key): _fingerprint_value(value[key])
+            for key in sorted(value.keys(), key=lambda item: str(item))
+            if str(key) not in ignored_keys
+        }
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _sync_image_request_fingerprint(
+    identity: dict[str, object],
+    *,
+    mode: str,
+    model: str,
+    payload: dict[str, object],
+    request_preview: str,
+    request_params: dict[str, object] | None,
+) -> str:
+    fingerprint_payload = {
+        "owner_id": str(identity.get("id") or "anonymous"),
+        "mode": "edit" if mode == "edit" else "generate",
+        "model": str(model or ""),
+        "request_preview": request_preview,
+        "request_params": request_params or {},
+        "payload": _fingerprint_value(payload),
+    }
+    raw = json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _sync_image_task_response(task: dict[str, object] | None):
+    task = task if isinstance(task, dict) else {}
+    status = str(task.get("status") or "").strip()
+    if status == "success":
+        data = task.get("data")
+        result: dict[str, object] = {
+            "created": int(float(task.get("created_ts") or __import__("time").time())),
+            "data": data if isinstance(data, list) else [],
+        }
+        usage = task.get("usage")
+        if isinstance(usage, dict):
+            result["usage"] = usage
+        return result
+    if status in {"queued", "running"}:
+        return _image_error_response(RuntimeError("image generation task is still running; retry reused the existing task"))
+    error_text = str(task.get("error") or "").strip() or "image generation failed"
+    return _image_error_response(RuntimeError(error_text))
+
+
 def _finish_sync_image_task(
     task_key: str,
     identity: dict[str, object],
@@ -184,16 +246,39 @@ async def _run_with_sync_image_task(
     size: object = None,
     quality: object = "auto",
     stream: bool = False,
+    quota_endpoint: str = "",
+    quota_model: str = "",
+    quota_request_units: int = 1,
+    quota_image_units: int = 0,
 ):
     # Streaming responses still depend on LoggedCall.stream() to update the
     # outer log while chunks are consumed. Non-streaming image calls already
     # create a task-level log below; do not wrap them in LoggedCall.run(),
     # otherwise the call-log page shows two rows for one image request.
+    def consume_once() -> None:
+        if quota_endpoint:
+            consume_identity_quota(
+                identity,
+                endpoint=quota_endpoint,
+                model=quota_model or model,
+                request_units=quota_request_units,
+                image_units=quota_image_units,
+            )
+
     if stream:
+        consume_once()
         return await call.run(handler, payload)
 
     task_started = __import__("time").time()
-    task_key, _ = image_task_service.begin_sync_task(
+    request_fingerprint = _sync_image_request_fingerprint(
+        identity,
+        mode=mode,
+        model=model,
+        payload=payload,
+        request_preview=request_preview,
+        request_params=request_params,
+    )
+    task_key, task_meta, task_action = image_task_service.begin_sync_task(
         identity,
         mode=mode,
         model=model,
@@ -201,8 +286,36 @@ async def _run_with_sync_image_task(
         quality=str(quality or "auto"),
         request_preview=request_preview,
         request_params=request_params,
+        request_fingerprint=request_fingerprint,
     )
+    if task_action in {"wait", "cached", "cached_error"}:
+        wait_timeout = 0.0
+        if task_action == "wait":
+            try:
+                wait_timeout = max(90.0, float(config.image_poll_timeout_secs) + 30.0)
+            except Exception:
+                wait_timeout = 180.0
+            task_meta = await run_in_threadpool(image_task_service.wait_sync_task, task_key, wait_timeout)
+        return _sync_image_task_response(task_meta)
+
+    task_started = float((task_meta or {}).get("run_started_ts") or task_started)
     payload["progress_callback"] = lambda step: image_task_service.update_sync_task_progress(task_key, step)
+    if quota_endpoint and not image_task_service.is_sync_task_quota_consumed(task_key):
+        try:
+            consume_once()
+            image_task_service.mark_sync_task_quota_consumed(task_key)
+        except HTTPException as exc:
+            _finish_sync_image_task(
+                task_key,
+                identity,
+                mode=mode,
+                model=model,
+                started=task_started,
+                request_preview=request_preview,
+                request_params=request_params,
+                error=str(exc.detail),
+            )
+            raise
     try:
         result = await run_in_threadpool(handler, payload)
     except HTTPException as exc:
@@ -292,12 +405,6 @@ def create_router() -> APIRouter:
     ):
         identity = require_identity(resolve_api_authorization(authorization, x_api_key, api_key))
         payload = body.model_dump(mode="python")
-        consume_identity_quota(
-            identity,
-            endpoint="/v1/images/generations",
-            model=body.model,
-            image_units=body.n,
-        )
         payload["base_url"] = resolve_image_base_url(request)
         request_preview = body.prompt
         request_params = image_request_params(payload)
@@ -321,6 +428,9 @@ def create_router() -> APIRouter:
             size=body.size,
             quality=body.quality,
             stream=bool(body.stream),
+            quota_endpoint="/v1/images/generations",
+            quota_model=body.model,
+            quota_image_units=body.n,
         )
 
     @router.post("/v1/images/edits")
@@ -334,12 +444,6 @@ def create_router() -> APIRouter:
         payload, image_sources, mask_sources = await parse_image_edit_request(request)
         prompt = str(payload["prompt"])
         model = str(payload["model"])
-        consume_identity_quota(
-            identity,
-            endpoint="/v1/images/edits",
-            model=model,
-            image_units=int(payload.get("n") or 1),
-        )
         call = LoggedCall(
             identity,
             "/v1/images/edits",
@@ -365,6 +469,9 @@ def create_router() -> APIRouter:
             size=payload.get("size"),
             quality=payload.get("quality"),
             stream=bool(payload.get("stream")),
+            quota_endpoint="/v1/images/edits",
+            quota_model=model,
+            quota_image_units=int(payload.get("n") or 1),
         )
 
     @router.post("/v1/chat/completions")
@@ -377,7 +484,6 @@ def create_router() -> APIRouter:
         identity = require_identity(resolve_api_authorization(authorization, x_api_key, api_key))
         payload = body.model_dump(mode="python")
         model = str(payload.get("model") or "auto")
-        consume_identity_quota(identity, endpoint="/v1/chat/completions", model=model)
         request_preview = request_text(payload.get("prompt"), payload.get("messages"))
         call = LoggedCall(
             identity,
@@ -401,7 +507,10 @@ def create_router() -> APIRouter:
                 size=payload.get("size"),
                 quality=payload.get("quality"),
                 stream=bool(payload.get("stream")),
+                quota_endpoint="/v1/chat/completions",
+                quota_model=model,
             )
+        consume_identity_quota(identity, endpoint="/v1/chat/completions", model=model)
         return await call.run(openai_v1_chat_complete.handle, payload)
 
     @router.post("/v1/responses")
@@ -414,7 +523,6 @@ def create_router() -> APIRouter:
         identity = require_identity(resolve_api_authorization(authorization, x_api_key, api_key))
         payload = body.model_dump(mode="python")
         model = str(payload.get("model") or "auto")
-        consume_identity_quota(identity, endpoint="/v1/responses", model=model)
         request_preview = request_text(payload.get("input"), payload.get("instructions"))
         call = LoggedCall(
             identity,
@@ -439,7 +547,10 @@ def create_router() -> APIRouter:
                 size=tool.get("size"),
                 quality=tool.get("quality"),
                 stream=bool(payload.get("stream")),
+                quota_endpoint="/v1/responses",
+                quota_model=model,
             )
+        consume_identity_quota(identity, endpoint="/v1/responses", model=model)
         return await call.run(openai_v1_response.handle, payload)
 
     @router.post("/v1/messages")

@@ -21,6 +21,13 @@ from services.storage.base import StorageBackend
 from utils.helper import anonymize_token
 
 
+class NoImageQuotaError(RuntimeError):
+    def __init__(self, message: str, attempted_accounts: list[dict[str, Any]] | None = None) -> None:
+        super().__init__(message)
+        self.attempted_accounts = [dict(item) for item in attempted_accounts or [] if isinstance(item, dict)]
+        self.attempted_count = len(self.attempted_accounts)
+
+
 class AccountService:
     """账号池服务，使用 token -> account 的 dict 保存账号。"""
 
@@ -308,6 +315,170 @@ class AccountService:
         if bool(account.get("image_quota_unknown")):
             return True
         return int(account.get("quota") or 0) > 0
+
+    @staticmethod
+    def _is_depleted_image_quota_account(account: dict | None) -> bool:
+        if not isinstance(account, dict):
+            return False
+        if bool(account.get("image_quota_unknown")):
+            return False
+        try:
+            quota = int(account.get("quota") or 0)
+        except Exception:
+            quota = 0
+        status = str(account.get("status") or "").strip()
+        return quota <= 0 and (
+            status == "限流"
+            or (status in {"", "正常"} and bool(account.get("last_account_refresh_at")))
+        )
+
+    @staticmethod
+    def _quota_error_message(
+            plan_type: str | None = None,
+            source_type: str | None = None,
+            tried_count: int | None = None,
+    ) -> str:
+        scope = str(plan_type or source_type or "").strip()
+        if scope:
+            message = f"no available {scope} image quota"
+        else:
+            message = "no available image quota"
+        if tried_count is not None:
+            message = f"{message} (tried {max(0, int(tried_count))} tokens)"
+        return message
+
+    def _image_account_attempt_summary(
+            self,
+            access_token: str,
+            account: dict | None,
+            *,
+            status: str = "failed",
+            error: object = "",
+            attempt: int = 0,
+            plan_type: str | None = None,
+            source_type: str | None = None,
+            plan_types: set[str] | tuple[str, ...] | None = None,
+            removed: bool = False,
+    ) -> dict[str, Any]:
+        item = account if isinstance(account, dict) else {}
+        masked_token = anonymize_token(access_token)
+        summary: dict[str, Any] = {
+            "token": masked_token,
+            "account_token": masked_token,
+            "status": status,
+        }
+        if attempt > 0:
+            summary["attempt"] = attempt
+        email = str(item.get("email") or "").strip()
+        if email:
+            summary["account_email"] = email
+        account_type = str(item.get("type") or item.get("plan_type") or "").strip()
+        if account_type:
+            summary["account_type"] = account_type
+        account_source = str(item.get("source_type") or "").strip()
+        if account_source:
+            summary["account_source_type"] = account_source
+        default_model = str(item.get("default_model_slug") or "").strip()
+        if default_model:
+            summary["account_default_model_slug"] = default_model
+        if item.get("quota") is not None:
+            summary["quota"] = max(0, self._int_or_default(item.get("quota"), 0))
+        summary["image_quota_unknown"] = bool(item.get("image_quota_unknown"))
+        account_status = str(item.get("status") or "").strip()
+        if account_status:
+            summary["account_status"] = account_status
+        if plan_type:
+            summary["selection_plan_type"] = plan_type
+        if source_type:
+            summary["selection_source_type"] = source_type
+        if plan_types:
+            summary["selection_plan_types"] = [str(value) for value in plan_types]
+        if removed:
+            summary["removed"] = True
+        error_text = str(error or "").strip()
+        if error_text:
+            summary["error"] = error_text[:300]
+        return summary
+
+    def _image_account_unavailable_reason(
+            self,
+            account: dict | None,
+            *,
+            plan_type: str | None = None,
+            source_type: str | None = None,
+            plan_types: set[str] | tuple[str, ...] | None = None,
+    ) -> str:
+        if not isinstance(account, dict):
+            return "account missing"
+        account_status = str(account.get("status") or "").strip()
+        if account_status in {"禁用", "限流", "异常"}:
+            if self._is_depleted_image_quota_account(account):
+                return "no image quota"
+            return f"account status {account_status}"
+        if not bool(account.get("image_quota_unknown")) and int(account.get("quota") or 0) <= 0:
+            return "no image quota"
+        if not self._account_matches_plan_type(account, plan_type):
+            return "plan type mismatch"
+        if not self._account_matches_any_plan_type(account, plan_types):
+            return "plan type mismatch"
+        if not self._account_matches_source_type(account, source_type):
+            return "source type mismatch"
+        return "not available for image generation"
+
+    def _pop_depleted_image_accounts_for_selection(
+            self,
+            *,
+            plan_type: str | None = None,
+            source_type: str | None = None,
+            plan_types: set[str] | tuple[str, ...] | None = None,
+            event: str = "image_account_selection",
+    ) -> list[dict[str, Any]]:
+        removed: list[dict[str, Any]] = []
+        with self._image_slot_condition:
+            target_tokens = [
+                token
+                for token, account in self._accounts.items()
+                if self._is_depleted_image_quota_account(account)
+                   and self._account_matches_plan_type(account, plan_type)
+                   and self._account_matches_any_plan_type(account, plan_types)
+                   and self._account_matches_source_type(account, source_type)
+            ]
+            for token in target_tokens:
+                account = self._accounts.pop(token, None)
+                if not account:
+                    continue
+                self._image_inflight.pop(token, None)
+                removed.append(self._image_account_attempt_summary(
+                    token,
+                    account,
+                    error="no image quota",
+                    plan_type=plan_type,
+                    source_type=source_type,
+                    plan_types=plan_types,
+                    removed=True,
+                ))
+                log_service.add(LOG_TYPE_ACCOUNT, "自动移除无图片额度账号", {
+                    "source": event,
+                    "token": anonymize_token(token),
+                    "email": account.get("email"),
+                    "type": account.get("type"),
+                    "source_type": account.get("source_type"),
+                    "quota": account.get("quota"),
+                })
+            if removed:
+                target_set = set(target_tokens)
+                self._token_aliases = {
+                    old: new
+                    for old, new in self._token_aliases.items()
+                    if old not in target_set and new not in target_set
+                }
+                if self._accounts:
+                    self._index %= len(self._accounts)
+                else:
+                    self._index = 0
+                self._save_accounts()
+                self._image_slot_condition.notify_all()
+        return removed
 
     @classmethod
     def _account_matches_plan_type(cls, account: dict, plan_type: str | None = None) -> bool:
@@ -1543,10 +1714,7 @@ class AccountService:
         with self._image_slot_condition:
             while True:
                 if not self._list_ready_candidate_tokens(excluded_tokens, plan_type, source_type, plan_types):
-                    raise RuntimeError(
-                        f"no available {plan_type or source_type or ''} image quota".replace("  ", " ").strip()
-                        if plan_type or source_type else "no available image quota"
-                    )
+                    raise NoImageQuotaError(self._quota_error_message(plan_type, source_type))
                 tokens = self._list_available_candidate_tokens(excluded_tokens, plan_type, source_type, plan_types)
                 if tokens:
                     access_token = self._sort_candidate_tokens(tokens, image=True)[0]
@@ -1580,19 +1748,46 @@ class AccountService:
         """
         max_attempts = 20  # 防止无限循环
         attempted_tokens: set[str] = set()
+        attempted_accounts: list[dict[str, Any]] = []
+        removed_attempts = self._pop_depleted_image_accounts_for_selection(
+            plan_type=plan_type,
+            source_type=source_type,
+            plan_types=plan_types,
+            event="get_available_access_token:local_depleted",
+        )
+        for item in removed_attempts:
+            attempt = dict(item)
+            attempt["attempt"] = len(attempted_accounts) + 1
+            attempted_accounts.append(attempt)
         for _attempt in range(max_attempts):
-            access_token = self._acquire_next_candidate_token(
-                excluded_tokens=attempted_tokens,
-                plan_type=plan_type,
-                source_type=source_type,
-                plan_types=plan_types,
-            )
+            try:
+                access_token = self._acquire_next_candidate_token(
+                    excluded_tokens=attempted_tokens,
+                    plan_type=plan_type,
+                    source_type=source_type,
+                    plan_types=plan_types,
+                )
+            except RuntimeError as exc:
+                raise NoImageQuotaError(
+                    self._quota_error_message(plan_type, source_type, len(attempted_tokens)),
+                    attempted_accounts,
+                ) from exc
             attempted_tokens.add(access_token)
             account = self.get_account(access_token)
             try:
                 if self._image_precheck_due(account, access_token):
-                    account = self.fetch_remote_info(access_token, "get_available_access_token")
-            except Exception:
+                    refreshed_account = self.fetch_remote_info(access_token, "get_available_access_token")
+                    account = refreshed_account or account
+            except Exception as exc:
+                attempted_accounts.append(self._image_account_attempt_summary(
+                    access_token,
+                    account,
+                    attempt=len(attempted_accounts) + 1,
+                    error=exc,
+                    plan_type=plan_type,
+                    source_type=source_type,
+                    plan_types=plan_types,
+                ))
                 self.release_image_slot(access_token)
                 continue
             # fetch_remote_info 内部可能因 token rotation 导致 access_token 变化，
@@ -1607,10 +1802,32 @@ class AccountService:
                     and self._account_matches_source_type(account or {}, source_type)
             ):
                 return str((account or {}).get("access_token") or access_token)
+            removed = False
+            if self._is_depleted_image_quota_account(account):
+                removed = self.remove_depleted_image_account(
+                    str((account or {}).get("access_token") or access_token),
+                    "get_available_access_token",
+                    account=account,
+                )
+            attempted_accounts.append(self._image_account_attempt_summary(
+                str((account or {}).get("access_token") or access_token),
+                account,
+                attempt=len(attempted_accounts) + 1,
+                error=self._image_account_unavailable_reason(
+                    account,
+                    plan_type=plan_type,
+                    source_type=source_type,
+                    plan_types=plan_types,
+                ),
+                plan_type=plan_type,
+                source_type=source_type,
+                plan_types=plan_types,
+                removed=removed,
+            ))
             self.release_image_slot(access_token)
-        raise RuntimeError(
-            f"no available {plan_type or source_type or ''} image quota (tried {len(attempted_tokens)} tokens)".replace("  ", " ").strip()
-            if plan_type or source_type else f"no available image quota (tried {len(attempted_tokens)} tokens)"
+        raise NoImageQuotaError(
+            self._quota_error_message(plan_type, source_type, len(attempted_tokens)),
+            attempted_accounts,
         )
 
     def get_text_access_token(self, excluded_tokens: set[str] | None = None) -> str:
@@ -1904,6 +2121,52 @@ class AccountService:
             items = [dict(item) for item in self._accounts.values()]
         return {"removed": removed, "items": items}
 
+    def remove_depleted_image_account(
+            self,
+            access_token: str,
+            event: str,
+            *,
+            account: dict | None = None,
+    ) -> bool:
+        if not access_token:
+            return False
+        with self._image_slot_condition:
+            resolved = self._resolve_access_token_locked(access_token)
+            current = self._accounts.get(resolved)
+            snapshot = dict(account or current or {})
+            if current is None:
+                return self._is_depleted_image_quota_account(snapshot)
+            if current is not None and not self._is_depleted_image_quota_account(current):
+                return False
+            removed = self._accounts.pop(resolved, None) is not None
+            self._image_inflight.pop(resolved, None)
+            self._token_aliases = {
+                old: new
+                for old, new in self._token_aliases.items()
+                if old != resolved and new != resolved
+            }
+            if removed:
+                if self._accounts:
+                    self._index %= len(self._accounts)
+                else:
+                    self._index = 0
+                self._save_accounts()
+                self._image_slot_condition.notify_all()
+        if removed:
+            log_service.add(
+                LOG_TYPE_ACCOUNT,
+                "自动移除无图片额度账号",
+                {
+                    "source": event,
+                    "token": anonymize_token(access_token),
+                    "email": snapshot.get("email"),
+                    "type": snapshot.get("type"),
+                    "source_type": snapshot.get("source_type"),
+                    "quota": snapshot.get("quota"),
+                },
+            )
+        return removed
+
     def update_account(self, access_token: str, updates: dict, quiet: bool = False) -> dict | None:
         if not access_token:
             return None
@@ -1917,6 +2180,24 @@ class AccountService:
                 updates.pop("usage", None)
             account = self._normalize_account({**current, **updates, "access_token": access_token})
             if account is None:
+                return None
+            if self._is_depleted_image_quota_account(account):
+                self._accounts.pop(access_token, None)
+                self._image_inflight.pop(access_token, None)
+                self._token_aliases = {
+                    old: new
+                    for old, new in self._token_aliases.items()
+                    if old != access_token and new != access_token
+                }
+                self._save_accounts()
+                self._image_slot_condition.notify_all()
+                log_service.add(LOG_TYPE_ACCOUNT, "自动移除无图片额度账号", {
+                    "token": anonymize_token(access_token),
+                    "email": account.get("email"),
+                    "type": account.get("type"),
+                    "source_type": account.get("source_type"),
+                    "quota": account.get("quota"),
+                })
                 return None
             if account.get("status") == "限流" and config.auto_remove_rate_limited_accounts:
                 self._accounts.pop(access_token, None)
@@ -2057,6 +2338,19 @@ class AccountService:
             account = self._normalize_account(next_item)
             if account is None:
                 return None
+            if self._is_depleted_image_quota_account(account):
+                self._accounts.pop(access_token, None)
+                self._image_inflight.pop(access_token, None)
+                self._save_accounts()
+                self._image_slot_condition.notify_all()
+                log_service.add(LOG_TYPE_ACCOUNT, "自动移除无图片额度账号", {
+                    "token": anonymize_token(access_token),
+                    "email": account.get("email"),
+                    "type": account.get("type"),
+                    "source_type": account.get("source_type"),
+                    "quota": account.get("quota"),
+                })
+                return None
             if account.get("status") == "限流" and config.auto_remove_rate_limited_accounts:
                 self._accounts.pop(access_token, None)
                 self._save_accounts()
@@ -2090,8 +2384,17 @@ class AccountService:
                     self.remove_invalid_token(active_token, event)
                 raise
         self._record_refresh_success(active_token)
-        account = self.update_account(active_token, {**result, "last_account_refresh_at": datetime.now(timezone.utc).isoformat()})
-        if account and self._should_probe_codex_usage(account):
+        refreshed_payload = {**result, "last_account_refresh_at": datetime.now(timezone.utc).isoformat()}
+        refreshed_snapshot = {
+            **(self.get_account(active_token) or {}),
+            **refreshed_payload,
+            "access_token": active_token,
+        }
+        account = self.update_account(active_token, refreshed_payload)
+        removed_depleted = account is None and self._is_depleted_image_quota_account(refreshed_snapshot)
+        if removed_depleted:
+            account = dict(refreshed_snapshot)
+        if account and not removed_depleted and self._should_probe_codex_usage(account):
             usage = self.probe_codex_usage(active_token)
             if usage:
                 account = self.update_account(active_token, {"usage": usage}, quiet=True) or account
