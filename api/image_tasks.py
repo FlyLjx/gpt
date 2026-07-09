@@ -38,6 +38,19 @@ def create_router() -> APIRouter:
         identity = require_identity(resolve_api_authorization(authorization, x_api_key, api_key))
         return await run_in_threadpool(image_task_service.list_tasks, identity, _parse_task_ids(ids))
 
+    @router.get("/api/image-tasks/{task_id}/status")
+    async def get_image_task_status(
+        task_id: str,
+        authorization: str | None = Header(default=None),
+        x_api_key: str | None = Header(default=None, alias="x-api-key"),
+        api_key: str | None = Header(default=None, alias="api-key"),
+    ):
+        identity = require_identity(resolve_api_authorization(authorization, x_api_key, api_key))
+        try:
+            return await run_in_threadpool(image_task_service.get_task_status, identity, task_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail={"error": str(exc)}) from exc
+
     @router.post("/api/image-tasks/generations")
     async def create_generation_task(
         body: ImageGenerationTaskRequest,

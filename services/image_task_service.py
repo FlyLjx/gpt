@@ -24,6 +24,7 @@ LEGACY_SYNC_TASK_PREFIX = "sync-"
 STALE_TASK_MIN_SECONDS = 30 * 60
 STALE_TASK_POLL_TIMEOUT_MULTIPLIER = 10
 SYNC_TASK_TERMINAL_REUSE_SECONDS = 5 * 60
+MAX_TASK_STATUS_LOGS = 120
 UPSTREAM_STARTED_PROGRESS = {"generating", "image_stream_resolve_start", "receiving_image"}
 PROGRESS_LABELS = {
     "sync_request_started": "请求已提交",
@@ -71,6 +72,13 @@ def _timestamp(value: object) -> float:
 
 def _clean(value: object, default: str = "") -> str:
     return str(value or default).strip()
+
+
+def _short_text(value: object, limit: int = 260) -> str:
+    text = _clean(value)
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
 
 
 def _progress_label(value: object) -> str:
@@ -186,6 +194,92 @@ def _unique_attempt_accounts(attempts: list[dict[str, Any]]) -> list[str]:
         for item in attempts
         if _clean(item.get("account_email")) or _clean(item.get("account_token")) or _clean(item.get("token"))
     ))
+
+
+def _failed_attempt_count(attempts: list[dict[str, Any]]) -> int:
+    return sum(
+        1
+        for item in attempts
+        if _clean(item.get("status")).lower() in {"failed", "error"} or bool(_clean(item.get("error")))
+    )
+
+
+def _duration_text(duration_ms: object) -> str:
+    if not isinstance(duration_ms, int | float):
+        return ""
+    if duration_ms < 1000:
+        return f"{int(duration_ms)}ms"
+    return f"{float(duration_ms) / 1000:.1f}s"
+
+
+def _status_log(
+    message: object,
+    *,
+    level: str = "info",
+    event: str = "",
+    details: dict[str, Any] | None = None,
+    time_text: str = "",
+) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "time": time_text or _now_iso(),
+        "level": _clean(level, "info") or "info",
+        "event": _clean(event),
+        "message": _short_text(message, 500),
+    }
+    clean_details = {
+        str(key): value
+        for key, value in (details or {}).items()
+        if value not in (None, "", [], {})
+    }
+    if clean_details:
+        item["details"] = clean_details
+    return item
+
+
+def _public_status_logs(task: dict[str, Any]) -> list[dict[str, Any]]:
+    logs = task.get("status_logs")
+    if not isinstance(logs, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for entry in logs[-MAX_TASK_STATUS_LOGS:]:
+        if not isinstance(entry, dict):
+            continue
+        message = _clean(entry.get("message"))
+        if not message:
+            continue
+        item = {
+            "time": _clean(entry.get("time")),
+            "level": _clean(entry.get("level"), "info") or "info",
+            "event": _clean(entry.get("event")),
+            "message": message,
+        }
+        details = entry.get("details")
+        if isinstance(details, dict):
+            item["details"] = {
+                str(key): value
+                for key, value in details.items()
+                if value not in (None, "", [], {})
+            }
+        items.append(item)
+    return items
+
+
+def _latest_status_text(task: dict[str, Any]) -> str:
+    logs = _public_status_logs(task)
+    if logs:
+        return _clean(logs[-1].get("message"))
+    status = _clean(task.get("status"))
+    if status == TASK_STATUS_SUCCESS:
+        return "任务已完成"
+    if status == TASK_STATUS_ERROR:
+        return _short_text(task.get("error") or "任务失败")
+    if task.get("progress"):
+        return _progress_label(task.get("progress"))
+    if status == TASK_STATUS_QUEUED:
+        return "排队中"
+    if status == TASK_STATUS_RUNNING:
+        return "处理中"
+    return status or "未知"
 
 
 def _build_sync_fingerprint(
@@ -315,7 +409,7 @@ def _public_image_data(data: object) -> list[Any]:
     return items
 
 
-def _public_task(task: dict[str, Any]) -> dict[str, Any]:
+def _public_task(task: dict[str, Any], *, include_logs: bool = False) -> dict[str, Any]:
     item = {
         "id": task.get("id"),
         "status": task.get("status"),
@@ -326,6 +420,8 @@ def _public_task(task: dict[str, Any]) -> dict[str, Any]:
         "created_at": task.get("created_at"),
         "updated_at": task.get("updated_at"),
         "progress_percent": _progress_percent(task),
+        "realtime_status": _latest_status_text(task),
+        "status_log_count": len(_public_status_logs(task)),
     }
     if task.get("conversation_id"):
         item["conversation_id"] = task.get("conversation_id")
@@ -366,6 +462,8 @@ def _public_task(task: dict[str, Any]) -> dict[str, Any]:
             base_ts = task.get("created_ts") or task.get("updated_ts")
         if base_ts:
             item["elapsed_secs"] = round(time.time() - base_ts, 1)
+    if include_logs:
+        item["status_logs"] = _public_status_logs(task)
     return item
 
 
@@ -392,6 +490,165 @@ class ImageTaskService:
             changed = self._cleanup_locked() or changed
             if changed:
                 self._save_locked()
+
+    def _append_status_log_locked(
+        self,
+        task: dict[str, Any],
+        message: object,
+        *,
+        level: str = "info",
+        event: str = "",
+        details: dict[str, Any] | None = None,
+        time_text: str = "",
+    ) -> None:
+        logs = task.get("status_logs")
+        if not isinstance(logs, list):
+            logs = []
+            task["status_logs"] = logs
+        item = _status_log(
+            message,
+            level=level,
+            event=event,
+            details=details,
+            time_text=time_text,
+        )
+        # 避免高频轮询/重复回调写出连续重复日志。
+        if logs:
+            last = logs[-1]
+            if (
+                isinstance(last, dict)
+                and _clean(last.get("event")) == _clean(item.get("event"))
+                and _clean(last.get("message")) == _clean(item.get("message"))
+            ):
+                last["time"] = item["time"]
+                if item.get("details"):
+                    last["details"] = item["details"]
+                return
+        logs.append(item)
+        if len(logs) > MAX_TASK_STATUS_LOGS:
+            del logs[: len(logs) - MAX_TASK_STATUS_LOGS]
+
+    def _ensure_status_logs_locked(self, task: dict[str, Any]) -> bool:
+        logs = _public_status_logs(task)
+        if logs:
+            if not isinstance(task.get("status_logs"), list):
+                task["status_logs"] = logs[-MAX_TASK_STATUS_LOGS:]
+                return True
+            return False
+        created_at = _clean(task.get("created_at"), _now_iso())
+        task["status_logs"] = [
+            _status_log(
+                "任务已创建",
+                event="created",
+                details={
+                    "mode": task.get("mode"),
+                    "model": task.get("model"),
+                    "size": task.get("size"),
+                    "quality": task.get("quality"),
+                },
+                time_text=created_at,
+            )
+        ]
+        status = _clean(task.get("status"))
+        if status == TASK_STATUS_SUCCESS:
+            message = "任务已完成"
+            level = "success"
+            event = "success"
+        elif status == TASK_STATUS_ERROR:
+            message = _short_text(task.get("error") or "任务失败")
+            level = "error"
+            event = "error"
+        elif status == TASK_STATUS_RUNNING:
+            message = _progress_label(task.get("progress")) if task.get("progress") else "任务正在处理"
+            level = "processing"
+            event = "progress" if task.get("progress") else "running"
+        else:
+            message = "任务排队中"
+            level = "info"
+            event = "queued"
+        self._append_status_log_locked(
+            task,
+            message,
+            level=level,
+            event=event,
+            details={
+                "progress_percent": _progress_percent(task),
+                "conversation_id": task.get("conversation_id"),
+                "duration": _duration_text(task.get("duration_ms")),
+            },
+            time_text=_clean(task.get("updated_at"), _now_iso()),
+        )
+        return True
+
+    def _append_update_logs_locked(
+        self,
+        task: dict[str, Any],
+        updates: dict[str, Any],
+        *,
+        previous_status: str,
+        previous_progress: str,
+        previous_conversation_id: str,
+        previous_attempt_count: int,
+    ) -> None:
+        status = _clean(task.get("status"))
+        progress = _clean(task.get("progress"))
+        attempts = task.get("image_route_attempts")
+        attempt_items = [dict(item) for item in attempts if isinstance(item, dict)] if isinstance(attempts, list) else []
+        if len(attempt_items) > previous_attempt_count:
+            self._append_status_log_locked(
+                task,
+                f"账号尝试更新：已调用 {len(_unique_attempt_accounts(attempt_items))} 个账号，失败 {_failed_attempt_count(attempt_items)} 次",
+                level="processing" if status in UNFINISHED_STATUSES else "info",
+                event="route_attempts",
+                details={
+                    "attempt_count": len(attempt_items),
+                    "used_account_count": len(_unique_attempt_accounts(attempt_items)),
+                    "failed_attempt_count": _failed_attempt_count(attempt_items),
+                },
+            )
+
+        if "status" in updates and status != previous_status:
+            if status == TASK_STATUS_RUNNING:
+                self._append_status_log_locked(task, "任务开始运行", level="processing", event="running")
+            elif status == TASK_STATUS_SUCCESS:
+                self._append_status_log_locked(
+                    task,
+                    "任务已完成",
+                    level="success",
+                    event="success",
+                    details={"duration": _duration_text(task.get("duration_ms"))},
+                )
+            elif status == TASK_STATUS_ERROR:
+                self._append_status_log_locked(
+                    task,
+                    _short_text(task.get("error") or "任务失败"),
+                    level="error",
+                    event="error",
+                    details={"duration": _duration_text(task.get("duration_ms"))},
+                )
+            elif status == TASK_STATUS_QUEUED:
+                self._append_status_log_locked(task, "任务进入队列", event="queued")
+
+        if "progress" in updates and progress and progress != previous_progress:
+            self._append_status_log_locked(
+                task,
+                _progress_label(progress),
+                level="processing",
+                event="progress",
+                details={"progress": progress, "progress_percent": _progress_percent(task)},
+            )
+
+        conversation_id = _clean(task.get("conversation_id"))
+        if conversation_id and conversation_id != previous_conversation_id:
+            self._append_status_log_locked(
+                task,
+                f"获取到会话 ID：{conversation_id}",
+                event="conversation_id",
+                details={"conversation_id": conversation_id},
+            )
+
+        if updates.get("quota_consumed") is True:
+            self._append_status_log_locked(task, "已扣除本次图片额度", event="quota_consumed")
 
     def submit_generation(
         self,
@@ -468,6 +725,19 @@ class ImageTaskService:
                 missing_ids = []
             return {"items": items, "missing_ids": missing_ids}
 
+    def get_task_status(self, identity: dict[str, object], task_id: str) -> dict[str, Any]:
+        if not _clean(task_id):
+            raise ValueError("task_id is required")
+        with self._lock:
+            changed = self._cleanup_locked()
+            key, task = self._find_task_locked(identity, task_id)
+            if task is None:
+                raise ValueError("task not found")
+            changed = self._ensure_status_logs_locked(task) or changed
+            if changed:
+                self._save_locked()
+            return _public_task(task, include_logs=True)
+
     def get_stats(self) -> dict[str, Any]:
         with self._lock:
             if self._cleanup_locked():
@@ -527,9 +797,16 @@ class ImageTaskService:
             reusable = self._find_reusable_sync_task_locked(owner, fingerprint, mode_value, now_ts)
             if reusable is not None:
                 key, task = reusable
+                self._ensure_status_logs_locked(task)
                 task["client_retry_count"] = int(task.get("client_retry_count") or 0) + 1
                 task["updated_at"] = now
                 task["updated_ts"] = now_ts
+                self._append_status_log_locked(
+                    task,
+                    "客户端重复请求，复用已有任务",
+                    event="client_retry",
+                    details={"client_retry_count": task.get("client_retry_count")},
+                )
                 status = _clean(task.get("status"))
                 if status in UNFINISHED_STATUSES:
                     self._save_locked()
@@ -551,6 +828,13 @@ class ImageTaskService:
                         "request_preview": request_preview,
                         "request_params": request_params or {},
                     })
+                    self._append_status_log_locked(
+                        task,
+                        "错误任务已重新启动",
+                        level="processing",
+                        event="restart",
+                        details={"run_count": task.get("run_count")},
+                    )
                     self._save_locked()
                     self._sync_condition.notify_all()
                     return key, _public_task(task), "start"
@@ -581,6 +865,20 @@ class ImageTaskService:
                 "request_params": request_params or {},
                 "image_route_attempts": [],
                 "progress": "sync_request_started",
+                "status_logs": [
+                    _status_log(
+                        "同步请求已提交，开始处理",
+                        level="processing",
+                        event="created",
+                        details={
+                            "mode": mode_value,
+                            "model": model_value,
+                            "size": _clean(size),
+                            "quality": _clean(quality, "auto"),
+                        },
+                        time_text=now,
+                    )
+                ],
             }
             task["log_id"] = self._log_task_submit(
                 identity,
@@ -595,7 +893,49 @@ class ImageTaskService:
             self._sync_condition.notify_all()
         return key, _public_task(task), "start"
 
-    def update_sync_task_progress(self, key: str, progress: str) -> None:
+    def update_sync_task_progress(self, key: str, progress: object) -> None:
+        if isinstance(progress, dict):
+            progress_value = _clean(progress.get("progress") or progress.get("step") or progress.get("event"))
+            updates: dict[str, Any] = {}
+            if progress_value:
+                updates["progress"] = progress_value
+            conversation_id = _clean(progress.get("conversation_id"))
+            if conversation_id:
+                updates["conversation_id"] = conversation_id
+            attempts = progress.get("image_route_attempts")
+            if isinstance(attempts, list):
+                updates["image_route_attempts"] = self._merge_task_route_attempts(
+                    key,
+                    [dict(item) for item in attempts if isinstance(item, dict)],
+                )
+            if updates:
+                self._update_task(key, **updates)
+            message = _clean(progress.get("message"))
+            account_email = _clean(progress.get("account_email"))
+            if message or account_email:
+                with self._sync_condition:
+                    task = self._tasks.get(key)
+                    if task is None or task.get("cancelled"):
+                        return
+                    self._ensure_status_logs_locked(task)
+                    self._append_status_log_locked(
+                        task,
+                        message or f"使用账号：{account_email}",
+                        level="processing",
+                        event=_clean(progress.get("event"), "account_selected"),
+                        details={
+                            "account_email": account_email,
+                            "attempt": progress.get("attempt"),
+                            "used_account_count": progress.get("used_account_count"),
+                            "backend_model": progress.get("backend_model"),
+                            "image_route": progress.get("image_route"),
+                        },
+                    )
+                    task["updated_at"] = _now_iso()
+                    task["updated_ts"] = time.time()
+                    self._save_locked()
+                    self._sync_condition.notify_all()
+            return
         self._update_task(key, progress=_clean(progress))
 
     def mark_sync_task_quota_consumed(self, key: str) -> None:
@@ -700,6 +1040,15 @@ class ImageTaskService:
             cleaned = self._cleanup_locked()
             task = self._tasks.get(key)
             if task is not None:
+                self._ensure_status_logs_locked(task)
+                self._append_status_log_locked(
+                    task,
+                    "客户端重复提交，继续使用原任务",
+                    event="client_retry",
+                )
+                task["updated_at"] = _now_iso()
+                task["updated_ts"] = time.time()
+                cleaned = True
                 if cleaned:
                     self._save_locked()
                 return _public_task(task)
@@ -714,6 +1063,19 @@ class ImageTaskService:
                 "created_at": now,
                 "updated_at": now,
                 "created_ts": time.time(),
+                "status_logs": [
+                    _status_log(
+                        "任务已进入队列",
+                        event="queued",
+                        details={
+                            "mode": mode,
+                            "model": _clean(payload.get("model"), "gpt-image-2"),
+                            "size": _clean(payload.get("size")),
+                            "quality": _clean(payload.get("quality"), "auto"),
+                        },
+                        time_text=now,
+                    )
+                ],
             }
             task["log_id"] = self._log_task_submit(
                 identity,
@@ -748,10 +1110,11 @@ class ImageTaskService:
         started = time.time()
         self._update_task(key, status=TASK_STATUS_RUNNING, error="")
         # 创建进度回调，每个步骤完成后更新任务状态
-        def progress_callback(step: str) -> None:
-            if step == "image_stream_resolve_start":
+        def progress_callback(step: object) -> None:
+            step_name = _clean(step.get("progress") or step.get("step") or step.get("event")) if isinstance(step, dict) else _clean(step)
+            if step_name == "image_stream_resolve_start":
                 self._update_task(key, started_ts=time.time())
-            self._update_task(key, progress=step)
+            self.update_sync_task_progress(key, step)
         # 将进度回调添加到 payload 中（handler 会提取并传递给 ConversationRequest）
         payload_with_progress = {**payload, "progress_callback": progress_callback}
         try:
@@ -916,7 +1279,21 @@ class ImageTaskService:
                 return
             if task.get("cancelled"):
                 return
+            self._ensure_status_logs_locked(task)
+            previous_status = _clean(task.get("status"))
+            previous_progress = _clean(task.get("progress"))
+            previous_conversation_id = _clean(task.get("conversation_id"))
+            previous_attempts = task.get("image_route_attempts")
+            previous_attempt_count = len(previous_attempts) if isinstance(previous_attempts, list) else 0
             task.update(updates)
+            self._append_update_logs_locked(
+                task,
+                updates,
+                previous_status=previous_status,
+                previous_progress=previous_progress,
+                previous_conversation_id=previous_conversation_id,
+                previous_attempt_count=previous_attempt_count,
+            )
             task["updated_at"] = _now_iso()
             task["updated_ts"] = time.time()
             self._save_locked()
@@ -1005,9 +1382,11 @@ class ImageTaskService:
                 raise ValueError("task not found")
             if task.get("status") in TERMINAL_STATUSES:
                 raise ValueError("task is already finished")
+            self._ensure_status_logs_locked(task)
             task["cancelled"] = True
             task["status"] = TASK_STATUS_ERROR
             task["error"] = "任务已取消"
+            self._append_status_log_locked(task, "任务已取消", level="warning", event="cancelled")
             task["updated_at"] = _now_iso()
             task["updated_ts"] = time.time()
             self._save_locked()
@@ -1059,6 +1438,13 @@ class ImageTaskService:
             request_params = item.get("request_params")
             if isinstance(request_params, dict):
                 task["request_params"] = request_params
+            status_logs = item.get("status_logs")
+            if isinstance(status_logs, list):
+                task["status_logs"] = [
+                    dict(entry)
+                    for entry in status_logs[-MAX_TASK_STATUS_LOGS:]
+                    if isinstance(entry, dict) and _clean(entry.get("message"))
+                ]
             attempts = item.get("image_route_attempts")
             if isinstance(attempts, list):
                 task["image_route_attempts"] = [
@@ -1093,8 +1479,15 @@ class ImageTaskService:
         changed = False
         for task in self._tasks.values():
             if task.get("status") in UNFINISHED_STATUSES:
+                self._ensure_status_logs_locked(task)
                 task["status"] = TASK_STATUS_ERROR
                 task["error"] = "服务已重启，未完成的图片任务已中断"
+                self._append_status_log_locked(
+                    task,
+                    "服务已重启，未完成的图片任务已中断",
+                    level="error",
+                    event="recovered_interrupted",
+                )
                 task["updated_at"] = _now_iso()
                 task["updated_ts"] = time.time()
                 changed = True
@@ -1105,8 +1498,15 @@ class ImageTaskService:
         stale_cutoff = time.time() - _stale_task_seconds()
         for task in self._tasks.values():
             if task.get("status") in UNFINISHED_STATUSES and _task_activity_ts(task) < stale_cutoff:
+                self._ensure_status_logs_locked(task)
                 task["status"] = TASK_STATUS_ERROR
                 task["error"] = "图片任务长时间未更新，已自动标记为中断"
+                self._append_status_log_locked(
+                    task,
+                    "图片任务长时间未更新，已自动标记为中断",
+                    level="error",
+                    event="stale_interrupted",
+                )
                 task["updated_at"] = _now_iso()
                 task["updated_ts"] = time.time()
                 changed = True
@@ -1148,7 +1548,18 @@ class ImageTaskService:
             mode = task.get("mode", "generate")
             model = task.get("model", "gpt-image-2")
             # 将任务状态重置为 running
-            self._update_task(key, status=TASK_STATUS_RUNNING, error="")
+            self._update_task(key, status=TASK_STATUS_RUNNING, error="", progress="image_stream_resolve_start")
+            with self._lock:
+                current = self._tasks.get(key)
+                if current is not None:
+                    self._append_status_log_locked(
+                        current,
+                        f"开始续轮询，额外等待 {extra_timeout_secs:g} 秒",
+                        level="processing",
+                        event="resume_poll",
+                        details={"extra_timeout_secs": extra_timeout_secs, "conversation_id": conversation_id},
+                    )
+                    self._save_locked()
 
         # 启动新线程继续轮询
         thread = threading.Thread(
@@ -1175,6 +1586,7 @@ class ImageTaskService:
             from services.openai_backend_api import OpenAIBackendAPI
             from services.protocol.conversation import format_image_result
 
+            self._update_task(key, progress="image_stream_resolve_start")
             backend = OpenAIBackendAPI(proxy_url=config.proxy_url or None)
             file_ids, sediment_ids = backend._poll_image_results(
                 conversation_id,
@@ -1191,6 +1603,7 @@ class ImageTaskService:
             if not image_urls:
                 raise RuntimeError("图片 URL 解析失败")
 
+            self._update_task(key, progress="receiving_image")
             image_items = [
                 {"b64_json": __import__("base64").b64encode(image_data).decode("ascii")}
                 for image_data in backend.download_image_bytes(image_urls)

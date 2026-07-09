@@ -277,6 +277,14 @@ export type ImageResponse = {
   data: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>;
 };
 
+export type ImageTaskStatusLog = {
+  time: string;
+  level?: "info" | "processing" | "success" | "warning" | "error" | string;
+  event?: string;
+  message: string;
+  details?: Record<string, unknown>;
+};
+
 export type ImageTask = {
   id: string;
   status: "queued" | "running" | "success" | "error";
@@ -291,6 +299,14 @@ export type ImageTask = {
   error?: string;
   progress?: string;
   progress_percent?: number;
+  realtime_status?: string;
+  status_log_count?: number;
+  status_logs?: ImageTaskStatusLog[];
+  image_route_attempt_count?: number;
+  used_account_count?: number;
+  failed_account_count?: number;
+  client_retry_count?: number;
+  run_count?: number;
   elapsed_secs?: number;
   duration_ms?: number;
 };
@@ -651,6 +667,11 @@ export async function fetchImageTasks(ids: string[]) {
   }
   params.set("_t", String(Date.now()));
   return httpRequest<ImageTaskListResponse>(`/api/image-tasks?${params.toString()}`);
+}
+
+export async function fetchImageTaskStatus(taskId: string) {
+  const params = new URLSearchParams({ _t: String(Date.now()) });
+  return httpRequest<ImageTask>(`/api/image-tasks/${encodeURIComponent(taskId)}/status?${params.toString()}`);
 }
 
 export async function resumeImagePoll(taskId: string, extraTimeoutSecs = 30) {

@@ -1476,6 +1476,30 @@ def _generate_single_image(
             "total": total,
             "attempt": len(route_attempts) + 1,
         })
+        if request.progress_callback:
+            try:
+                selected_message = (
+                    f"使用账号：{account_email}（第 {len(route_attempts)} 次尝试）"
+                    if account_email
+                    else f"已选择账号（第 {len(route_attempts)} 次尝试）"
+                )
+                request.progress_callback({
+                    "progress": "getting_account",
+                    "event": "account_selected",
+                    "message": selected_message,
+                    "attempt": len(route_attempts),
+                    "account_email": account_email,
+                    "used_account_count": len({
+                        str(item.get("account_email") or "").strip()
+                        for item in route_attempts
+                        if str(item.get("account_email") or "").strip()
+                    }),
+                    "backend_model": route_meta.get("backend_model"),
+                    "image_route": route_meta.get("image_route"),
+                    "image_route_attempts": [dict(item) for item in route_attempts],
+                })
+            except Exception:
+                pass
         logger.debug({
             "event": "image_account_lookup",
             "token_prefix": token[:12] + "..." if len(token) > 12 else token,
