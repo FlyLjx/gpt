@@ -1709,7 +1709,10 @@ class AccountService:
             source_type: str | None = None,
             plan_types: set[str] | tuple[str, ...] | None = None,
     ) -> list[str]:
-        max_concurrency = max(1, int(config.image_account_concurrency or 1))
+        # 这里限制的是“单个账号”的并发生图占用数。默认必须为 1，
+        # 否则多任务并发时会同时打到同一个 free 账号，官方侧排队/限流后
+        # 多个任务一起卡到 image_poll_timeout_secs。
+        max_concurrency = max(1, int(config.image_account_max_inflight_per_account or 1))
         return [
             token
             for token in self._list_ready_candidate_tokens(excluded_tokens, plan_type, source_type, plan_types)

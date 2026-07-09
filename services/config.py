@@ -518,6 +518,23 @@ class ConfigStore:
             return 8
 
     @property
+    def image_account_max_inflight_per_account(self) -> int:
+        """单个 ChatGPT 账号同一时间允许占用的生图任务数。
+
+        旧字段 image_account_concurrency 曾被用于这里，线上配置为 8 时会导致
+        多个并发生图任务打到同一个 free 账号，官方侧排队/限流后一起 300 秒超时。
+        新字段默认 1，让并发优先横向分散到不同账号。
+        """
+        try:
+            value = (
+                os.getenv("CHATGPT2API_IMAGE_ACCOUNT_MAX_INFLIGHT_PER_ACCOUNT")
+                or self.data.get("image_account_max_inflight_per_account", 1)
+            )
+            return min(8, max(1, int(value)))
+        except (TypeError, ValueError):
+            return 1
+
+    @property
     def image_account_precheck_interval_minutes(self) -> int:
         try:
             return max(1, int(self.data.get("image_account_precheck_interval_minutes", 10)))
@@ -688,6 +705,7 @@ class ConfigStore:
         data["image_poll_initial_wait_secs"] = self.image_poll_initial_wait_secs
         data["image_web_model_slug"] = self.image_web_model_slug
         data["image_account_concurrency"] = self.image_account_concurrency
+        data["image_account_max_inflight_per_account"] = self.image_account_max_inflight_per_account
         data["image_account_precheck_interval_minutes"] = self.image_account_precheck_interval_minutes
         data["image_parallel_generation"] = self.image_parallel_generation
         data["auto_remove_invalid_accounts"] = self.auto_remove_invalid_accounts

@@ -1584,41 +1584,64 @@ def _generate_single_image(
         except ImagePollTimeoutError as exc:
             account_service.mark_image_result(token, False, exc)
             _mark_latest_route_attempt(route_attempts, "failed", exc)
+            conversation_id = str(getattr(exc, "conversation_id", "") or "")
+            if conversation_id and route_attempts:
+                route_attempts[-1]["conversation_id"] = conversation_id
             if account_email:
                 setattr(exc, "account_email", account_email)
             _attach_image_route(exc, route_meta)
             _attach_image_route_attempts(exc, route_attempts)
-            # 轮询超时：只允许在还没进入官方生图请求前换账号重试。
-            # 一旦 `/f/conversation` 已经启动，官方后台可能仍会继续出图；
-            # 此时自动换账号重发会导致「提交 N 个，官方生成 N+1 个」。
-            if not emitted_for_token and not upstream_generation_started:
-                poll_timeout_retry_count += 1
-                if poll_timeout_retry_count <= MAX_POLL_TIMEOUT_RETRIES:
-                    logger.warning({
-                        "event": "image_poll_timeout_retry",
-                        "request_token": token,
-                        "account_email": account_email,
-                        "retry_count": poll_timeout_retry_count,
-                        "index": index,
-                        "error": str(exc)[:200],
-                    })
-                    continue
+            # 轮询超时：在同一个任务内释放当前账号并切换下一个账号继续。
+            # 失败账号会被 mark_image_result 进入短冷却，下一轮账号选择不会立即拿回同号；
+            # route_attempts 会持续累计，后台可看到本任务已调用多少账号。
+            poll_timeout_retry_count += 1
+            if poll_timeout_retry_count <= MAX_POLL_TIMEOUT_RETRIES:
                 logger.warning({
-                    "event": "image_poll_timeout_exhausted_retries",
+                    "event": "image_poll_timeout_retry_next_account",
                     "request_token": token,
                     "account_email": account_email,
                     "retry_count": poll_timeout_retry_count,
-                    "index": index,
-                })
-                raise
-            if upstream_generation_started:
-                logger.warning({
-                    "event": "image_poll_timeout_no_retry_after_upstream_start",
-                    "request_token": token,
-                    "account_email": account_email,
+                    "max_retries": MAX_POLL_TIMEOUT_RETRIES,
+                    "upstream_generation_started": upstream_generation_started,
+                    "emitted_for_token": emitted_for_token,
+                    "conversation_id": conversation_id,
                     "index": index,
                     "error": str(exc)[:200],
                 })
+                if request.progress_callback:
+                    try:
+                        message = (
+                            f"账号 {account_email} 生图超时，切换账号继续"
+                            if account_email
+                            else "当前账号生图超时，切换账号继续"
+                        )
+                        request.progress_callback({
+                            "progress": "getting_account",
+                            "event": "account_retry",
+                            "message": f"{message}（已调用 {len(route_attempts)} 个账号）",
+                            "attempt": len(route_attempts) + 1,
+                            "account_email": account_email,
+                            "used_account_count": len({
+                                str(item.get("account_email") or "").strip()
+                                for item in route_attempts
+                                if str(item.get("account_email") or "").strip()
+                            }),
+                            "backend_model": route_meta.get("backend_model"),
+                            "image_route": route_meta.get("image_route"),
+                            "image_route_attempts": [dict(item) for item in route_attempts],
+                        })
+                    except Exception:
+                        pass
+                continue
+            logger.warning({
+                "event": "image_poll_timeout_exhausted_retries",
+                "request_token": token,
+                "account_email": account_email,
+                "retry_count": poll_timeout_retry_count,
+                "max_retries": MAX_POLL_TIMEOUT_RETRIES,
+                "conversation_id": conversation_id,
+                "index": index,
+            })
             raise
         except ImageContentPolicyError as exc:
             account_service.mark_image_result(token, False, exc)
