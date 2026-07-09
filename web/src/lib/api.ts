@@ -229,6 +229,7 @@ export type SettingsConfig = {
   refresh_account_concurrency?: number | string;
   image_retention_days?: number | string;
   image_poll_timeout_secs?: number | string;
+  image_web_model_slug?: string;
   image_account_concurrency?: number | string;
   image_account_precheck_interval_minutes?: number | string;
   image_parallel_generation?: boolean;

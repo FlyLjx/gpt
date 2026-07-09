@@ -81,6 +81,8 @@ DEFAULT_NOTIFICATION_SETTINGS = {
     "bark": DEFAULT_BARK_NOTIFICATION,
 }
 
+DEFAULT_IMAGE_WEB_MODEL_SLUG = "gpt-5-5"
+
 LEGACY_UPSCALE_CONFIG_KEYS = (
     "image_upscale_enabled",
     "image_upscale_target_long_edge",
@@ -96,6 +98,11 @@ def _normalize_timezone(value: object) -> str:
     if normalized == "CST-8":
         return DEFAULT_TIMEZONE
     return normalized or DEFAULT_TIMEZONE
+
+
+def _normalize_image_web_model_slug(value: object) -> str:
+    normalized = str(value or "").strip()
+    return normalized or DEFAULT_IMAGE_WEB_MODEL_SLUG
 
 
 def _default_timezone_is_applied() -> bool:
@@ -496,6 +503,13 @@ class ConfigStore:
             return 10.0
 
     @property
+    def image_web_model_slug(self) -> str:
+        """ChatGPT Web 普通生图线路使用的底层 model slug。"""
+        return _normalize_image_web_model_slug(
+            os.getenv("CHATGPT2API_IMAGE_WEB_MODEL_SLUG") or self.data.get("image_web_model_slug")
+        )
+
+    @property
     def image_account_concurrency(self) -> int:
         try:
             value = os.getenv("CHATGPT2API_IMAGE_ACCOUNT_CONCURRENCY") or self.data.get("image_account_concurrency", 8)
@@ -672,6 +686,7 @@ class ConfigStore:
         data["image_poll_timeout_secs"] = self.image_poll_timeout_secs
         data["image_poll_interval_secs"] = self.image_poll_interval_secs
         data["image_poll_initial_wait_secs"] = self.image_poll_initial_wait_secs
+        data["image_web_model_slug"] = self.image_web_model_slug
         data["image_account_concurrency"] = self.image_account_concurrency
         data["image_account_precheck_interval_minutes"] = self.image_account_precheck_interval_minutes
         data["image_parallel_generation"] = self.image_parallel_generation
@@ -718,6 +733,7 @@ class ConfigStore:
             next_data.pop(key, None)
         if "timezone" in next_data:
             next_data["timezone"] = _normalize_timezone(next_data.get("timezone"))
+        next_data["image_web_model_slug"] = _normalize_image_web_model_slug(next_data.get("image_web_model_slug"))
         next_data.pop("image_storage", None)
         if "chat_completion_cache" in next_data:
             next_data["chat_completion_cache"] = _normalize_chat_completion_cache_settings(

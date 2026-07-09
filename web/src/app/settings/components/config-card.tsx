@@ -98,6 +98,7 @@ export function ConfigCard() {
   const setRefreshAccountIntervalMinute = useSettingsStore((state) => state.setRefreshAccountIntervalMinute);
   const setRefreshAccountConcurrency = useSettingsStore((state) => state.setRefreshAccountConcurrency);
   const setImageRetentionDays = useSettingsStore((state) => state.setImageRetentionDays);
+  const setImageWebModelSlug = useSettingsStore((state) => state.setImageWebModelSlug);
   const setAutoRemoveInvalidAccounts = useSettingsStore((state) => state.setAutoRemoveInvalidAccounts);
   const setAutoRemoveRateLimitedAccounts = useSettingsStore((state) => state.setAutoRemoveRateLimitedAccounts);
   const setAutoReloginAfterRefresh = useSettingsStore((state) => state.setAutoReloginAfterRefresh);
@@ -246,6 +247,15 @@ export function ConfigCard() {
           <Col xs={24} md={12} xl={6}>
             <Form.Item label="运行时区" extra="影响后台日志、任务时间和本地文件日期。">
               <Input value={String(config.timezone || "Asia/Shanghai")} onChange={(event) => setTimezone(event.target.value)} placeholder="Asia/Shanghai" />
+            </Form.Item>
+          </Col>
+          <Col xs={24} md={12} xl={6}>
+            <Form.Item label="ChatGPT Web 生图模型" extra="普通 gpt-image-2 线路的底层 model slug，保存后新任务生效。">
+              <Input
+                value={String(config.image_web_model_slug || "gpt-5-5")}
+                onChange={(event) => setImageWebModelSlug(event.target.value)}
+                placeholder="gpt-5-5"
+              />
             </Form.Item>
           </Col>
         </Row>
