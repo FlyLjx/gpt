@@ -5,6 +5,7 @@ import os
 import random
 import re
 import time
+from queue import Empty
 
 import urllib.error
 import urllib.request
@@ -17,6 +18,8 @@ from typing import Any, Dict, Iterator, Optional
 from urllib.parse import unquote, urlparse
 
 from curl_cffi import requests
+from curl_cffi.requests.exceptions import RequestException
+from curl_cffi.requests.models import STREAM_END
 from PIL import Image
 
 from services.account_service import account_service
@@ -93,6 +96,7 @@ FILE_ID_RE = re.compile(r"\b(file[-_](?!service\b)[A-Za-z0-9_-]+)\b")
 REAL_IMAGE_FILE_ID_RE = re.compile(r"\bfile_00000000[a-f0-9]{24}\b")
 SEDIMENT_ID_RE = re.compile(r"sediment://([A-Za-z0-9_-]+)")
 IMAGE_POLL_SETTLE_SECS = 2.0
+IMAGE_STREAM_TIMEOUT_GRACE_SECS = 30.0
 CODEX_RESPONSES_INSTRUCTIONS = (
     "Use the image_generation tool to create exactly one image for the user's request. "
     "Return the generated image result."
@@ -1102,11 +1106,73 @@ class OpenAIBackendAPI:
             self.base_url + path,
             headers=self._image_headers(path, requirements, conduit_token, "text/event-stream"),
             json=payload,
-            timeout=300,
+            timeout=max(30.0, float(config.image_poll_timeout_secs) + IMAGE_STREAM_TIMEOUT_GRACE_SECS),
             stream=True,
         )
         ensure_ok(response, path)
         return response
+
+    def _iter_image_sse_payloads(self, response: requests.Response, timeout_secs: float | None = None) -> Iterator[str]:
+        """Iterate image SSE payloads with a hard deadline.
+
+        ChatGPT's image endpoint can keep the SSE connection open without
+        sending a terminal event. The generic ``Response.iter_lines()`` blocks
+        forever in that case, leaving sync image tasks stuck at ``generating``
+        (75%). Image calls already use ``image_poll_timeout_secs`` as the
+        user-visible budget, so apply the same budget to the SSE phase.
+        """
+        timeout = float(timeout_secs if timeout_secs is not None else config.image_poll_timeout_secs)
+        timeout = max(30.0, timeout + IMAGE_STREAM_TIMEOUT_GRACE_SECS)
+        deadline = time.time() + timeout
+        pending = b""
+        conversation_id = ""
+        assert response.queue and response.curl, "stream mode is not enabled."
+        try:
+            while True:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    exc = ImagePollTimeoutError(
+                        f"ChatGPT 生图流超时（已等待 {round(timeout)} 秒）。"
+                        "官方 SSE 长连接没有返回完成事件，任务已停止等待。"
+                    )
+                    setattr(exc, "conversation_id", conversation_id)
+                    raise exc
+                try:
+                    chunk = response.queue.get(timeout=min(1.0, remaining))
+                except Empty:
+                    continue
+                if isinstance(chunk, RequestException):
+                    response._finalize_stream()
+                    raise chunk
+                if chunk is STREAM_END:
+                    break
+                if isinstance(chunk, str):
+                    chunk = chunk.encode("utf-8", errors="ignore")
+                pending += bytes(chunk or b"")
+                while b"\n" in pending:
+                    raw_line, pending = pending.split(b"\n", 1)
+                    raw_line = raw_line.rstrip(b"\r")
+                    if not raw_line:
+                        continue
+                    line = raw_line.decode("utf-8", errors="ignore")
+                    if not line.startswith("data:"):
+                        continue
+                    payload = line[5:].strip()
+                    if not payload:
+                        continue
+                    if not conversation_id:
+                        match = re.search(r'"conversation_id"\s*:\s*"([^"]+)"', payload)
+                        if match:
+                            conversation_id = match.group(1)
+                    yield payload
+            if pending:
+                line = pending.rstrip(b"\r").decode("utf-8", errors="ignore")
+                if line.startswith("data:"):
+                    payload = line[5:].strip()
+                    if payload:
+                        yield payload
+        finally:
+            response.close()
 
     def _get_conversation(self, conversation_id: str) -> Dict[str, Any]:
         """获取完整 conversation 详情。"""
@@ -2691,10 +2757,7 @@ class OpenAIBackendAPI:
         self._report_progress("starting_generation")
         response = self._start_image_generation(prompt, requirements, conduit_token, model, references)
         self._report_progress("generating")
-        try:
-            yield from iter_sse_payloads(response)
-        finally:
-            response.close()
+        yield from self._iter_image_sse_payloads(response)
 
     def _bootstrap(self) -> None:
         """预热首页，并提取 PoW 相关脚本引用。"""
