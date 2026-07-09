@@ -1370,6 +1370,7 @@ def _generate_single_image(
     poll_timeout_retry_count = 0
     account_email = ""
     route_attempts: list[dict[str, Any]] = []
+    upstream_generation_started = False
 
     while True:
         route_meta: dict[str, Any] = {}
@@ -1410,11 +1411,27 @@ def _generate_single_image(
         })
         try:
             backend = OpenAIBackendAPI(access_token=token)
-            if routed_request.progress_callback:
-                backend.progress_callback = routed_request.progress_callback
+            original_progress_callback = routed_request.progress_callback
+
+            def progress_callback(step: str) -> None:
+                nonlocal upstream_generation_started
+                step_text = str(step or "")
+                # From this point the `/backend-api/f/conversation` image
+                # request is either being sent or has been accepted. Retrying
+                # with another account can leave the first ChatGPT-side image
+                # job running and create extra images for a single API call.
+                if step_text in {"starting_generation", "generating", "image_stream_resolve_start", "receiving_image"}:
+                    upstream_generation_started = True
+                if original_progress_callback:
+                    original_progress_callback(step)
+
+            routed_request = replace(routed_request, progress_callback=progress_callback)
+            backend.progress_callback = progress_callback
             stream_fn = stream_codex_image_outputs if is_codex_image_model(routed_request.model) else stream_image_outputs
             outputs: list[ImageOutput] = []
             for output in stream_fn(backend, routed_request, index, total):
+                upstream_generation_started = True
+                emitted_for_token = True
                 if account_email and not output.account_email:
                     output.account_email = account_email
                 if route_meta and not output.route_meta:
@@ -1432,7 +1449,6 @@ def _generate_single_image(
                         image_route=route_meta,
                         image_route_attempts=route_attempts,
                     )
-                emitted_for_token = True
                 returned_message = output.kind == "message"
                 returned_result = returned_result or output.kind == "result"
                 outputs.append(output)
@@ -1466,8 +1482,10 @@ def _generate_single_image(
                 setattr(exc, "account_email", account_email)
             _attach_image_route(exc, route_meta)
             _attach_image_route_attempts(exc, route_attempts)
-            # 轮询超时：换账号重试
-            if not emitted_for_token:
+            # 轮询超时：只允许在还没进入官方生图请求前换账号重试。
+            # 一旦 `/f/conversation` 已经启动，官方后台可能仍会继续出图；
+            # 此时自动换账号重发会导致「提交 N 个，官方生成 N+1 个」。
+            if not emitted_for_token and not upstream_generation_started:
                 poll_timeout_retry_count += 1
                 if poll_timeout_retry_count <= MAX_POLL_TIMEOUT_RETRIES:
                     logger.warning({
@@ -1487,6 +1505,14 @@ def _generate_single_image(
                     "index": index,
                 })
                 raise
+            if upstream_generation_started:
+                logger.warning({
+                    "event": "image_poll_timeout_no_retry_after_upstream_start",
+                    "request_token": token,
+                    "account_email": account_email,
+                    "index": index,
+                    "error": str(exc)[:200],
+                })
             raise
         except ImageContentPolicyError as exc:
             account_service.mark_image_result(token, False, exc)
@@ -1516,8 +1542,9 @@ def _generate_single_image(
             _attach_image_route(exc, route_meta)
             _attach_image_route_attempts(exc, route_attempts)
             error_text = str(exc)
-            # 如果是模型返回文本而非图片，尝试换账号重试
-            if is_model_text_reply_instead_of_image(error_text) and not emitted_for_token:
+            # 如果模型在官方生图请求尚未启动前返回文本，才尝试换账号重试。
+            # 官方请求启动后不再自动重发，避免后台仍出图造成额外生成。
+            if is_model_text_reply_instead_of_image(error_text) and not emitted_for_token and not upstream_generation_started:
                 text_reply_retry_count += 1
                 if text_reply_retry_count <= MAX_TEXT_REPLY_RETRIES:
                     logger.warning({
@@ -1568,7 +1595,8 @@ def _generate_single_image(
                 "error": last_error,
                 "index": index,
             })
-            if not emitted_for_token and is_token_invalid_error(last_error):
+            retry_before_upstream_start = not emitted_for_token and not upstream_generation_started
+            if retry_before_upstream_start and is_token_invalid_error(last_error):
                 refreshed_token = account_service.refresh_access_token(token, force=True, event="image_stream")
                 if refreshed_token and refreshed_token != token:
                     token = refreshed_token
@@ -1576,7 +1604,7 @@ def _generate_single_image(
                 account_service.remove_invalid_token(token, "image_stream")
                 continue
             # TLS/SSL 连接错误：自动重试
-            if not emitted_for_token and is_tls_connection_error(last_error):
+            if retry_before_upstream_start and is_tls_connection_error(last_error):
                 tls_retry_count += 1
                 if tls_retry_count <= MAX_TLS_RETRIES:
                     logger.warning({
@@ -1590,7 +1618,7 @@ def _generate_single_image(
                     time.sleep(min(2.0 * tls_retry_count, 10.0))
                     continue
             # 连接超时错误（curl 28）：同账号短等待重试，不切换账号
-            if not emitted_for_token and is_connection_timeout_error(last_error):
+            if retry_before_upstream_start and is_connection_timeout_error(last_error):
                 conn_timeout_retry_count += 1
                 if conn_timeout_retry_count <= MAX_CONN_TIMEOUT_RETRIES:
                     wait_secs = min(3.0 * conn_timeout_retry_count, 9.0)
@@ -1605,6 +1633,14 @@ def _generate_single_image(
                     })
                     time.sleep(wait_secs)
                     continue
+            if upstream_generation_started:
+                logger.warning({
+                    "event": "image_stream_no_retry_after_upstream_start",
+                    "request_token": token,
+                    "account_email": account_email,
+                    "index": index,
+                    "error": last_error[:200],
+                })
             raise ImageGenerationError(
                 image_stream_error_message(last_error),
                 account_email=account_email,
