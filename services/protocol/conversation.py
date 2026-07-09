@@ -1370,10 +1370,10 @@ def _generate_single_image(
     poll_timeout_retry_count = 0
     account_email = ""
     route_attempts: list[dict[str, Any]] = []
-    upstream_generation_started = False
 
     while True:
         route_meta: dict[str, Any] = {}
+        upstream_generation_started = False
         try:
             if request.progress_callback:
                 request.progress_callback("getting_account")
@@ -1416,11 +1416,13 @@ def _generate_single_image(
             def progress_callback(step: str) -> None:
                 nonlocal upstream_generation_started
                 step_text = str(step or "")
-                # From this point the `/backend-api/f/conversation` image
-                # request is either being sent or has been accepted. Retrying
-                # with another account can leave the first ChatGPT-side image
-                # job running and create extra images for a single API call.
-                if step_text in {"starting_generation", "generating", "image_stream_resolve_start", "receiving_image"}:
+                # `starting_generation` is only "about to send the upstream
+                # request"; clear errors there can still retry with another
+                # account. Once the stream is accepted (`generating`) or we are
+                # resolving image files, the upstream job may keep running even
+                # if our polling/connection fails, so timeout-like failures must
+                # not immediately open another ChatGPT image job.
+                if step_text in {"generating", "image_stream_resolve_start", "receiving_image"}:
                     upstream_generation_started = True
                 if original_progress_callback:
                     original_progress_callback(step)
@@ -1431,7 +1433,6 @@ def _generate_single_image(
             outputs: list[ImageOutput] = []
             for output in stream_fn(backend, routed_request, index, total):
                 upstream_generation_started = True
-                emitted_for_token = True
                 if account_email and not output.account_email:
                     output.account_email = account_email
                 if route_meta and not output.route_meta:
@@ -1449,6 +1450,7 @@ def _generate_single_image(
                         image_route=route_meta,
                         image_route_attempts=route_attempts,
                     )
+                emitted_for_token = True
                 returned_message = output.kind == "message"
                 returned_result = returned_result or output.kind == "result"
                 outputs.append(output)
@@ -1542,9 +1544,9 @@ def _generate_single_image(
             _attach_image_route(exc, route_meta)
             _attach_image_route_attempts(exc, route_attempts)
             error_text = str(exc)
-            # 如果模型在官方生图请求尚未启动前返回文本，才尝试换账号重试。
-            # 官方请求启动后不再自动重发，避免后台仍出图造成额外生成。
-            if is_model_text_reply_instead_of_image(error_text) and not emitted_for_token and not upstream_generation_started:
+            # 模型明确返回了文本/工具参数而不是图片，属于“明确没出图”，
+            # 这种错误应在同一个任务内切号重试。
+            if is_model_text_reply_instead_of_image(error_text) and not emitted_for_token:
                 text_reply_retry_count += 1
                 if text_reply_retry_count <= MAX_TEXT_REPLY_RETRIES:
                     logger.warning({
