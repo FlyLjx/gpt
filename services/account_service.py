@@ -1659,12 +1659,24 @@ class AccountService:
 
     def _sort_candidate_tokens(self, tokens: list[str], *, image: bool = False) -> list[str]:
         now = datetime.now(timezone.utc)
+        pool_order = {token: index for index, token in enumerate(self._accounts.keys())}
 
-        def sort_key(token: str) -> tuple[float, float, str]:
+        def sort_key(token: str) -> tuple[float, float, str] | tuple[int, float, float, float, str]:
             account = self._accounts.get(token) or {}
+            score = self._account_dispatch_score(account, now=now, image=image)
             last_used_at = self._parse_time(account.get("last_used_at"))
             last_used_ts = last_used_at.timestamp() if last_used_at is not None else 0.0
-            return (-self._account_dispatch_score(account, now=now, image=image), last_used_ts, token)
+            if image:
+                created_at = self._parse_time(account.get("created_at"))
+                created_ts = created_at.timestamp() if created_at is not None else 0.0
+                return (
+                    -int(pool_order.get(token, 0)),
+                    -created_ts,
+                    -score,
+                    last_used_ts,
+                    token,
+                )
+            return (-score, last_used_ts, token)
 
         return sorted(tokens, key=sort_key)
 
@@ -1775,9 +1787,8 @@ class AccountService:
             attempted_tokens.add(access_token)
             account = self.get_account(access_token)
             try:
-                if self._image_precheck_due(account, access_token):
-                    refreshed_account = self.fetch_remote_info(access_token, "get_available_access_token")
-                    account = refreshed_account or account
+                refreshed_account = self.fetch_remote_info(access_token, "get_available_access_token:preflight")
+                account = refreshed_account or account
             except Exception as exc:
                 attempted_accounts.append(self._image_account_attempt_summary(
                     access_token,
