@@ -96,6 +96,7 @@ FILE_ID_RE = re.compile(r"\b(file[-_](?!service\b)[A-Za-z0-9_-]+)\b")
 REAL_IMAGE_FILE_ID_RE = re.compile(r"\bfile_00000000[a-f0-9]{24}\b")
 SEDIMENT_ID_RE = re.compile(r"sediment://([A-Za-z0-9_-]+)")
 IMAGE_POLL_SETTLE_SECS = 2.0
+IMAGE_STREAM_BOOTSTRAP_TIMEOUT_SECS = 20.0
 IMAGE_STREAM_TIMEOUT_GRACE_SECS = 30.0
 CODEX_RESPONSES_INSTRUCTIONS = (
     "Use the image_generation tool to create exactly one image for the user's request. "
@@ -1106,13 +1107,20 @@ class OpenAIBackendAPI:
             self.base_url + path,
             headers=self._image_headers(path, requirements, conduit_token, "text/event-stream"),
             json=payload,
-            timeout=max(30.0, float(config.image_poll_timeout_secs) + IMAGE_STREAM_TIMEOUT_GRACE_SECS),
+            timeout=60,
             stream=True,
         )
         ensure_ok(response, path)
         return response
 
-    def _iter_image_sse_payloads(self, response: requests.Response, timeout_secs: float | None = None) -> Iterator[str]:
+    def _iter_image_sse_payloads(
+        self,
+        response: requests.Response,
+        timeout_secs: float | None = None,
+        *,
+        stop_after_conversation_id: bool = False,
+        raise_on_timeout: bool = True,
+    ) -> Iterator[str]:
         """Iterate image SSE payloads with a hard deadline.
 
         ChatGPT's image endpoint can keep the SSE connection open without
@@ -1121,8 +1129,10 @@ class OpenAIBackendAPI:
         (75%). Image calls already use ``image_poll_timeout_secs`` as the
         user-visible budget, so apply the same budget to the SSE phase.
         """
-        timeout = float(timeout_secs if timeout_secs is not None else config.image_poll_timeout_secs)
-        timeout = max(30.0, timeout + IMAGE_STREAM_TIMEOUT_GRACE_SECS)
+        if timeout_secs is None:
+            timeout = max(30.0, float(config.image_poll_timeout_secs) + IMAGE_STREAM_TIMEOUT_GRACE_SECS)
+        else:
+            timeout = max(1.0, float(timeout_secs))
         deadline = time.time() + timeout
         pending = b""
         conversation_id = ""
@@ -1131,6 +1141,13 @@ class OpenAIBackendAPI:
             while True:
                 remaining = deadline - time.time()
                 if remaining <= 0:
+                    if not raise_on_timeout:
+                        logger.warning({
+                            "event": "image_sse_bootstrap_timeout",
+                            "timeout_secs": timeout,
+                            "conversation_id": conversation_id,
+                        })
+                        break
                     exc = ImagePollTimeoutError(
                         f"ChatGPT 生图流超时（已等待 {round(timeout)} 秒）。"
                         "官方 SSE 长连接没有返回完成事件，任务已停止等待。"
@@ -1165,6 +1182,12 @@ class OpenAIBackendAPI:
                         if match:
                             conversation_id = match.group(1)
                     yield payload
+                    if stop_after_conversation_id and conversation_id:
+                        logger.info({
+                            "event": "image_sse_bootstrap_done",
+                            "conversation_id": conversation_id,
+                        })
+                        return
             if pending:
                 line = pending.rstrip(b"\r").decode("utf-8", errors="ignore")
                 if line.startswith("data:"):
@@ -2757,7 +2780,12 @@ class OpenAIBackendAPI:
         self._report_progress("starting_generation")
         response = self._start_image_generation(prompt, requirements, conduit_token, model, references)
         self._report_progress("generating")
-        yield from self._iter_image_sse_payloads(response)
+        yield from self._iter_image_sse_payloads(
+            response,
+            timeout_secs=IMAGE_STREAM_BOOTSTRAP_TIMEOUT_SECS,
+            stop_after_conversation_id=True,
+            raise_on_timeout=False,
+        )
 
     def _bootstrap(self) -> None:
         """预热首页，并提取 PoW 相关脚本引用。"""

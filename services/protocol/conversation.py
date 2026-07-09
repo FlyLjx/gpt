@@ -1020,7 +1020,12 @@ def stream_image_outputs(
         error_text = detailed_error or message or "Image generation was rejected by upstream policy."
         yield ImageOutput(kind="message", model=request.model, index=index, total=total, text=error_text, conversation_id=conversation_id)
         return
-    should_poll_for_image = bool(request.images) or last.get("turn_use_case") == "image gen"
+    # Regular ChatGPT Web image calls now only keep the upstream SSE open long
+    # enough to capture the conversation id, then close it and poll the
+    # conversation document. Do not depend on later SSE metadata such as
+    # `turn_use_case=image gen`, because it may arrive after we intentionally
+    # close the stream.
+    should_poll_for_image = True
     if message and not file_ids and not sediment_ids and not should_poll_for_image:
         yield ImageOutput(kind="message", model=request.model, index=index, total=total, text=message, conversation_id=conversation_id)
         return
