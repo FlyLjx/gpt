@@ -901,7 +901,7 @@ def stream_text_deltas(backend: OpenAIBackendAPI, request: ConversationRequest) 
                 if refreshed_token and refreshed_token != token and refreshed_token not in attempted_tokens:
                     token = refreshed_token
                 else:
-                    account_service.remove_invalid_token(token, "text_stream")
+                    account_service.remove_invalid_token(token, "text_stream", force=True)
                     token = account_service.get_text_access_token(attempted_tokens)
                 if token:
                     continue
@@ -1730,7 +1730,7 @@ def _generate_single_image(
                 if refreshed_token and refreshed_token != token:
                     token = refreshed_token
                     continue
-                account_service.remove_invalid_token(token, "image_stream")
+                account_service.remove_invalid_token(token, "image_stream", force=True)
                 continue
             # TLS/SSL 连接错误：自动重试
             if retry_before_upstream_start and is_tls_connection_error(last_error):

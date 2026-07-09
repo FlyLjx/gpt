@@ -1932,6 +1932,18 @@ class AccountService:
             current = self._accounts.get(access_token)
             if current is None:
                 return None
+            if error_type == "token_invalid":
+                self._accounts.pop(access_token, None)
+                self._image_inflight.pop(access_token, None)
+                self._save_accounts()
+                self._image_slot_condition.notify_all()
+                log_service.add(LOG_TYPE_ACCOUNT, "自动移除失效 Token 账号", {
+                    "source": "mark_account_failure",
+                    "token": anonymize_token(access_token),
+                    "email": current.get("email"),
+                    "error": str(error or "")[:300],
+                })
+                return None
             next_item = dict(current)
             if error_type == "content_policy":
                 next_item["last_error_type"] = error_type
@@ -1990,14 +2002,14 @@ class AccountService:
             self._image_slot_condition.notify_all()
             return dict(account)
 
-    def remove_invalid_token(self, access_token: str, event: str, quiet: bool = False) -> bool:
-        if not config.auto_remove_invalid_accounts:
+    def remove_invalid_token(self, access_token: str, event: str, quiet: bool = False, *, force: bool = False) -> bool:
+        if not force and not config.auto_remove_invalid_accounts:
             self.update_account(access_token, {"status": "异常", "quota": 0}, quiet=quiet)
             return False
         removed = bool(self.delete_accounts([access_token])["removed"])
         if removed:
-            log_service.add(LOG_TYPE_ACCOUNT, "自动移除异常账号",
-                            {"source": event, "token": anonymize_token(access_token)})
+            log_service.add(LOG_TYPE_ACCOUNT, "自动移除失效 Token 账号" if force else "自动移除异常账号",
+                            {"source": event, "token": anonymize_token(access_token), "forced": bool(force)})
         elif access_token:
             self.update_account(access_token, {"status": "异常", "quota": 0}, quiet=quiet)
         return removed
@@ -2328,6 +2340,18 @@ class AccountService:
                     next_item["status"] = "正常"
             else:
                 error_type = self.classify_account_error(error)
+                if error_type == "token_invalid":
+                    self._accounts.pop(access_token, None)
+                    self._image_inflight.pop(access_token, None)
+                    self._save_accounts()
+                    self._image_slot_condition.notify_all()
+                    log_service.add(LOG_TYPE_ACCOUNT, "自动移除失效 Token 账号", {
+                        "source": "mark_image_result",
+                        "token": anonymize_token(access_token),
+                        "email": current.get("email"),
+                        "error": str(error or "")[:300],
+                    })
+                    return None
                 if error_type == "content_policy":
                     next_item["last_error_type"] = error_type
                     account = self._normalize_account(next_item)
@@ -2390,12 +2414,12 @@ class AccountService:
                     result = OpenAIBackendAPI(refreshed_token).get_user_info()
                 except InvalidAccessTokenError as retry_exc:
                     if self._record_invalid_token_seen(refreshed_token, event, str(retry_exc)):
-                        self.remove_invalid_token(refreshed_token, event)
+                        self.remove_invalid_token(refreshed_token, event, force=True)
                     raise
                 active_token = refreshed_token
             else:
                 if self._record_invalid_token_seen(active_token, event, str(exc), defer=False):
-                    self.remove_invalid_token(active_token, event)
+                    self.remove_invalid_token(active_token, event, force=True)
                 raise
         self._record_refresh_success(active_token)
         refreshed_payload = {**result, "last_account_refresh_at": datetime.now(timezone.utc).isoformat()}
