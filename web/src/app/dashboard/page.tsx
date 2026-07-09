@@ -123,6 +123,187 @@ function EntryBars({ items, emptyText = "暂无数据" }: { items: Array<[string
   );
 }
 
+type RuntimeHealthData = NonNullable<DashboardSummary["calls"]["runtime"]>;
+
+function runtimeStatusColor(status: string) {
+  return {
+    success: "#10b981",
+    failed: "#f43f5e",
+    running: "#3b82f6",
+    other: "#94a3b8",
+  }[status] || "#94a3b8";
+}
+
+function RuntimeTrendChart({ series }: { series: RuntimeHealthData["series"] }) {
+  const points = series || [];
+  const total = points.reduce((sum, item) => sum + Number(item.success || 0) + Number(item.failed || 0), 0);
+  const width = 720;
+  const height = 240;
+  const paddingX = 34;
+  const paddingTop = 20;
+  const paddingBottom = 42;
+  const plotWidth = width - paddingX * 2;
+  const plotHeight = height - paddingTop - paddingBottom;
+  const maxValue = Math.max(1, ...points.flatMap((item) => [Number(item.success || 0), Number(item.failed || 0)]));
+  const xFor = (index: number) => paddingX + (points.length <= 1 ? 0 : (index / (points.length - 1)) * plotWidth);
+  const yFor = (value: number) => paddingTop + (1 - value / maxValue) * plotHeight;
+  const polyline = (key: "success" | "failed") => points.map((item, index) => `${xFor(index).toFixed(1)},${yFor(Number(item[key] || 0)).toFixed(1)}`).join(" ");
+  const labelIndexes = Array.from(new Set([0, Math.floor((points.length - 1) / 2), points.length - 1])).filter((index) => index >= 0);
+
+  if (!points.length || total <= 0) {
+    return (
+      <div className="flex min-h-[260px] items-center justify-center rounded-lg bg-slate-50">
+        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="最近 60 分钟暂无调用" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-lg bg-gradient-to-b from-slate-50 to-white px-3 pt-3">
+      <div className="mb-2 flex flex-wrap items-center gap-4 text-xs">
+        <span className="inline-flex items-center gap-1.5 text-slate-600"><i className="size-2 rounded-full bg-emerald-500" />成功 / 分钟</span>
+        <span className="inline-flex items-center gap-1.5 text-slate-600"><i className="size-2 rounded-full bg-rose-500" />失败 / 分钟</span>
+        <span className="ml-auto font-mono text-slate-400">max {maxValue}</span>
+      </div>
+      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="每分钟成功和失败调用曲线" className="h-[260px] w-full overflow-visible">
+        {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+          const y = paddingTop + ratio * plotHeight;
+          const value = Math.round((1 - ratio) * maxValue);
+          return (
+            <g key={ratio}>
+              <line x1={paddingX} x2={width - paddingX} y1={y} y2={y} stroke="#e2e8f0" strokeDasharray="4 6" />
+              <text x={8} y={y + 4} className="fill-slate-400 text-[10px]">{value}</text>
+            </g>
+          );
+        })}
+        <polyline points={polyline("success")} fill="none" stroke="#10b981" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
+        <polyline points={polyline("failed")} fill="none" stroke="#f43f5e" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
+        {points.map((item, index) => {
+          const success = Number(item.success || 0);
+          const failed = Number(item.failed || 0);
+          if (!success && !failed) return null;
+          return (
+            <g key={`${item.time}-${index}`}>
+              {success ? <circle cx={xFor(index)} cy={yFor(success)} r="3.5" fill="#10b981" stroke="white" strokeWidth="2" /> : null}
+              {failed ? <circle cx={xFor(index)} cy={yFor(failed)} r="3.5" fill="#f43f5e" stroke="white" strokeWidth="2" /> : null}
+            </g>
+          );
+        })}
+        {labelIndexes.map((index) => (
+          <text key={index} x={xFor(index)} y={height - 12} textAnchor={index === 0 ? "start" : index === points.length - 1 ? "end" : "middle"} className="fill-slate-400 text-[11px]">
+            {points[index]?.label || ""}
+          </text>
+        ))}
+      </svg>
+    </div>
+  );
+}
+
+function ErrorRateDonut({ runtime }: { runtime: RuntimeHealthData }) {
+  const segments = (runtime.status_pie || []).filter((item) => Number(item.value || 0) > 0);
+  const total = segments.reduce((sum, item) => sum + Number(item.value || 0), 0);
+  const radius = 54;
+  const circumference = 2 * Math.PI * radius;
+  let offset = 0;
+
+  if (total <= 0) {
+    return (
+      <div className="flex min-h-[260px] items-center justify-center">
+        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无错误率数据" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid min-h-[260px] gap-4 md:grid-cols-[190px_1fr] xl:grid-cols-1 2xl:grid-cols-[190px_1fr]">
+      <div className="relative mx-auto flex size-[190px] items-center justify-center">
+        <svg viewBox="0 0 160 160" className="size-[190px]">
+          <circle cx="80" cy="80" r={radius} fill="none" stroke="#eef2f7" strokeWidth="18" />
+          {segments.map((segment) => {
+            const length = (Number(segment.value || 0) / total) * circumference;
+            const currentOffset = offset;
+            offset += length;
+            return (
+              <circle
+                key={segment.status}
+                cx="80"
+                cy="80"
+                r={radius}
+                fill="none"
+                stroke={runtimeStatusColor(segment.status)}
+                strokeWidth="18"
+                strokeLinecap="round"
+                strokeDasharray={`${length} ${circumference - length}`}
+                strokeDashoffset={-currentOffset}
+                transform="rotate(-90 80 80)"
+              />
+            );
+          })}
+        </svg>
+        <div className="absolute text-center">
+          <div className="font-mono text-3xl font-semibold text-slate-950">{runtime.error_rate}%</div>
+          <div className="mt-1 text-xs text-slate-400">错误率</div>
+        </div>
+      </div>
+      <div className="flex min-w-0 flex-col justify-center gap-3">
+        {segments.map((segment) => (
+          <div key={segment.status} className="flex items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2">
+            <span className="inline-flex min-w-0 items-center gap-2 text-sm text-slate-600">
+              <i className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: runtimeStatusColor(segment.status) }} />
+              <span className="truncate">{segment.label}</span>
+            </span>
+            <span className="font-mono text-sm font-semibold text-slate-900">{numberText(segment.value)}</span>
+          </div>
+        ))}
+        <div className="rounded-lg border border-dashed border-slate-200 px-3 py-2 text-xs text-slate-500">
+          最近 {runtime.window_minutes} 分钟：成功率 {runtime.success_rate}%，失败 {runtime.totals.failed} 次
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RuntimeHealth({ runtime }: { runtime: RuntimeHealthData }) {
+  return (
+    <section className="grid gap-4 xl:grid-cols-[1.45fr_0.9fr]">
+      <Card
+        title={
+          <div className="flex flex-wrap items-center gap-2">
+            <span>运行状况</span>
+            <Tag color="blue" className="m-0">最近 {runtime.window_minutes} 分钟</Tag>
+          </div>
+        }
+        extra={<span className="font-mono text-xs text-slate-400">{runtime.start_time} → {runtime.end_time}</span>}
+      >
+        <RuntimeTrendChart series={runtime.series} />
+      </Card>
+      <Card
+        title={
+          <div className="flex items-center gap-2">
+            <span>错误率</span>
+            <Tag color={runtime.error_rate > 0 ? "red" : "green"} className="m-0">{runtime.error_rate}%</Tag>
+          </div>
+        }
+      >
+        <ErrorRateDonut runtime={runtime} />
+        {runtime.error_reasons.length ? (
+          <div className="mt-4 border-t border-slate-100 pt-4">
+            <div className="mb-2 text-xs font-medium text-slate-400">主要错误原因</div>
+            <div className="space-y-2">
+              {runtime.error_reasons.map((item) => (
+                <div key={item.label} className="flex items-center justify-between gap-3 text-sm">
+                  <span className="min-w-0 truncate text-slate-600" title={item.label}>{item.label}</span>
+                  <span className="font-mono font-semibold text-rose-600">{item.value}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </Card>
+    </section>
+  );
+}
+
 function splitTime(value?: string) {
   const text = String(value || "").trim();
   if (!text) {
@@ -281,6 +462,8 @@ function DashboardContent() {
         <MetricCard title="今日调用" value={numberText(totalCalls)} helper={`失败 ${failedCalls}，成功率 ${callSuccessPercent}%`} icon={Activity} tone={failedCalls ? "amber" : "green"} />
         <MetricCard title="队列任务" value={numberText(runningTasks)} helper={`历史任务 ${data.tasks.total} 条`} icon={TimerReset} tone={runningTasks ? "amber" : "slate"} />
       </section>
+
+      {data.calls.runtime ? <RuntimeHealth runtime={data.calls.runtime} /> : null}
 
       <section className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
         <Card title="账号池状态">

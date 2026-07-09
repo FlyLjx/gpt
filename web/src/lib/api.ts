@@ -442,6 +442,35 @@ export type DashboardSummary = {
     by_status: Record<string, number>;
     by_endpoint: Record<string, number>;
     by_model: Record<string, number>;
+    runtime?: {
+      window_minutes: number;
+      start_time: string;
+      end_time: string;
+      total: number;
+      success_rate: number;
+      error_rate: number;
+      totals: {
+        success: number;
+        failed: number;
+        running: number;
+        other: number;
+      };
+      series: Array<{
+        time: string;
+        label: string;
+        success: number;
+        failed: number;
+      }>;
+      status_pie: Array<{
+        label: string;
+        value: number;
+        status: "success" | "failed" | "running" | "other" | string;
+      }>;
+      error_reasons: Array<{
+        label: string;
+        value: number;
+      }>;
+    };
     recent_failed: Array<{
       id?: string;
       time?: string;
