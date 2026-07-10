@@ -17,6 +17,32 @@ from services.protocol.conversation import (
 from utils.image_tokens import count_image_inputs_tokens, count_image_output_items_tokens, image_usage
 
 
+def _reference_prompt(prompt: str, images: list[tuple[bytes, str, str]]) -> str:
+    """给多参考图请求补充稳定的图片顺序说明，避免上游忽略或混淆图1/图2。"""
+    count = len(images)
+    if count <= 0:
+        return prompt
+    labels = "、".join(
+        f"图{index}=第{index}张上传图片（{filename or f'image_{index}.png'}）"
+        for index, (_, filename, _) in enumerate(images, start=1)
+    )
+    prefix_lines = [
+        "【参考图顺序绑定】",
+        f"本次图生图请求实际上传了 {count} 张参考图，默认按上传顺序依次对应：{labels}。",
+        "第1张通常来自前端“主参考图”位置，第2张及以后通常来自“补充参考图”位置；但最终要以用户任务语义和图片可见内容共同判断。",
+        "当用户提示词出现“图1/图一/第一张/主参考图”时，通常指第1张上传图片；出现“图2/图二/第二张/补充参考图”时，通常指第2张上传图片，后续编号依此类推。",
+        "如果用户文字里的编号与图片实际内容明显矛盾，请以图片内容和任务目标为准自动纠正。例如文字说“图1的小女孩”但只有另一张图里有小女孩，则把有小女孩的那张作为目标画布；文字说“第二的红色碗”但红色碗只在另一张产品图里，则把含红色碗的那张作为素材来源。",
+        "请优先读取实际上传的图片内容，不要只根据文字想象；如果提示词里出现“参考图数量：0”等与实际上传数量矛盾的文字，请忽略该矛盾文字，以实际上传图片为准。",
+    ]
+    if count >= 2:
+        prefix_lines.extend([
+            "如果任务是替换、合成或迁移元素：目标画布/最终场景应是包含“需要被替换区域”的图片（例如人物手里原本端着的碗、原始房间、原始场景）；素材来源应是包含“要替换进去的对象/颜色/材质/风格”的图片（例如产品图里的红色碗）。",
+            "保持目标画布中未指定修改的人物、姿势、构图、背景、光照和风格不变；只把用户点名的局部对象替换成素材来源中的对象，替换后必须清晰可见，不能保持原物不变。",
+            "不要把素材来源图里的海报文字、包装盒、背景、边框、水印或无关元素带入最终图，除非用户明确要求。",
+        ])
+    return "\n".join(prefix_lines) + "\n\n【用户原始指令】\n" + prompt
+
+
 def _composite_mask(
     images: list[tuple[bytes, str, str]],
     masks: list[tuple[bytes, str, str]],
@@ -48,6 +74,7 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
     images = body.get("images") or []
     masks = body.get("mask") or []
     images = _composite_mask(images, masks)
+    effective_prompt = _reference_prompt(prompt, images)
     model = str(body.get("model") or "gpt-image-2")
     n = int(body.get("n") or 1)
     size = body.get("size")
@@ -59,7 +86,7 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
     if not encoded_images:
         raise ImageGenerationError("image is required")
     outputs = stream_image_outputs_with_pool(ConversationRequest(
-        prompt=prompt,
+        prompt=effective_prompt,
         model=model,
         n=n,
         size=size,
@@ -74,7 +101,7 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
         return stream_image_chunks(outputs)
     result = collect_image_outputs(outputs)
     result["usage"] = image_usage(
-        input_text_tokens=count_text_tokens(prompt, model),
+        input_text_tokens=count_text_tokens(effective_prompt, model),
         input_image_tokens=count_image_inputs_tokens(images, model),
         output_tokens=count_image_output_items_tokens(result.get("data"), size, quality),
     )

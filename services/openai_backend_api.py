@@ -98,6 +98,7 @@ SEDIMENT_ID_RE = re.compile(r"sediment://([A-Za-z0-9_-]+)")
 IMAGE_POLL_SETTLE_SECS = 2.0
 IMAGE_STREAM_BOOTSTRAP_TIMEOUT_SECS = 20.0
 IMAGE_STREAM_TIMEOUT_GRACE_SECS = 30.0
+CHATGPT_IMAGE_UPLOAD_SOFT_LIMIT_BYTES = 20 * 1024 * 1024
 CODEX_RESPONSES_INSTRUCTIONS = (
     "Use the image_generation tool to create exactly one image for the user's request. "
     "Return the generated image result."
@@ -981,7 +982,14 @@ class OpenAIBackendAPI:
         payload = image.split(",", 1)[1] if image.startswith("data:") and "," in image else image
         return base64.b64decode(payload)
 
-    def _upload_image(self, image: str, file_name: str = "image.png") -> Dict[str, Any]:
+    def _upload_image(
+            self,
+            image: str,
+            file_name: str = "image.png",
+            *,
+            index: int | None = None,
+            total: int | None = None,
+    ) -> Dict[str, Any]:
         """上传一张 base64 图片，返回底层文件元数据。"""
         data = self._decode_image_base64(image)
         if (
@@ -994,43 +1002,140 @@ class OpenAIBackendAPI:
             candidate_path = Path(os.path.expanduser(image))
             if candidate_path.exists() and candidate_path.is_file():
                 file_name = candidate_path.name
-        image = Image.open(BytesIO(data))
-        width, height = image.size
-        mime_type = Image.MIME.get(image.format, "image/png")
+        upload_detail: Dict[str, Any] = {
+            "file_name": file_name,
+            "file_size": len(data),
+        }
+        if index is not None:
+            upload_detail["index"] = index
+        if total is not None:
+            upload_detail["total"] = total
+        try:
+            image_obj = Image.open(BytesIO(data))
+            width, height = image_obj.size
+            mime_type = Image.MIME.get(image_obj.format, "image/png")
+        except Exception as exc:
+            logger.warning({
+                "event": "image_upload_decode_failed",
+                **upload_detail,
+                "error": str(exc)[:500],
+            })
+            self._report_progress({
+                "progress": "uploading",
+                "event": "image_upload_decode_failed",
+                "message": f"参考图{index or ''}解析失败：{str(exc)[:120]}",
+                "details": dict(upload_detail) | {"error": str(exc)[:500]},
+            })
+            raise
+
+        upload_detail.update({
+            "mime_type": mime_type,
+            "width": width,
+            "height": height,
+            "megapixels": round(width * height / 1_000_000, 3),
+            "chatgpt_image_limit_bytes": CHATGPT_IMAGE_UPLOAD_SOFT_LIMIT_BYTES,
+            "over_chatgpt_image_limit": len(data) > CHATGPT_IMAGE_UPLOAD_SOFT_LIMIT_BYTES,
+        })
+        if upload_detail["over_chatgpt_image_limit"]:
+            logger.warning({"event": "image_upload_maybe_oversized", **upload_detail})
+            self._report_progress({
+                "progress": "uploading",
+                "event": "image_upload_maybe_oversized",
+                "message": (
+                    f"参考图{index or ''}可能过大：{len(data) / 1024 / 1024:.2f}MB，"
+                    "可能超过 ChatGPT 图片上传限制"
+                ),
+                "details": upload_detail,
+            })
+        else:
+            logger.info({"event": "image_upload_prepare", **upload_detail})
         path = "/backend-api/files"
-        response = self.session.post(
-            self.base_url + path,
-            headers=self._headers(path, {"Content-Type": "application/json", "Accept": "application/json"}),
-            json={"file_name": file_name, "file_size": len(data), "use_case": "multimodal", "width": width,
-                  "height": height},
-            timeout=60,
-        )
-        ensure_ok(response, path)
+        try:
+            response = self.session.post(
+                self.base_url + path,
+                headers=self._headers(path, {"Content-Type": "application/json", "Accept": "application/json"}),
+                json={"file_name": file_name, "file_size": len(data), "use_case": "multimodal", "width": width,
+                      "height": height},
+                timeout=60,
+            )
+            ensure_ok(response, path)
+        except Exception as exc:
+            logger.warning({
+                "event": "image_upload_create_failed",
+                **upload_detail,
+                "error": str(exc)[:500],
+            })
+            self._report_progress({
+                "progress": "uploading",
+                "event": "image_upload_create_failed",
+                "message": f"参考图{index or ''}创建上传任务失败：{str(exc)[:120]}",
+                "details": dict(upload_detail) | {"error": str(exc)[:500]},
+            })
+            raise
         upload_meta = response.json()
-        response = self.session.put(
-            upload_meta["upload_url"],
-            headers={
-                "Content-Type": mime_type,
-                "x-ms-blob-type": "BlockBlob",
-                "x-ms-version": "2020-04-08",
-                "Origin": self.base_url,
-                "Referer": self.base_url + "/",
-                "User-Agent": self.user_agent,
-                "Accept": "application/json, text/plain, */*",
-                "Accept-Language": "en-US,en;q=0.8",
-            },
-            data=data,
-            timeout=120,
-        )
-        ensure_ok(response, "image_upload")
+        upload_detail["file_id"] = upload_meta.get("file_id")
+        try:
+            response = self.session.put(
+                upload_meta["upload_url"],
+                headers={
+                    "Content-Type": mime_type,
+                    "x-ms-blob-type": "BlockBlob",
+                    "x-ms-version": "2020-04-08",
+                    "Origin": self.base_url,
+                    "Referer": self.base_url + "/",
+                    "User-Agent": self.user_agent,
+                    "Accept": "application/json, text/plain, */*",
+                    "Accept-Language": "en-US,en;q=0.8",
+                },
+                data=data,
+                timeout=120,
+            )
+            ensure_ok(response, "image_upload")
+        except Exception as exc:
+            logger.warning({
+                "event": "image_upload_blob_failed",
+                **upload_detail,
+                "error": str(exc)[:500],
+            })
+            self._report_progress({
+                "progress": "uploading",
+                "event": "image_upload_blob_failed",
+                "message": f"参考图{index or ''}上传二进制失败：{str(exc)[:120]}",
+                "details": dict(upload_detail) | {"error": str(exc)[:500]},
+            })
+            raise
         path = f"/backend-api/files/{upload_meta['file_id']}/uploaded"
-        response = self.session.post(
-            self.base_url + path,
-            headers=self._headers(path, {"Content-Type": "application/json", "Accept": "application/json"}),
-            data="{}",
-            timeout=60,
-        )
-        ensure_ok(response, path)
+        try:
+            response = self.session.post(
+                self.base_url + path,
+                headers=self._headers(path, {"Content-Type": "application/json", "Accept": "application/json"}),
+                data="{}",
+                timeout=60,
+            )
+            ensure_ok(response, path)
+        except Exception as exc:
+            logger.warning({
+                "event": "image_upload_confirm_failed",
+                **upload_detail,
+                "error": str(exc)[:500],
+            })
+            self._report_progress({
+                "progress": "uploading",
+                "event": "image_upload_confirm_failed",
+                "message": f"参考图{index or ''}确认上传失败：{str(exc)[:120]}",
+                "details": dict(upload_detail) | {"error": str(exc)[:500]},
+            })
+            raise
+        logger.info({"event": "image_upload_done", **upload_detail})
+        self._report_progress({
+            "progress": "uploading",
+            "event": "image_upload_done",
+            "message": (
+                f"参考图{index or ''}上传完成"
+                f"（{width}x{height}，{len(data) / 1024 / 1024:.2f}MB）"
+            ),
+            "details": upload_detail,
+        })
         return {
             "file_id": upload_meta["file_id"],
             "file_name": file_name,
@@ -2753,7 +2858,7 @@ class OpenAIBackendAPI:
         finally:
             response.close()
 
-    def _report_progress(self, step: str) -> None:
+    def _report_progress(self, step: object) -> None:
         """Report progress step to the callback if set."""
         if self.progress_callback:
             try:
@@ -2770,7 +2875,10 @@ class OpenAIBackendAPI:
         if not self.access_token:
             raise RuntimeError("access_token is required for image endpoints")
         self._report_progress("uploading")
-        references = [self._upload_image(image, f"image_{idx}.png") for idx, image in enumerate(images, start=1)]
+        references = [
+            self._upload_image(image, f"image_{idx}.png", index=idx, total=len(images))
+            for idx, image in enumerate(images, start=1)
+        ]
         self._report_progress("bootstrapping")
         self._bootstrap()
         self._report_progress("getting_token")

@@ -385,11 +385,18 @@ def _build_log_detail(
 def _request_params_from_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return {}
-    return {
+    params = {
         key: payload.get(key)
         for key in ("n", "size", "quality", "response_format", "stream")
         if key in payload
     }
+    images = payload.get("images")
+    if isinstance(images, list):
+        params["image_count"] = len(images)
+    masks = payload.get("mask")
+    if isinstance(masks, list):
+        params["mask_count"] = len(masks)
+    return params
 
 
 def _image_result_meta(data: object) -> dict[str, Any]:
@@ -918,18 +925,22 @@ class ImageTaskService:
                     if task is None or task.get("cancelled"):
                         return
                     self._ensure_status_logs_locked(task)
+                    detail_payload: dict[str, Any] = {
+                        "account_email": account_email,
+                        "attempt": progress.get("attempt"),
+                        "used_account_count": progress.get("used_account_count"),
+                        "backend_model": progress.get("backend_model"),
+                        "image_route": progress.get("image_route"),
+                    }
+                    extra_details = progress.get("details")
+                    if isinstance(extra_details, dict):
+                        detail_payload.update({str(k): v for k, v in extra_details.items()})
                     self._append_status_log_locked(
                         task,
                         message or f"使用账号：{account_email}",
                         level="processing",
                         event=_clean(progress.get("event"), "account_selected"),
-                        details={
-                            "account_email": account_email,
-                            "attempt": progress.get("attempt"),
-                            "used_account_count": progress.get("used_account_count"),
-                            "backend_model": progress.get("backend_model"),
-                            "image_route": progress.get("image_route"),
-                        },
+                        details=detail_payload,
                     )
                     task["updated_at"] = _now_iso()
                     task["updated_ts"] = time.time()

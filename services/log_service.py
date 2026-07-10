@@ -451,7 +451,14 @@ def apply_image_log_detail(
 def image_request_params(payload: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return {}
-    return {key: payload.get(key) for key in IMAGE_REQUEST_PARAM_KEYS if key in payload}
+    params = {key: payload.get(key) for key in IMAGE_REQUEST_PARAM_KEYS if key in payload}
+    images = payload.get("images")
+    if isinstance(images, list):
+        params["image_count"] = len(images)
+    masks = payload.get("mask")
+    if isinstance(masks, list):
+        params["mask_count"] = len(masks)
+    return params
 
 
 def _collect_image_result_meta(value: object) -> dict[str, Any]:
