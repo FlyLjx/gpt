@@ -177,6 +177,39 @@ def is_model_text_reply_instead_of_image(message: str) -> bool:
     return False
 
 
+def is_retryable_image_generation_failure(message: str, exc: Exception | None = None) -> bool:
+    """检测上游普通生图失败，这类错误优先在同一任务内切换账号重试。"""
+    text = str(message or "").strip()
+    lower = text.lower()
+    if not lower:
+        return False
+    if any(item in lower for item in (
+        "content_policy",
+        "content policy",
+        "policy_violation",
+        "moderation",
+        "safety system",
+        "内容政策",
+        "防护限制",
+        "色情",
+        "裸露",
+    )):
+        return False
+    code = str(getattr(exc, "code", "") or "").strip().lower() if exc is not None else ""
+    if code == "content_policy_violation":
+        return lower in {"image generation failed", "图片生成失败"}
+    return any(item in lower for item in (
+        "image generation failed",
+        "图片生成失败",
+        "failed to generate image",
+        "no image result found",
+        "no image generated",
+        "upstream completed without generating images",
+        "completed without generating images",
+        "result could not be retrieved",
+    ))
+
+
 def _uses_default_image_route(model: object) -> bool:
     plan_type, base_model = split_image_model(model)
     return plan_type is None and base_model == DEFAULT_IMAGE_MODEL
@@ -1452,11 +1485,14 @@ def _generate_single_image(
     MAX_CONN_TIMEOUT_RETRIES = 3
     # 轮询超时错误最大重试次数（换账号重试）
     MAX_POLL_TIMEOUT_RETRIES = 4
+    # 上游返回普通 image generation failed 时最大切号重试次数
+    MAX_GENERIC_FAILURE_RETRIES = 4
 
     text_reply_retry_count = 0
     tls_retry_count = 0
     conn_timeout_retry_count = 0
     poll_timeout_retry_count = 0
+    generic_failure_retry_count = 0
     account_email = ""
     route_attempts: list[dict[str, Any]] = []
 
@@ -1719,6 +1755,55 @@ def _generate_single_image(
                     image_route=route_meta,
                     image_route_attempts=route_attempts,
                 ) from exc
+            if is_retryable_image_generation_failure(error_text, exc):
+                generic_failure_retry_count += 1
+                if generic_failure_retry_count <= MAX_GENERIC_FAILURE_RETRIES:
+                    logger.warning({
+                        "event": "image_generation_failed_retry_next_account",
+                        "request_token": token,
+                        "account_email": account_email,
+                        "retry_count": generic_failure_retry_count,
+                        "max_retries": MAX_GENERIC_FAILURE_RETRIES,
+                        "upstream_generation_started": upstream_generation_started,
+                        "emitted_for_token": emitted_for_token,
+                        "conversation_id": getattr(exc, "conversation_id", ""),
+                        "index": index,
+                        "error": error_text[:200],
+                    })
+                    if request.progress_callback:
+                        try:
+                            message = (
+                                f"账号 {account_email} 生图失败，切换账号继续"
+                                if account_email
+                                else "当前账号生图失败，切换账号继续"
+                            )
+                            request.progress_callback({
+                                "progress": "getting_account",
+                                "event": "account_retry",
+                                "message": f"{message}（已调用 {len(route_attempts)} 个账号）",
+                                "attempt": len(route_attempts) + 1,
+                                "account_email": account_email,
+                                "used_account_count": len({
+                                    str(item.get("account_email") or "").strip()
+                                    for item in route_attempts
+                                    if str(item.get("account_email") or "").strip()
+                                }),
+                                "backend_model": route_meta.get("backend_model"),
+                                "image_route": route_meta.get("image_route"),
+                                "image_route_attempts": [dict(item) for item in route_attempts],
+                            })
+                        except Exception:
+                            pass
+                    continue
+                logger.warning({
+                    "event": "image_generation_failed_exhausted_retries",
+                    "request_token": token,
+                    "account_email": account_email,
+                    "retry_count": generic_failure_retry_count,
+                    "max_retries": MAX_GENERIC_FAILURE_RETRIES,
+                    "index": index,
+                    "error": error_text[:200],
+                })
             logger.warning({
                 "event": "image_stream_generation_error",
                 "request_token": token,
@@ -1783,6 +1868,57 @@ def _generate_single_image(
                     })
                     time.sleep(wait_secs)
                     continue
+            normalized_error = image_stream_error_message(last_error)
+            if is_retryable_image_generation_failure(normalized_error, exc):
+                generic_failure_retry_count += 1
+                if generic_failure_retry_count <= MAX_GENERIC_FAILURE_RETRIES:
+                    logger.warning({
+                        "event": "image_generation_failed_retry_next_account",
+                        "request_token": token,
+                        "account_email": account_email,
+                        "retry_count": generic_failure_retry_count,
+                        "max_retries": MAX_GENERIC_FAILURE_RETRIES,
+                        "upstream_generation_started": upstream_generation_started,
+                        "emitted_for_token": emitted_for_token,
+                        "index": index,
+                        "token_invalid": token_invalid,
+                        "error": normalized_error[:200],
+                    })
+                    if request.progress_callback:
+                        try:
+                            message = (
+                                f"账号 {account_email} 生图失败，切换账号继续"
+                                if account_email
+                                else "当前账号生图失败，切换账号继续"
+                            )
+                            request.progress_callback({
+                                "progress": "getting_account",
+                                "event": "account_retry",
+                                "message": f"{message}（已调用 {len(route_attempts)} 个账号）",
+                                "attempt": len(route_attempts) + 1,
+                                "account_email": account_email,
+                                "used_account_count": len({
+                                    str(item.get("account_email") or "").strip()
+                                    for item in route_attempts
+                                    if str(item.get("account_email") or "").strip()
+                                }),
+                                "backend_model": route_meta.get("backend_model"),
+                                "image_route": route_meta.get("image_route"),
+                                "image_route_attempts": [dict(item) for item in route_attempts],
+                            })
+                        except Exception:
+                            pass
+                    continue
+                logger.warning({
+                    "event": "image_generation_failed_exhausted_retries",
+                    "request_token": token,
+                    "account_email": account_email,
+                    "retry_count": generic_failure_retry_count,
+                    "max_retries": MAX_GENERIC_FAILURE_RETRIES,
+                    "index": index,
+                    "token_invalid": token_invalid,
+                    "error": normalized_error[:200],
+                })
             if upstream_generation_started:
                 logger.warning({
                     "event": "image_stream_no_retry_after_upstream_start",
