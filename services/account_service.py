@@ -1896,7 +1896,17 @@ class AccountService:
             return "generic"
         if any(item in text for item in ("content_policy", "policy", "moderation", "内容政策", "防护限制")):
             return "content_policy"
-        if any(item in text for item in ("token invalid", "invalid access token", "invalidated", "unauthorized", "401")):
+        if any(item in text for item in (
+            "token invalid",
+            "invalid access token",
+            "token_revoked",
+            "token_invalidated",
+            "invalidated oauth token",
+            "authentication token has been invalidated",
+            "invalidated",
+            "unauthorized",
+            "401",
+        )):
             return "token_invalid"
         if any(item in text for item in ("rate limit", "rate_limit", "429", "限流", "too many requests")):
             return "rate_limited"

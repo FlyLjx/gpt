@@ -78,6 +78,22 @@ def is_token_invalid_error(message: str) -> bool:
     )
 
 
+def remove_invalid_image_token(access_token: str, event: str) -> bool:
+    """强制移除官方已判失效的图片账号 token。"""
+    if not access_token:
+        return False
+    try:
+        return account_service.remove_invalid_token(access_token, event, force=True)
+    except Exception as exc:
+        logger.warning({
+            "event": "image_invalid_token_remove_failed",
+            "source_event": event,
+            "request_token": access_token[:12] + "..." if len(access_token) > 12 else access_token,
+            "error": str(exc)[:300],
+        })
+        return False
+
+
 def is_tls_connection_error(message: str) -> bool:
     """检测 TLS/SSL 连接错误，这类错误通常可以通过重试解决。"""
     text = str(message or "").lower()
@@ -1717,20 +1733,25 @@ def _generate_single_image(
             _attach_image_route(exc, route_meta)
             _attach_image_route_attempts(exc, route_attempts)
             last_error = str(exc)
+            token_invalid = is_token_invalid_error(last_error)
+            if token_invalid:
+                remove_invalid_image_token(token, "image_stream:token_revoked")
             logger.warning({
                 "event": "image_stream_fail",
                 "request_token": token,
                 "account_email": account_email,
                 "error": last_error,
                 "index": index,
+                "token_invalid": token_invalid,
             })
             retry_before_upstream_start = not emitted_for_token and not upstream_generation_started
-            if retry_before_upstream_start and is_token_invalid_error(last_error):
-                refreshed_token = account_service.refresh_access_token(token, force=True, event="image_stream")
-                if refreshed_token and refreshed_token != token:
-                    token = refreshed_token
-                    continue
-                account_service.remove_invalid_token(token, "image_stream", force=True)
+            if retry_before_upstream_start and token_invalid:
+                logger.warning({
+                    "event": "image_stream_token_revoked_retry_next_account",
+                    "request_token": token,
+                    "account_email": account_email,
+                    "index": index,
+                })
                 continue
             # TLS/SSL 连接错误：自动重试
             if retry_before_upstream_start and is_tls_connection_error(last_error):
