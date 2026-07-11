@@ -339,6 +339,28 @@ def _account_selection_route_attempts(
     return attempts
 
 
+def _is_no_available_free_image_quota(exc: Exception) -> bool:
+    return "no available free image quota" in str(exc or "").lower()
+
+
+def _mark_removed_attempt_tokens(
+        route_attempts: list[dict[str, Any]],
+        removed_summaries: list[dict[str, Any]],
+) -> None:
+    removed_tokens = {
+        str(item.get("account_token") or item.get("token") or "").strip()
+        for item in removed_summaries
+        if isinstance(item, dict)
+    }
+    removed_tokens.discard("")
+    if not removed_tokens:
+        return
+    for attempt in route_attempts:
+        token = str(attempt.get("account_token") or attempt.get("token") or "").strip()
+        if token in removed_tokens:
+            attempt["removed"] = True
+
+
 def _attach_route_attempts_to_outputs(
         outputs: list["ImageOutput"],
         route_meta: dict[str, Any],
@@ -1493,6 +1515,7 @@ def _generate_single_image(
     conn_timeout_retry_count = 0
     poll_timeout_retry_count = 0
     generic_failure_retry_count = 0
+    selection_quota_retry_count = 0
     account_email = ""
     route_attempts: list[dict[str, Any]] = []
 
@@ -1504,13 +1527,61 @@ def _generate_single_image(
                 request.progress_callback("getting_account")
             token, routed_request, route_meta = _select_image_request_route(request)
         except RuntimeError as exc:
-            route_attempts.extend(_account_selection_route_attempts(
+            selection_attempts = _account_selection_route_attempts(
                 exc,
                 request,
                 index,
                 total,
                 start_attempt=len(route_attempts),
-            ))
+            )
+            route_attempts.extend(selection_attempts)
+            if _is_no_available_free_image_quota(exc) and selection_quota_retry_count < 1:
+                selection_quota_retry_count += 1
+                attempted_tokens = [
+                    str(token or "").strip()
+                    for token in getattr(exc, "attempted_tokens", []) or []
+                    if str(token or "").strip()
+                ]
+                removed_summaries = account_service.remove_image_quota_attempted_tokens(
+                    attempted_tokens,
+                    "image_selection:no_available_free_quota",
+                    plan_type="free",
+                )
+                _mark_removed_attempt_tokens(route_attempts, removed_summaries)
+                logger.warning({
+                    "event": "image_selection_no_free_quota_retry_next_batch",
+                    "retry_count": selection_quota_retry_count,
+                    "max_retries": 1,
+                    "attempted_token_count": len(attempted_tokens),
+                    "removed_count": len(removed_summaries),
+                    "index": index,
+                    "error": str(exc)[:200],
+                })
+                if request.progress_callback:
+                    try:
+                        request.progress_callback({
+                            "progress": "getting_account",
+                            "event": "account_retry",
+                            "message": (
+                                "Free 生图额度不足，已移除本轮失败账号，切换账号重试 1 次"
+                                f"（已移除 {len(removed_summaries)} 个账号）"
+                            ),
+                            "attempt": len(route_attempts) + 1,
+                            "used_account_count": len({
+                                str(item.get("account_email") or item.get("account_token") or "").strip()
+                                for item in route_attempts
+                                if str(item.get("account_email") or item.get("account_token") or "").strip()
+                            }),
+                            "image_route_attempts": [dict(item) for item in route_attempts],
+                            "details": {
+                                "retry_count": selection_quota_retry_count,
+                                "removed_count": len(removed_summaries),
+                                "attempted_token_count": len(attempted_tokens),
+                            },
+                        })
+                    except Exception:
+                        pass
+                continue
             raise ImageGenerationError(
                 str(exc) or "image generation failed",
                 account_email=account_email,

@@ -22,10 +22,16 @@ from utils.helper import anonymize_token
 
 
 class NoImageQuotaError(RuntimeError):
-    def __init__(self, message: str, attempted_accounts: list[dict[str, Any]] | None = None) -> None:
+    def __init__(
+            self,
+            message: str,
+            attempted_accounts: list[dict[str, Any]] | None = None,
+            attempted_tokens: list[str] | None = None,
+    ) -> None:
         super().__init__(message)
         self.attempted_accounts = [dict(item) for item in attempted_accounts or [] if isinstance(item, dict)]
         self.attempted_count = len(self.attempted_accounts)
+        self.attempted_tokens = list(dict.fromkeys(str(token or "").strip() for token in attempted_tokens or [] if str(token or "").strip()))
 
 
 class AccountService:
@@ -1786,6 +1792,7 @@ class AccountService:
                 raise NoImageQuotaError(
                     self._quota_error_message(plan_type, source_type, len(attempted_tokens)),
                     attempted_accounts,
+                    list(attempted_tokens),
                 ) from exc
             attempted_tokens.add(access_token)
             account = self.get_account(access_token)
@@ -1842,6 +1849,7 @@ class AccountService:
         raise NoImageQuotaError(
             self._quota_error_message(plan_type, source_type, len(attempted_tokens)),
             attempted_accounts,
+            list(attempted_tokens),
         )
 
     def get_text_access_token(self, excluded_tokens: set[str] | None = None) -> str:
@@ -2202,6 +2210,81 @@ class AccountService:
                 },
             )
         return removed
+
+    def remove_image_quota_attempted_tokens(
+            self,
+            attempted_tokens: list[str] | tuple[str, ...] | set[str],
+            event: str,
+            *,
+            plan_type: str | None = None,
+            source_type: str | None = None,
+            plan_types: set[str] | tuple[str, ...] | None = None,
+    ) -> list[dict[str, Any]]:
+        """移除一次图片账号选择中已经尝试过但未拿到可用额度的账号。"""
+        tokens = list(dict.fromkeys(str(token or "").strip() for token in attempted_tokens or [] if str(token or "").strip()))
+        if not tokens:
+            return []
+        removed_items: list[tuple[str, dict[str, Any]]] = []
+        with self._image_slot_condition:
+            for token in tokens:
+                resolved = self._resolve_access_token_locked(token)
+                account = self._accounts.get(resolved)
+                if not account:
+                    continue
+                if not self._account_matches_plan_type(account, plan_type):
+                    continue
+                if not self._account_matches_any_plan_type(account, plan_types):
+                    continue
+                if not self._account_matches_source_type(account, source_type):
+                    continue
+                removed = self._accounts.pop(resolved, None)
+                if not removed:
+                    continue
+                self._image_inflight.pop(resolved, None)
+                self._token_aliases = {
+                    old: new
+                    for old, new in self._token_aliases.items()
+                    if old != resolved and new != resolved
+                }
+                removed_items.append((resolved, dict(removed)))
+            if removed_items:
+                if self._accounts:
+                    self._index %= len(self._accounts)
+                else:
+                    self._index = 0
+                self._save_accounts()
+                self._image_slot_condition.notify_all()
+
+        summaries: list[dict[str, Any]] = []
+        for token, account in removed_items:
+            summaries.append(self._image_account_attempt_summary(
+                token,
+                account,
+                error="no available image quota",
+                plan_type=plan_type,
+                source_type=source_type,
+                plan_types=plan_types,
+                removed=True,
+            ))
+        if summaries:
+            log_service.add(LOG_TYPE_ACCOUNT, "自动移除本轮无图片额度账号", {
+                "source": event,
+                "removed": len(summaries),
+                "plan_type": plan_type,
+                "source_type": source_type,
+                "plan_types": [str(value) for value in plan_types] if plan_types else None,
+                "accounts": [
+                    {
+                        "token": item.get("token"),
+                        "email": item.get("account_email"),
+                        "type": item.get("account_type"),
+                        "source_type": item.get("account_source_type"),
+                        "quota": item.get("quota"),
+                    }
+                    for item in summaries
+                ][:50],
+            })
+        return summaries
 
     def update_account(self, access_token: str, updates: dict, quiet: bool = False) -> dict | None:
         if not access_token:
