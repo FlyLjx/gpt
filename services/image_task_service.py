@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import threading
 import time
@@ -20,12 +19,9 @@ TASK_STATUS_SUCCESS = "success"
 TASK_STATUS_ERROR = "error"
 TERMINAL_STATUSES = {TASK_STATUS_SUCCESS, TASK_STATUS_ERROR}
 UNFINISHED_STATUSES = {TASK_STATUS_QUEUED, TASK_STATUS_RUNNING}
-LEGACY_SYNC_TASK_PREFIX = "sync-"
 STALE_TASK_MIN_SECONDS = 30 * 60
 STALE_TASK_POLL_TIMEOUT_MULTIPLIER = 10
-SYNC_TASK_TERMINAL_REUSE_SECONDS = 5 * 60
 MAX_TASK_STATUS_LOGS = 120
-UPSTREAM_STARTED_PROGRESS = {"generating", "image_stream_resolve_start", "receiving_image"}
 PROGRESS_LABELS = {
     "sync_request_started": "请求已提交",
     "uploading": "正在上传图片",
@@ -116,14 +112,6 @@ def _task_activity_ts(task: dict[str, Any]) -> float:
         if isinstance(value, int | float) and value > 0:
             return float(value)
     return _timestamp(task.get("updated_at")) or _timestamp(task.get("created_at"))
-
-
-def _sync_terminal_reuse_seconds() -> float:
-    try:
-        poll_timeout = float(config.image_poll_timeout_secs)
-    except Exception:
-        poll_timeout = 120.0
-    return max(float(SYNC_TASK_TERMINAL_REUSE_SECONDS), min(30 * 60.0, poll_timeout + 60.0))
 
 
 def _stale_task_seconds() -> float:
@@ -280,51 +268,6 @@ def _latest_status_text(task: dict[str, Any]) -> str:
     if status == TASK_STATUS_RUNNING:
         return "处理中"
     return status or "未知"
-
-
-def _build_sync_fingerprint(
-    identity: dict[str, object],
-    *,
-    mode: str,
-    model: str,
-    size: str | None = None,
-    quality: str = "auto",
-    request_preview: str = "",
-    request_params: dict[str, Any] | None = None,
-) -> str:
-    payload = {
-        "owner_id": _owner_id(identity),
-        "mode": "edit" if mode == "edit" else "generate",
-        "model": _clean(model, "gpt-image-2"),
-        "size": _clean(size),
-        "quality": _clean(quality, "auto"),
-        "request_preview": request_preview,
-        "request_params": request_params or {},
-    }
-    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-
-def _sync_error_can_restart(task: dict[str, Any]) -> bool:
-    error = _clean(task.get("error")).lower()
-    if not error:
-        return True
-    if any(item in error for item in ("content_policy", "content policy", "policy_violation", "内容政策", "防护限制")):
-        return False
-    progress = _clean(task.get("progress"))
-    if (_clean(task.get("conversation_id")) or progress in UPSTREAM_STARTED_PROGRESS) and any(
-        item in error
-        for item in (
-            "timeout",
-            "timed out",
-            "超时",
-            "poll",
-            "still processing",
-            "result could not be retrieved",
-        )
-    ):
-        return False
-    return True
 
 
 def _apply_image_route_detail(
@@ -782,72 +725,15 @@ class ImageTaskService:
         quality: str = "auto",
         request_preview: str = "",
         request_params: dict[str, Any] | None = None,
-        request_fingerprint: str = "",
     ) -> tuple[str, dict[str, Any], str]:
         owner = _owner_id(identity)
         mode_value = "edit" if mode == "edit" else "generate"
         model_value = _clean(model, "gpt-image-2")
-        fingerprint = _clean(request_fingerprint) or _build_sync_fingerprint(
-            identity,
-            mode=mode_value,
-            model=model_value,
-            size=size,
-            quality=quality,
-            request_preview=request_preview,
-            request_params=request_params,
-        )
         now_ts = time.time()
         now = _now_iso()
         with self._sync_condition:
             if self._cleanup_locked():
                 self._save_locked()
-            reusable = self._find_reusable_sync_task_locked(owner, fingerprint, mode_value, now_ts)
-            if reusable is not None:
-                key, task = reusable
-                self._ensure_status_logs_locked(task)
-                task["client_retry_count"] = int(task.get("client_retry_count") or 0) + 1
-                task["updated_at"] = now
-                task["updated_ts"] = now_ts
-                self._append_status_log_locked(
-                    task,
-                    "客户端重复请求，复用已有任务",
-                    event="client_retry",
-                    details={"client_retry_count": task.get("client_retry_count")},
-                )
-                status = _clean(task.get("status"))
-                if status in UNFINISHED_STATUSES:
-                    self._save_locked()
-                    return key, _public_task(task), "wait"
-                if status == TASK_STATUS_SUCCESS:
-                    self._save_locked()
-                    return key, _public_task(task), "cached"
-                if status == TASK_STATUS_ERROR and _sync_error_can_restart(task):
-                    task.update({
-                        "status": TASK_STATUS_RUNNING,
-                        "error": "",
-                        "data": [],
-                        "usage": None,
-                        "duration_ms": None,
-                        "progress": "sync_request_started",
-                        "started_ts": now_ts,
-                        "run_started_ts": now_ts,
-                        "run_count": int(task.get("run_count") or 1) + 1,
-                        "request_preview": request_preview,
-                        "request_params": request_params or {},
-                    })
-                    self._append_status_log_locked(
-                        task,
-                        "错误任务已重新启动",
-                        level="processing",
-                        event="restart",
-                        details={"run_count": task.get("run_count")},
-                    )
-                    self._save_locked()
-                    self._sync_condition.notify_all()
-                    return key, _public_task(task), "start"
-                self._save_locked()
-                return key, _public_task(task), "cached_error"
-
             task_id = f"sync-{int(now_ts * 1000)}-{threading.get_ident()}"
             key = _task_key(owner, task_id)
             task = {
@@ -867,7 +753,6 @@ class ImageTaskService:
                 "run_count": 1,
                 "client_retry_count": 0,
                 "quota_consumed": False,
-                "sync_fingerprint": fingerprint,
                 "request_preview": request_preview,
                 "request_params": request_params or {},
                 "image_route_attempts": [],
@@ -1048,21 +933,11 @@ class ImageTaskService:
         now = _now_iso()
         should_start = False
         with self._lock:
-            cleaned = self._cleanup_locked()
+            if self._cleanup_locked():
+                self._save_locked()
             task = self._tasks.get(key)
             if task is not None:
-                self._ensure_status_logs_locked(task)
-                self._append_status_log_locked(
-                    task,
-                    "客户端重复提交，继续使用原任务",
-                    event="client_retry",
-                )
-                task["updated_at"] = _now_iso()
-                task["updated_ts"] = time.time()
-                cleaned = True
-                if cleaned:
-                    self._save_locked()
-                return _public_task(task)
+                raise ValueError("task_id already exists")
             task = {
                 "id": task_id,
                 "owner_id": owner,
@@ -1310,35 +1185,6 @@ class ImageTaskService:
             self._save_locked()
             self._sync_condition.notify_all()
 
-    def _find_reusable_sync_task_locked(
-        self,
-        owner: str,
-        fingerprint: str,
-        mode: str,
-        now_ts: float,
-    ) -> tuple[str, dict[str, Any]] | None:
-        if not fingerprint:
-            return None
-        candidates: list[tuple[str, dict[str, Any]]] = []
-        terminal_cutoff = now_ts - _sync_terminal_reuse_seconds()
-        for key, task in self._tasks.items():
-            if task.get("owner_id") != owner:
-                continue
-            if _clean(task.get("sync_fingerprint")) != fingerprint:
-                continue
-            if _clean(task.get("mode")) != mode:
-                continue
-            status = _clean(task.get("status"))
-            if status in UNFINISHED_STATUSES:
-                candidates.append((key, task))
-                continue
-            if status in TERMINAL_STATUSES and _task_activity_ts(task) >= terminal_cutoff:
-                candidates.append((key, task))
-        if not candidates:
-            return None
-        candidates.sort(key=lambda entry: _task_activity_ts(entry[1]), reverse=True)
-        return candidates[0]
-
     def _merge_task_route_attempts(
         self,
         key: str,
@@ -1443,7 +1289,6 @@ class ImageTaskService:
                 "quota_consumed": bool(item.get("quota_consumed")),
                 "duration_ms": item.get("duration_ms"),
                 "log_id": _clean(item.get("log_id")),
-                "sync_fingerprint": _clean(item.get("sync_fingerprint")),
                 "request_preview": _clean(item.get("request_preview")),
             }
             request_params = item.get("request_params")

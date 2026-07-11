@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -11,7 +10,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from api.image_inputs import parse_image_edit_request, read_image_sources
 from api.support import consume_identity_quota, require_identity, resolve_api_authorization, resolve_image_base_url
 from services.content_filter import check_request, request_shape, request_text
-from services.config import config
 from services.editable_file_task_service import editable_file_task_service
 from services.image_task_service import image_task_service
 from services.log_service import (
@@ -118,66 +116,6 @@ def _response_error_text(result: object) -> str:
     return f"HTTP {status_code}"
 
 
-def _fingerprint_value(value: object) -> object:
-    if isinstance(value, (bytes, bytearray)):
-        data = bytes(value)
-        return {"__bytes_sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
-    if isinstance(value, tuple):
-        return [_fingerprint_value(item) for item in value]
-    if isinstance(value, list):
-        return [_fingerprint_value(item) for item in value]
-    if isinstance(value, dict):
-        ignored_keys = {"base_url", "progress_callback"}
-        return {
-            str(key): _fingerprint_value(value[key])
-            for key in sorted(value.keys(), key=lambda item: str(item))
-            if str(key) not in ignored_keys
-        }
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
-    return str(value)
-
-
-def _sync_image_request_fingerprint(
-    identity: dict[str, object],
-    *,
-    mode: str,
-    model: str,
-    payload: dict[str, object],
-    request_preview: str,
-    request_params: dict[str, object] | None,
-) -> str:
-    fingerprint_payload = {
-        "owner_id": str(identity.get("id") or "anonymous"),
-        "mode": "edit" if mode == "edit" else "generate",
-        "model": str(model or ""),
-        "request_preview": request_preview,
-        "request_params": request_params or {},
-        "payload": _fingerprint_value(payload),
-    }
-    raw = json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-
-def _sync_image_task_response(task: dict[str, object] | None):
-    task = task if isinstance(task, dict) else {}
-    status = str(task.get("status") or "").strip()
-    if status == "success":
-        data = task.get("data")
-        result: dict[str, object] = {
-            "created": int(float(task.get("created_ts") or __import__("time").time())),
-            "data": data if isinstance(data, list) else [],
-        }
-        usage = task.get("usage")
-        if isinstance(usage, dict):
-            result["usage"] = usage
-        return result
-    if status in {"queued", "running"}:
-        return _image_error_response(RuntimeError("image generation task is still running; retry reused the existing task"))
-    error_text = str(task.get("error") or "").strip() or "image generation failed"
-    return _image_error_response(RuntimeError(error_text))
-
-
 def _finish_sync_image_task(
     task_key: str,
     identity: dict[str, object],
@@ -270,15 +208,7 @@ async def _run_with_sync_image_task(
         return await call.run(handler, payload)
 
     task_started = __import__("time").time()
-    request_fingerprint = _sync_image_request_fingerprint(
-        identity,
-        mode=mode,
-        model=model,
-        payload=payload,
-        request_preview=request_preview,
-        request_params=request_params,
-    )
-    task_key, task_meta, task_action = image_task_service.begin_sync_task(
+    task_key, task_meta, _ = image_task_service.begin_sync_task(
         identity,
         mode=mode,
         model=model,
@@ -286,18 +216,7 @@ async def _run_with_sync_image_task(
         quality=str(quality or "auto"),
         request_preview=request_preview,
         request_params=request_params,
-        request_fingerprint=request_fingerprint,
     )
-    if task_action in {"wait", "cached", "cached_error"}:
-        wait_timeout = 0.0
-        if task_action == "wait":
-            try:
-                wait_timeout = max(90.0, float(config.image_poll_timeout_secs) + 30.0)
-            except Exception:
-                wait_timeout = 180.0
-            task_meta = await run_in_threadpool(image_task_service.wait_sync_task, task_key, wait_timeout)
-        return _sync_image_task_response(task_meta)
-
     task_started = float((task_meta or {}).get("run_started_ts") or task_started)
     payload["progress_callback"] = lambda step: image_task_service.update_sync_task_progress(task_key, step)
     if quota_endpoint and not image_task_service.is_sync_task_quota_consumed(task_key):
