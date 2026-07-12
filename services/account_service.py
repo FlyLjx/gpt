@@ -80,6 +80,7 @@ class AccountService:
         "unsupported_country_region_territory": "当前网络地区不支持登录",
         "invalid_state": "登录状态失效，请稍后重试",
         "password_verify_failed_403": "密码校验失败或账号被限制",
+        "cloudflare_challenge": "Cloudflare 清障失败，账号已保留，稍后会再次恢复",
         "no_auth_code": "登录未返回授权码",
         "token_exchange_failed": "登录成功但换取 token 失败",
     }
@@ -820,6 +821,27 @@ class AccountService:
         text = str(error_type or "").strip()
         return text == "need_verification_code" or text.startswith("verification_")
 
+    @staticmethod
+    def _is_cloudflare_challenge_response(response: object) -> bool:
+        """识别 auth.openai.com 返回的 Cloudflare 挑战页。"""
+        if response is None:
+            return False
+        try:
+            status_code = int(getattr(response, "status_code", 0) or 0)
+        except (TypeError, ValueError):
+            status_code = 0
+        if status_code not in {403, 429, 503}:
+            return False
+        text = str(getattr(response, "text", "") or "").lower()
+        headers = getattr(response, "headers", {}) or {}
+        server = str(headers.get("server") or "").lower()
+        return (
+            "cloudflare" in server
+            or "challenges.cloudflare.com" in text
+            or "<title>just a moment" in text
+            or "cf-chl-" in text
+        )
+
     def _recent_refresh_token_keepalive_error(self, account: dict, now: datetime) -> bool:
         last_error_at = self._parse_time(account.get("last_token_refresh_error_at"))
         if last_error_at is None:
@@ -1012,6 +1034,16 @@ class AccountService:
                         "status": "成功",
                     },
                 )
+                if result.get("cloudflare_cleared"):
+                    log_service.add(
+                        LOG_TYPE_ACCOUNT,
+                        "Cloudflare 清障后恢复账号",
+                        {
+                            "source": event,
+                            "token": anonymize_token(new_token),
+                            "email": email,
+                        },
+                    )
                 if progress_id:
                     self.update_relogin_progress(progress_id, access_token, "成功", email=email)
             else:
@@ -1037,6 +1069,28 @@ class AccountService:
                             progress_id,
                             access_token,
                             self._RELOGIN_NEEDS_VERIFICATION_STATUS,
+                            error_message,
+                            email=email,
+                        )
+                    return
+                if error_type == "cloudflare_challenge":
+                    # Cloudflare 挑战与账号凭证无关，不能删除账号；下次自动恢复会再尝试清障。
+                    log_service.add(
+                        LOG_TYPE_ACCOUNT,
+                        "Cloudflare 清障失败，保留账号等待恢复",
+                        {
+                            "source": event,
+                            "token": anonymize_token(access_token),
+                            "email": email,
+                            "detail": result.get("detail", {}),
+                        },
+                    )
+                    self.update_account(access_token, {"status": "异常", "quota": 0}, quiet=True)
+                    if progress_id:
+                        self.update_relogin_progress(
+                            progress_id,
+                            access_token,
+                            "清障失败",
                             error_message,
                             email=email,
                         )
@@ -1141,13 +1195,20 @@ class AccountService:
             pass
         return {"providers": []}
 
-    def _send_relogin_otp(self, session, auth_base: str, device_id: str, user_agent: str) -> dict[str, Any]:
+    def _send_relogin_otp(
+        self,
+        session,
+        auth_base: str,
+        device_id: str,
+        user_agent: str,
+        sec_ch_ua: str = "",
+    ) -> dict[str, Any]:
         headers = {
             "accept": "application/json,text/html,*/*",
             "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
             "referer": f"{auth_base}/email-verification",
             "user-agent": user_agent,
-            "sec-ch-ua": '"Chromium";v="145", "Google Chrome";v="145", "Not/A)Brand";v="99"',
+            "sec-ch-ua": sec_ch_ua or '"Chromium";v="145", "Google Chrome";v="145", "Not/A)Brand";v="99"',
             "sec-ch-ua-mobile": "?0",
             "sec-ch-ua-platform": '"Windows"',
             "sec-fetch-dest": "empty",
@@ -1179,7 +1240,15 @@ class AccountService:
             "address": str(mailbox.get("address") or ""),
         }
 
-    def _validate_relogin_otp(self, session, auth_base: str, device_id: str, code: str, user_agent: str) -> dict[str, Any]:
+    def _validate_relogin_otp(
+        self,
+        session,
+        auth_base: str,
+        device_id: str,
+        code: str,
+        user_agent: str,
+        sec_ch_ua: str = "",
+    ) -> dict[str, Any]:
         headers = {
             "accept": "application/json",
             "accept-language": "zh-CN,zh;q=0.9",
@@ -1188,7 +1257,7 @@ class AccountService:
             "priority": "u=1, i",
             "referer": f"{auth_base}/email-verification",
             "user-agent": user_agent,
-            "sec-ch-ua": '"Chromium";v="145", "Google Chrome";v="145", "Not/A)Brand";v="99"',
+            "sec-ch-ua": sec_ch_ua or '"Chromium";v="145", "Google Chrome";v="145", "Not/A)Brand";v="99"',
             "sec-ch-ua-mobile": "?0",
             "sec-ch-ua-platform": '"Windows"',
             "sec-fetch-dest": "empty",
@@ -1234,6 +1303,8 @@ class AccountService:
     def _login_with_password(self, email: str, password: str) -> dict:
         """通过邮箱+密码登录，返回 {access_token, refresh_token, id_token, ...}"""
         from curl_cffi import requests
+        from services.proxy_service import proxy_settings
+        from services.register.openai_register import _sec_ch_ua_from_user_agent, solve_with_flaresolverr
         
         # 常量
         auth_base = "https://auth.openai.com"
@@ -1242,12 +1313,16 @@ class AccountService:
         platform_oauth_client_id = self._OAUTH_CLIENT_ID
         platform_oauth_redirect_uri = "https://platform.openai.com/auth/callback"
         user_agent = self._OAUTH_USER_AGENT
+        sec_ch_ua = _sec_ch_ua_from_user_agent(user_agent)
         
-        # 创建 session
-        session_kwargs = {"impersonate": "chrome110", "verify": False}
-        proxy = config.get_proxy_settings()
-        if proxy:
-            session_kwargs["proxy"] = proxy
+        # 恢复登录与主请求共用代理选择规则，避免后台配置的代理没有用于 authorize。
+        proxy_profile = proxy_settings.get_profile(upstream=True)
+        session_kwargs = proxy_settings.build_session_kwargs(
+            impersonate="chrome110",
+            verify=False,
+            upstream=True,
+        )
+        proxy = str(proxy_profile.proxy_url or "")
         session = requests.Session(**session_kwargs)
         
         try:
@@ -1281,25 +1356,68 @@ class AccountService:
                 "auth0Client": platform_auth0_client,
             }
             authorize_url = f"{auth_base}/api/accounts/authorize?{urlencode(params)}"
-            resp = session.get(
-                authorize_url,
-                headers={
-                    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                    "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
-                    "user-agent": user_agent,
-                    "sec-ch-ua": '"Chromium";v="145", "Google Chrome";v="145", "Not/A)Brand";v="99"',
-                    "sec-ch-ua-mobile": "?0",
-                    "sec-ch-ua-platform": '"Windows"',
-                    "sec-fetch-dest": "document",
-                    "sec-fetch-mode": "navigate",
-                    "sec-fetch-site": "cross-site",
-                    "sec-fetch-user": "?1",
-                    "upgrade-insecure-requests": "1",
-                    "referer": "https://platform.openai.com/",
-                },
-                allow_redirects=True,
-                timeout=30,
-            )
+            clearance_retried = False
+            clearance_error = ""
+
+            # 手工录入的 clearance 需要先装入统一缓存；FlareSolverr 只在确实遇到挑战时调用。
+            if proxy_profile.clearance_enabled and proxy_profile.clearance_mode == "manual":
+                try:
+                    proxy_settings.refresh_clearance(authorize_url, upstream=True)
+                except Exception:
+                    pass
+
+            def request_authorize():
+                headers = proxy_settings.build_headers(
+                    {
+                        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                        "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
+                        "user-agent": user_agent,
+                        "sec-ch-ua": sec_ch_ua,
+                        "sec-ch-ua-mobile": "?0",
+                        "sec-ch-ua-platform": '"Windows"',
+                        "sec-fetch-dest": "document",
+                        "sec-fetch-mode": "navigate",
+                        "sec-fetch-site": "cross-site",
+                        "sec-fetch-user": "?1",
+                        "upgrade-insecure-requests": "1",
+                        "referer": "https://platform.openai.com/",
+                    },
+                    target_url=authorize_url,
+                    upstream=True,
+                )
+                return session.get(
+                    authorize_url,
+                    headers=headers,
+                    allow_redirects=True,
+                    timeout=30,
+                )
+
+            def solve_authorize_challenge() -> None:
+                nonlocal clearance_retried, clearance_error, user_agent, sec_ch_ua
+                clearance_retried = True
+                try:
+                    _cookie_count, solved_user_agent = solve_with_flaresolverr(session, authorize_url, proxy)
+                    if solved_user_agent:
+                        user_agent = solved_user_agent
+                        sec_ch_ua = _sec_ch_ua_from_user_agent(solved_user_agent)
+                except Exception as exc:
+                    clearance_error = str(exc or exc.__class__.__name__)[:300]
+
+            resp = request_authorize()
+            if self._is_cloudflare_challenge_response(resp):
+                solve_authorize_challenge()
+                resp = request_authorize()
+                if self._is_cloudflare_challenge_response(resp):
+                    return {
+                        "ok": False,
+                        "error": "cloudflare_challenge",
+                        "detail": {
+                            "stage": "authorize",
+                            "status_code": int(getattr(resp, "status_code", 0) or 0),
+                            "url": str(getattr(resp, "url", "") or authorize_url),
+                            "clearance_error": clearance_error or None,
+                        },
+                    }
             
             if resp.status_code not in (200, 302):
                 return {"ok": False, "error": f"authorize_failed_{resp.status_code}", "detail": {"url": resp.url, "text": resp.text[:500]}}
@@ -1329,7 +1447,7 @@ class AccountService:
                 "origin": auth_base,
                 "priority": "u=1, i",
                 "user-agent": user_agent,
-                "sec-ch-ua": '"Chromium";v="145", "Google Chrome";v="145", "Not/A)Brand";v="99"',
+                "sec-ch-ua": sec_ch_ua,
                 "sec-ch-ua-mobile": "?0",
                 "sec-ch-ua-platform": '"Windows"',
                 "sec-fetch-dest": "empty",
@@ -1342,7 +1460,13 @@ class AccountService:
             # 添加 sentinel token
             try:
                 from utils.sentinel import build_sentinel_token
-                sentinel_val, oai_sc_val = build_sentinel_token(session, device_id, "password_verify")
+                sentinel_val, oai_sc_val = build_sentinel_token(
+                    session,
+                    device_id,
+                    "password_verify",
+                    user_agent=user_agent,
+                    sec_ch_ua=sec_ch_ua,
+                )
                 login_headers["openai-sentinel-token"] = sentinel_val
                 if oai_sc_val:
                     session.cookies.set("oai-sc", oai_sc_val, domain=".openai.com")
@@ -1390,7 +1514,7 @@ class AccountService:
                     otp_started_at = time.time() - 10
                     send_result: dict[str, Any] = {}
                     try:
-                        send_result = self._send_relogin_otp(session, auth_base, device_id, user_agent)
+                        send_result = self._send_relogin_otp(session, auth_base, device_id, user_agent, sec_ch_ua)
                     except Exception as exc:
                         send_result = {"error": str(exc)}
                     try:
@@ -1407,7 +1531,7 @@ class AccountService:
                             "error": "verification_code_timeout",
                             "detail": {"login": login_data, "send": send_result, "mailbox": mailbox_info},
                         }
-                    validate_result = self._validate_relogin_otp(session, auth_base, device_id, otp_code, user_agent)
+                    validate_result = self._validate_relogin_otp(session, auth_base, device_id, otp_code, user_agent, sec_ch_ua)
                     if not validate_result.get("ok"):
                         return {
                             "ok": False,
@@ -1438,7 +1562,7 @@ class AccountService:
                     "pragma": "no-cache",
                     "priority": "u=1, i",
                     "referer": f"{platform_base}/",
-                    "sec-ch-ua": '"Chromium";v="145", "Google Chrome";v="145", "Not/A)Brand";v="99"',
+                    "sec-ch-ua": sec_ch_ua,
                     "sec-ch-ua-mobile": "?0",
                     "sec-ch-ua-platform": '"Windows"',
                     "sec-fetch-dest": "empty",
@@ -1505,6 +1629,7 @@ class AccountService:
                 "id_token": id_token,
                 "expires_at": jwt_payload.get("exp"),
                 "source_type": "password",
+                "cloudflare_cleared": clearance_retried,
             }
             
             return result

@@ -676,6 +676,116 @@ class AuthServiceTests(unittest.TestCase):
         self.assertTrue(any("email-otp/validate" in url for url in fake_session.post_urls))
         self.assertTrue(any("oauth/token" in url for url in fake_session.post_urls))
 
+    def test_password_login_clears_cloudflare_authorize_challenge_and_retries(self) -> None:
+        class FakeCookies:
+            def set(self, *_args, **_kwargs):
+                return None
+
+        class FakeResponse:
+            def __init__(
+                self,
+                status_code: int,
+                payload: dict | None = None,
+                url: str = "https://example.test",
+                text: str = "{}",
+            ) -> None:
+                self.status_code = status_code
+                self._payload = payload or {}
+                self.url = url
+                self.text = text
+                self.headers: dict[str, str] = {}
+
+            def json(self):
+                return self._payload
+
+        class FakeSession:
+            def __init__(self, **_kwargs) -> None:
+                self.cookies = FakeCookies()
+                self.authorize_calls = 0
+
+            def get(self, url: str, **_kwargs):
+                if "/api/accounts/authorize" in url:
+                    self.authorize_calls += 1
+                    if self.authorize_calls == 1:
+                        return FakeResponse(
+                            403,
+                            url=url,
+                            text="<!DOCTYPE html><title>Just a moment...</title><div>challenges.cloudflare.com</div>",
+                        )
+                    return FakeResponse(200, url=url)
+                if "email-otp/send" in url:
+                    return FakeResponse(200, {})
+                if "backend-api/me" in url:
+                    return FakeResponse(200, {"account": {"account_id": "account-1"}})
+                return FakeResponse(200, {}, url=url)
+
+            def post(self, url: str, **_kwargs):
+                if "password/verify" in url:
+                    return FakeResponse(200, {"page": {"type": "email_otp_verification"}})
+                if "email-otp/validate" in url:
+                    return FakeResponse(200, {"continue_url": "https://platform.openai.com/auth/callback?code=auth-code"})
+                if "oauth/token" in url:
+                    return FakeResponse(200, {"access_token": "access-token", "refresh_token": "refresh-token", "id_token": "id-token"})
+                return FakeResponse(200, {"token": "sentinel-token"})
+
+            def close(self):
+                return None
+
+        fake_session = FakeSession()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+
+            with (
+                mock.patch("curl_cffi.requests.Session", return_value=fake_session),
+                mock.patch("services.register.openai_register.solve_with_flaresolverr", return_value=(2, "Solver UA")) as solve,
+                mock.patch("utils.sentinel.build_sentinel_token", return_value=("sentinel-header", "sentinel-cookie")),
+                mock.patch.object(service, "_wait_for_relogin_otp_code", return_value=("123456", {"provider": "outlook_token"})),
+            ):
+                result = service._login_with_password("user@example.com", "secret-password")
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["cloudflare_cleared"])
+        self.assertEqual(fake_session.authorize_calls, 2)
+        solve.assert_called_once()
+
+    def test_relogin_cloudflare_failure_keeps_account_for_next_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service.add_account_items([
+                {"access_token": "token-1", "email": "user@example.com", "password": "secret-password", "status": "异常"},
+            ])
+            service.init_relogin_progress("progress-1", 1)
+
+            with (
+                mock.patch.object(
+                    service,
+                    "_login_with_password",
+                    return_value={
+                        "ok": False,
+                        "error": "cloudflare_challenge",
+                        "detail": {"stage": "authorize", "status_code": 403},
+                    },
+                ),
+                mock.patch.object(service, "remove_invalid_token") as remove_invalid_token,
+            ):
+                service._password_re_login_thread(
+                    "token-1",
+                    "user@example.com",
+                    "secret-password",
+                    "manual_relogin",
+                    "progress-1",
+                )
+
+            account = service.get_account("token-1")
+            progress = service.get_relogin_progress("progress-1")
+
+        remove_invalid_token.assert_not_called()
+        self.assertIsNotNone(account)
+        self.assertEqual(account["status"], "异常")
+        self.assertIsNotNone(progress)
+        self.assertTrue(progress["done"])
+        self.assertEqual(progress["results"][0]["status"], "清障失败")
+
 
 if __name__ == "__main__":
     unittest.main()

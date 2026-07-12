@@ -57,6 +57,11 @@ type TagEditorState = {
   value: string;
 };
 
+type ImageDimensions = {
+  width: number;
+  height: number;
+};
+
 function formatBytes(size: number) {
   if (!Number.isFinite(size) || size <= 0) {
     return "0 B";
@@ -143,6 +148,7 @@ function ImageManagerContent() {
   const [images, setImages] = useState<ManagedImage[]>([]);
   const [storage, setStorage] = useState<ImageStorageStats | null>(null);
   const [knownTags, setKnownTags] = useState<string[]>([]);
+  const [imageDimensions, setImageDimensions] = useState<Record<string, ImageDimensions>>({});
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   const [dateFilter, setDateFilter] = useState<string>("all");
@@ -520,7 +526,9 @@ function ImageManagerContent() {
             <>
               <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
                 {pagedImages.map((item) => {
+                  const key = imageKey(item);
                   const selected = Boolean(item.path && selectedPaths.includes(item.path));
+                  const dimensionsText = imageDimensionsLabel(item, imageDimensions[key]);
                   return (
                     <article
                       key={item.path || item.rel}
@@ -566,6 +574,15 @@ function ImageManagerContent() {
                           alt={item.name}
                           className="block aspect-[4/3] bg-slate-100"
                           imageClassName="h-full w-full object-cover"
+                          onLoadDimensions={(width, height) => {
+                            setImageDimensions((current) => {
+                              const previous = current[key];
+                              if (previous?.width === width && previous?.height === height) {
+                                return current;
+                              }
+                              return { ...current, [key]: { width, height } };
+                            });
+                          }}
                         />
                       </div>
 
@@ -579,7 +596,7 @@ function ImageManagerContent() {
 
                         <div className="flex flex-wrap gap-2 text-xs text-slate-500">
                           <span>{formatBytes(item.size)}</span>
-                          <span>{item.width && item.height ? `${item.width}x${item.height}` : "尺寸未知"}</span>
+                          <span>{dimensionsText}</span>
                           <span>{item.date}</span>
                         </div>
 

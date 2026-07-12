@@ -4,7 +4,7 @@
   "image_retention_days": 15,
   "image_poll_timeout_secs": 120,
   "auto_remove_rate_limited_accounts": false,
-  "auto_remove_invalid_accounts": true,
+  "auto_remove_invalid_accounts": false,
   "log_levels": [
     "debug",
     "error",
@@ -22,43 +22,10 @@
     "model": "",
     "prompt": ""
   },
-  "backup": {
-    "enabled": false,
-    "provider": "cloudflare_r2",
-    "account_id": "admin",
-    "access_key_id": "",
-    "secret_access_key": "admin",
-    "bucket": "",
-    "prefix": "backups",
-    "interval_minutes": 1440,
-    "rotation_keep": 10,
-    "encrypt": false,
-    "passphrase": "",
-    "include": {
-      "config": true,
-      "register": true,
-      "cpa": true,
-      "sub2api": true,
-      "logs": true,
-      "image_tasks": true,
-      "accounts_snapshot": true,
-      "auth_keys_snapshot": true,
-      "images": false
-    }
-  },
   "image_account_concurrency": 8,
   "image_parallel_generation": true,
-  "image_poll_interval_secs": 10.0,
-  "image_poll_initial_wait_secs": 10.0,
-  "image_storage": {
-    "enabled": false,
-    "mode": "local",
-    "webdav_url": "",
-    "webdav_username": "",
-    "webdav_password": "",
-    "webdav_root_path": "chatgpt2api/images",
-    "public_base_url": ""
-  },
+  "image_poll_interval_secs": 10,
+  "image_poll_initial_wait_secs": 10,
   "image_min_free_mb": 500,
   "chat_completion_cache": {
     "enabled": true,
@@ -73,7 +40,7 @@
   "image_settle_enabled": false,
   "image_check_before_hit_enabled": false,
   "image_settle_secs": 2,
-  "auto_relogin_after_refresh": false,
+  "auto_relogin_after_refresh": true,
   "image_timeout_retry_secs": 30,
   "timezone": "Asia/Shanghai",
   "refresh_account_concurrency": 40,
@@ -115,16 +82,10 @@
       "cf_clearance": "",
       "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
       "browser": "chrome",
-      "flaresolverr_url": "http://flaresolverr:8191",
+      "flaresolverr_url": "http://127.0.0.1:8191",
       "timeout_sec": 60,
       "refresh_interval": 3600,
       "warm_up_on_start": false
-    }
-  },
-  "third_party_apps": {
-    "infinite_canvas": {
-      "enabled": false,
-      "url": "https://canvas.best"
     }
   }
 }

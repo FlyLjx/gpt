@@ -8,7 +8,6 @@ import {
   LayoutDashboard,
   LogOut,
   Menu,
-  ScrollText,
   Settings,
   TimerReset,
   UsersRound,
@@ -26,7 +25,6 @@ const adminNavItems = [
   { href: "/accounts", label: "号池管理", icon: UsersRound },
   { href: "/image-manager", label: "图片管理", icon: Images },
   { href: "/tasks", label: "任务队列", icon: TimerReset },
-  { href: "/logs", label: "日志管理", icon: ScrollText },
   { href: "/debug", label: "调试", icon: Bug },
   { href: "/settings", label: "设置", icon: Settings },
 ];
